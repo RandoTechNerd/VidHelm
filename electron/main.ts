@@ -1,0 +1,680 @@
+import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron'
+import path from 'node:path'
+import fs from 'node:fs'
+import { spawn } from 'node:child_process'
+import ffmpeg from 'fluent-ffmpeg'
+
+app.disableHardwareAcceleration();
+
+const getBinaryPath = () => {
+  if (app.isPackaged) {
+    return {
+      ffmpeg: path.join(process.resourcesPath, 'ffmpeg.exe'),
+      ffprobe: path.join(process.resourcesPath, 'ffprobe.exe')
+    }
+  }
+  const projectRoot = path.join(__dirname, '..')
+  return {
+    ffmpeg: path.join(projectRoot, 'node_modules', 'ffmpeg-static', 'ffmpeg.exe'),
+    ffprobe: path.join(projectRoot, 'node_modules', 'ffprobe-static', 'bin', 'win32', 'x64', 'ffprobe.exe')
+  }
+}
+
+const paths = getBinaryPath()
+ffmpeg.setFfmpegPath(paths.ffmpeg)
+ffmpeg.setFfprobePath(paths.ffprobe)
+
+process.env.DIST = path.join(__dirname, '../dist')
+process.env.VITE_PUBLIC = app.isPackaged ? process.env.DIST : path.join(process.env.DIST, '../public')
+
+let win: BrowserWindow | null
+
+function createWindow() {
+  win = new BrowserWindow({
+    width: 1280,
+    height: 800,
+    title: 'RandoSnap Studio',
+    icon: path.join(process.env.VITE_PUBLIC, 'favicon.svg'),
+    titleBarStyle: 'hidden',
+    titleBarOverlay: {
+      color: '#0f0f11',
+      symbolColor: '#f8fafc',
+      height: 32
+    },
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      nodeIntegration: false,
+      contextIsolation: true,
+      webSecurity: false, 
+    },
+  })
+
+  if (process.env.VITE_DEV_SERVER_URL) {
+    win.loadURL(process.env.VITE_DEV_SERVER_URL)
+    if (!process.env.RS_NO_DEVTOOLS) win.webContents.openDevTools()
+  } else {
+    win.loadFile(path.join(process.env.DIST, 'index.html'))
+  }
+
+  win.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
+    console.error(`Page failed to load: ${errorDescription} (${errorCode}) at ${validatedURL}`);
+  });
+
+  // Dev helper: RS_SHOOT=<path.png> stages a small demo state, captures the window, writes the PNG and quits.
+  // Used to regenerate docs/screenshot.png reproducibly (see docs/ARCHITECTURE.md).
+  if (process.env.RS_SHOOT) {
+    win.webContents.once('did-finish-load', async () => {
+      try {
+        await new Promise(r => setTimeout(r, 2500))
+        await win!.webContents.executeJavaScript(`(async()=>{
+          const sleep=ms=>new Promise(r=>setTimeout(r,ms))
+          const click=t=>{const b=[...document.querySelectorAll('button')].find(x=>x.textContent.includes(t));if(b)b.click();return !!b}
+          const addBtn=[...document.querySelectorAll('button')].find(b=>b.textContent.includes('+ Tag at'))
+          for(let i=0;i<3;i++){addBtn&&addBtn.click();await sleep(50)}
+          const set=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set
+          const names=['hook','reveal','punchline']
+          ;[...document.querySelectorAll('.marker-name')].forEach((el,i)=>{set.call(el,names[i]||'');el.dispatchEvent(new Event('input',{bubbles:true}))})
+          const flags=[...document.querySelectorAll('.marker-flag')]
+          flags.forEach((f,i)=>{
+            const r=f.getBoundingClientRect()
+            f.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,clientX:r.left+1,clientY:r.top+5}))
+            window.dispatchEvent(new MouseEvent('mousemove',{bubbles:true,clientX:r.left+1+(i+1)*150,clientY:r.top+5}))
+            window.dispatchEvent(new MouseEvent('mouseup',{bubbles:true}))
+          })
+          const tab=[...document.querySelectorAll('.tab')].find(x=>x.textContent==='SFX'); if(tab)tab.click()
+          await sleep(600)
+          click('Booth'); await sleep(150)
+          const ta=document.querySelector('.booth-script')
+          if(ta){const ts=Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value').set;ts.call(ta,"I was in the mood for a gummy bear.\\nFunfetti or fairy floss? Can't decide!\\nPINK. FAIRY. FLOSS!");ta.dispatchEvent(new Event('input',{bubbles:true}))}
+          await sleep(400)
+          return 'staged'
+        })()`)
+        const img = await win!.webContents.capturePage()
+        fs.writeFileSync(process.env.RS_SHOOT!, img.toPNG())
+        console.log('RS_SHOOT saved', process.env.RS_SHOOT)
+      } catch (e) { console.error('RS_SHOOT failed', e) }
+      app.quit()
+    })
+  }
+}
+
+app.whenReady().then(createWindow)
+
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') {
+    app.quit()
+    win = null
+  }
+})
+
+ipcMain.handle('select-save-path', async (event, defaultName: string) => {
+  if (!win) return null
+  const { filePath } = await dialog.showSaveDialog(win, {
+    title: 'Export YouTube Video',
+    defaultPath: defaultName,
+    filters: [
+      { name: 'Video Files', extensions: ['mp4'] }
+    ]
+  })
+  return filePath
+})
+
+ipcMain.handle('reveal-file', async (_event, filePath: string) => {
+  if (filePath) shell.showItemInFolder(filePath)
+})
+
+// Generate a horizontal filmstrip (tiled frames) for a video clip's source range, for timeline previews
+ipcMain.handle('make-thumbnails', async (_event, { filePath, sourceStart, duration }: { filePath: string; sourceStart: number; duration: number }) => {
+  if (!filePath || !fs.existsSync(filePath)) return { error: 'no file' }
+  const dir = path.join(app.getPath('temp'), 'randosnap_thumbs')
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+  const out = path.join(dir, `t_${Date.now()}_${Math.random().toString(36).slice(2, 7)}.jpg`)
+  const count = 8
+  const dur = Math.max(0.5, duration)
+  const fps = Math.max(0.1, count / dur)
+  await new Promise<void>((resolve) => {
+    const p = spawn(paths.ffmpeg, ['-hide_banner', '-ss', String(sourceStart || 0), '-t', String(dur), '-i', filePath,
+      '-vf', `fps=${fps},scale=160:90:force_original_aspect_ratio=increase,crop=160:90,tile=${count}x1`, '-frames:v', '1', '-q:v', '5', '-y', out])
+    p.on('close', () => resolve())
+    p.on('error', () => resolve())
+  })
+  return fs.existsSync(out) ? { path: out } : { error: 'failed' }
+})
+
+// Decode a media file's audio to 16kHz mono float32 PCM for Whisper
+const decodePCM = (file: string) => new Promise<Float32Array>((resolve, reject) => {
+  const p = spawn(paths.ffmpeg, ['-hide_banner', '-i', file, '-ac', '1', '-ar', '16000', '-f', 'f32le', 'pipe:1'])
+  const chunks: Buffer[] = []
+  p.stdout.on('data', d => chunks.push(d))
+  p.on('close', () => { const b = Buffer.concat(chunks); resolve(new Float32Array(b.buffer, b.byteOffset, Math.floor(b.length / 4))) })
+  p.on('error', reject)
+})
+
+// Local Whisper captioning (Transformers.js + onnxruntime-node, fully on-device)
+const asrPipes: Record<string, any> = {} // cache one pipeline per model id
+ipcMain.handle('transcribe', async (_event, filePath: string, opts: any = {}) => {
+  try {
+    if (!filePath || !fs.existsSync(filePath)) return { error: 'File not found' }
+    const size = ['tiny', 'base', 'small'].includes(opts.model) ? opts.model : 'tiny'
+    const lang = opts.language || 'en'
+    const useEn = lang === 'en' // English-only models are faster + more accurate for English
+    const modelId = `Xenova/whisper-${size}${useEn ? '.en' : ''}`
+    const tf: any = await import('@huggingface/transformers')
+    tf.env.cacheDir = path.join(app.getPath('userData'), 'whisper-cache') // persist the model so it downloads once
+    if (!asrPipes[modelId]) {
+      asrPipes[modelId] = await tf.pipeline('automatic-speech-recognition', modelId, {
+        progress_callback: (p: any) => { if (win && p?.status === 'progress') win.webContents.send('transcribe-progress', { stage: 'download', pct: Math.round(p.progress || 0) }) },
+      })
+    }
+    const asr = asrPipes[modelId]
+    const audio = await decodePCM(filePath)
+    if (!audio.length) return { error: 'No audio found' }
+
+    // Process in 30s segments (Whisper's window) so we can report real progress
+    const sr = 16000, chunkSec = 30
+    const nChunks = Math.max(1, Math.ceil(audio.length / (chunkSec * sr)))
+    const genOpts: any = { return_timestamps: opts.word ? 'word' : true }
+    if (!useEn) { genOpts.task = 'transcribe'; if (lang !== 'auto') genOpts.language = lang }
+    const results: { start: number; end: number; text: string }[] = []
+    for (let i = 0; i < nChunks; i++) {
+      const seg = audio.subarray(i * chunkSec * sr, Math.min(audio.length, (i + 1) * chunkSec * sr))
+      const out = await asr(seg, genOpts)
+      const offset = i * chunkSec
+      for (const c of (out.chunks || [])) {
+        const text = (c.text || '').trim()
+        if (!text) continue
+        results.push({ start: (c.timestamp?.[0] ?? 0) + offset, end: (c.timestamp?.[1] ?? c.timestamp?.[0] ?? 0) + offset, text })
+      }
+      if (win) win.webContents.send('transcribe-progress', { stage: 'transcribe', pct: Math.round(((i + 1) / nChunks) * 100) })
+    }
+    return { chunks: results }
+  } catch (e: any) {
+    console.error('transcribe error', e)
+    return { error: e?.message || 'Transcription failed' }
+  }
+})
+
+// Render the timeline's mixed audio to a temp file (timeline-aligned) so the whole video can be captioned at once
+ipcMain.handle('render-mix-audio', async (_event, { clips }: { clips: any[] }) => {
+  clips = clips || []
+  const withAudio = clips.filter(c => c.hasAudio && c.path)
+  if (!withAudio.length) return { error: 'No audio on the timeline to caption.' }
+  const total = Math.max(...clips.map(c => c.start + c.duration))
+  const out = path.join(app.getPath('temp'), `randosnap_mix_${Date.now()}.wav`)
+  return new Promise((resolve) => {
+    const cmd = ffmpeg()
+    cmd.input(`anullsrc=channel_layout=stereo:sample_rate=48000:d=${total}`).inputFormat('lavfi')
+    const fc: string[] = []
+    const mix: string[] = ['0:a']
+    withAudio.forEach((c, i) => {
+      const idx = i + 1
+      cmd.input(c.path)
+      fc.push(`[${idx}:a]aresample=48000,volume=${c.volume ?? 1},adelay=${Math.round(c.start * 1000)}|${Math.round(c.start * 1000)}[a${idx}]`)
+      mix.push(`a${idx}`)
+    })
+    fc.push(`${mix.map(a => `[${a}]`).join('')}amix=inputs=${mix.length}:duration=first:normalize=0[m]`)
+    cmd.complexFilter(fc).map('[m]').audioFrequency(16000).audioChannels(1).outputOptions(['-t', String(total)])
+      .on('end', () => resolve({ path: out }))
+      .on('error', (e) => resolve({ error: e.message }))
+      .save(out)
+  })
+})
+
+// Run the ffmpeg binary and collect stderr (where ffmpeg writes analysis/log output)
+const runFF = (args: string[]) => new Promise<string>((resolve) => {
+  const p = spawn(paths.ffmpeg, args)
+  let err = ''
+  p.stderr.on('data', d => { err += d.toString() })
+  p.on('close', () => resolve(err))
+  p.on('error', () => resolve(err))
+})
+
+// Detect silent intervals in an audio file (for "cut dead space")
+ipcMain.handle('detect-silence', async (_event, { filePath, thresholdDb = -30, minPause = 0.8 }: { filePath: string; thresholdDb: number; minPause: number }) => {
+  if (!filePath || !fs.existsSync(filePath)) return { error: 'no file' }
+  const out = await runFF(['-hide_banner', '-i', filePath, '-af', `silencedetect=noise=${thresholdDb}dB:d=${minPause}`, '-f', 'null', '-'])
+  const intervals: { start: number; end: number }[] = []
+  const re = /silence_start:\s*(-?[\d.]+)[\s\S]*?silence_end:\s*([\d.]+)/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(out))) intervals.push({ start: Math.max(0, parseFloat(m[1])), end: parseFloat(m[2]) })
+  return { intervals }
+})
+
+// Detect visually frozen/static intervals in a video segment (dead space for silent footage)
+ipcMain.handle('detect-freeze', async (_event, { filePath, sourceStart = 0, duration, freezeDb = -50, minDur = 0.8 }: { filePath: string; sourceStart: number; duration: number; freezeDb: number; minDur: number }) => {
+  if (!filePath || !fs.existsSync(filePath)) return { error: 'no file' }
+  const args = ['-hide_banner', '-ss', String(sourceStart || 0)]
+  if (duration) args.push('-t', String(duration))
+  args.push('-i', filePath, '-vf', `freezedetect=n=${freezeDb}dB:d=${minDur}`, '-an', '-f', 'null', '-')
+  const out = await runFF(args)
+  const starts = [...out.matchAll(/freeze_start:\s*([\d.]+)/g)].map(m => parseFloat(m[1]))
+  const ends = [...out.matchAll(/freeze_end:\s*([\d.]+)/g)].map(m => parseFloat(m[1]))
+  const intervals: { start: number; end: number }[] = []
+  for (let i = 0; i < starts.length; i++) intervals.push({ start: starts[i], end: ends[i] !== undefined ? ends[i] : (duration || starts[i]) })
+  return { intervals }
+})
+
+// "Watch & Verify": analyze a rendered file for YouTube-quality issues (loudness, peaks, codec, black frames)
+// and return a report plus a filmstrip of sample frames the user can eyeball.
+ipcMain.handle('quality-check', async (_event, filePath: string) => {
+  if (!filePath || !fs.existsSync(filePath)) return { error: 'File not found' }
+  const probe: any = await new Promise(res => ffmpeg.ffprobe(filePath, (e, d) => res(e ? null : d)))
+  const v = probe?.streams?.find((s: any) => s.codec_type === 'video')
+  const a = probe?.streams?.find((s: any) => s.codec_type === 'audio')
+  const dur = probe?.format?.duration ? parseFloat(probe.format.duration) : 0
+  const fpsParts = (v?.r_frame_rate || '0/1').split('/')
+  const fps = fpsParts[1] && fpsParts[1] !== '0' ? Math.round(parseInt(fpsParts[0]) / parseInt(fpsParts[1])) : 0
+
+  // Loudness measurement (loudnorm analysis pass prints JSON)
+  const lnOut = await runFF(['-hide_banner', '-i', filePath, '-af', 'loudnorm=I=-14:TP=-1:LRA=11:print_format=json', '-f', 'null', '-'])
+  let loudness: any = {}
+  try { const m = lnOut.match(/\{[\s\S]*?\}/); if (m) { const j = JSON.parse(m[0]); loudness = { integrated: parseFloat(j.input_i), truePeak: parseFloat(j.input_tp), lra: parseFloat(j.input_lra) } } } catch {}
+
+  // Peak / clipping
+  const vdOut = await runFF(['-hide_banner', '-i', filePath, '-af', 'volumedetect', '-f', 'null', '-'])
+  const maxV = parseFloat((vdOut.match(/max_volume:\s*(-?[\d.]+) dB/) || [])[1])
+  const meanV = parseFloat((vdOut.match(/mean_volume:\s*(-?[\d.]+) dB/) || [])[1])
+
+  // Black-frame detection
+  const bdOut = await runFF(['-hide_banner', '-i', filePath, '-vf', 'blackdetect=d=0.3:pix_th=0.10', '-f', 'null', '-'])
+  const black: { start: number; end: number }[] = []
+  const bdRe = /black_start:([\d.]+) black_end:([\d.]+)/g
+  let bm: RegExpExecArray | null
+  while ((bm = bdRe.exec(bdOut))) black.push({ start: parseFloat(bm[1]), end: parseFloat(bm[2]) })
+
+  // Sample frames (filmstrip)
+  const frameDir = path.join(app.getPath('temp'), 'randosnap_qc')
+  if (fs.existsSync(frameDir)) { try { fs.rmSync(frameDir, { recursive: true, force: true }) } catch {} }
+  fs.mkdirSync(frameDir, { recursive: true })
+  const frames: { t: number; path: string }[] = []
+  const N = 6
+  for (let i = 0; i < N; i++) {
+    const t = dur * ((i + 0.5) / N)
+    const fp = path.join(frameDir, `qc_${i}.jpg`)
+    await runFF(['-hide_banner', '-ss', String(t), '-i', filePath, '-frames:v', '1', '-vf', 'scale=320:-1', '-q:v', '4', '-y', fp])
+    if (fs.existsSync(fp)) frames.push({ t, path: fp })
+  }
+
+  // Build pass/warn/fail checks against YouTube guidance
+  const checks: { label: string; status: 'pass' | 'warn' | 'fail'; detail: string }[] = []
+  const okRes = [720, 1080, 1440, 2160]
+  checks.push({ label: 'Resolution', status: v && okRes.includes(v.height) ? 'pass' : 'warn', detail: v ? `${v.width}×${v.height}` : 'no video' })
+  checks.push({ label: 'Frame rate', status: [24, 25, 30, 48, 50, 60].includes(fps) ? 'pass' : 'warn', detail: `${fps} fps` })
+  checks.push({ label: 'Video codec', status: ['h264', 'hevc', 'vp9', 'av1'].includes(v?.codec_name) ? 'pass' : 'warn', detail: v?.codec_name || '—' })
+  checks.push({ label: 'Pixel format', status: v?.pix_fmt === 'yuv420p' ? 'pass' : 'warn', detail: v?.pix_fmt || '—' })
+  checks.push({ label: 'Audio', status: a && ['aac', 'opus', 'mp3'].includes(a.codec_name) ? 'pass' : 'warn', detail: a ? `${a.codec_name} ${a.sample_rate}Hz ${a.channels}ch` : 'no audio' })
+  // faststart
+  let faststart = false
+  try { const head = fs.readFileSync(filePath).slice(0, 200000); faststart = head.indexOf('moov') >= 0 && head.indexOf('moov') < head.indexOf('mdat') } catch {}
+  checks.push({ label: 'Web fast-start', status: faststart ? 'pass' : 'warn', detail: faststart ? 'moov at front' : 'not optimized' })
+  // loudness
+  if (!isNaN(loudness.integrated)) {
+    const I = loudness.integrated
+    const st = I >= -15.5 && I <= -12.5 ? 'pass' : (I >= -18 && I <= -11 ? 'warn' : 'fail')
+    checks.push({ label: 'Loudness (target −14 LUFS)', status: st, detail: `${I.toFixed(1)} LUFS` })
+  }
+  if (!isNaN(loudness.truePeak)) {
+    const tp = loudness.truePeak
+    checks.push({ label: 'True peak (≤ −1 dBTP)', status: tp <= -1 ? 'pass' : (tp <= 0 ? 'warn' : 'fail'), detail: `${tp.toFixed(1)} dBTP` })
+  }
+  if (!isNaN(maxV)) {
+    checks.push({ label: 'Clipping', status: maxV >= 0 ? 'fail' : (maxV >= -0.3 ? 'warn' : 'pass'), detail: `max ${maxV.toFixed(1)} dB` })
+  }
+  // black frames in the body (ignore a short lead-in/out for fades)
+  const bodyBlack = black.filter(b => b.start > 0.6 && b.end < dur - 0.6 && (b.end - b.start) > 0.8)
+  checks.push({ label: 'Black/blank frames', status: bodyBlack.length ? 'warn' : 'pass', detail: bodyBlack.length ? `${bodyBlack.length} segment(s) mid-video` : 'none' })
+
+  const verdict: 'pass' | 'warn' | 'fail' = checks.some(c => c.status === 'fail') ? 'fail' : checks.some(c => c.status === 'warn') ? 'warn' : 'pass'
+  return {
+    probe: { width: v?.width, height: v?.height, fps, vcodec: v?.codec_name, pixfmt: v?.pix_fmt, acodec: a?.codec_name, sampleRate: a?.sample_rate, channels: a?.channels, duration: dur },
+    loudness, volume: { max: maxV, mean: meanV }, black, frames, checks, verdict,
+  }
+})
+
+ipcMain.handle('get-metadata', async (event, filePath: string) => {
+  return new Promise((resolve, reject) => {
+    if (!filePath) return reject(new Error('No file path provided'))
+    ffmpeg.ffprobe(filePath, (err, metadata) => {
+      if (err) {
+        console.error('ffprobe error:', err)
+        resolve({ duration: 5, hasVideo: false, hasAudio: false }) // graceful fallback for some images
+      } else {
+        const hasVideo = metadata.streams.some((s: any) => s.codec_type === 'video')
+        const hasAudio = metadata.streams.some((s: any) => s.codec_type === 'audio')
+        resolve({
+          duration: metadata.format.duration || 5,
+          hasVideo,
+          hasAudio
+        })
+      }
+    })
+  })
+})
+
+ipcMain.handle('save-recording', async (_event, base64: string) => {
+  const dir = path.join(app.getPath('temp'), 'randosnap_vo')
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+  const filePath = path.join(dir, `vo_${Date.now()}.webm`)
+  fs.writeFileSync(filePath, Buffer.from(base64, 'base64'))
+  return filePath
+})
+
+ipcMain.handle('save-project', async (_event, data: any) => {
+  if (!win) return null
+  const { filePath } = await dialog.showSaveDialog(win, {
+    title: 'Save Project', defaultPath: 'project.rsnap',
+    filters: [{ name: 'RandoSnap Project', extensions: ['rsnap', 'json'] }],
+  })
+  if (!filePath) return null
+  fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf8')
+  return filePath
+})
+
+ipcMain.handle('load-project', async () => {
+  if (!win) return null
+  const { filePaths } = await dialog.showOpenDialog(win, {
+    title: 'Open Project', properties: ['openFile'],
+    filters: [{ name: 'RandoSnap Project', extensions: ['rsnap', 'json'] }],
+  })
+  if (!filePaths || !filePaths[0]) return null
+  try { return JSON.parse(fs.readFileSync(filePaths[0], 'utf8')) } catch { return null }
+})
+
+// ---- Persistent app settings (brand kit, intro defaults, audio) ----
+const settingsPath = () => path.join(app.getPath('userData'), 'randosnap-settings.json')
+const DEFAULT_SETTINGS = {
+  brand: { enabled: false, logoPath: null as string | null, position: 'br', sizePct: 16, margin: 40, opacity: 0.85, showMode: 'whole' as 'whole' | 'intro' | 'outro', windowSec: 5, fade: 0.5 },
+  intro: { segment: 'first' as 'first' | 'last', seconds: 5, fade: 0.6, treatment: 'ripple' as 'ripple' | 'overlay' },
+  audio: { optimize: true, noiseReduction: false },
+  caption: { fontSize: 44, color: '#ffffff', position: 'lower' as 'lower' | 'top' | 'center', box: true, boxOpacity: 0.5, model: 'tiny' as 'tiny' | 'base' | 'small', language: 'en', mode: 'phrase' as 'phrase' | 'word' },
+  silence: { minPause: 0.8, thresholdDb: -30, pad: 0.12, smooth: true, transition: 0.12, detectBy: 'auto' as 'auto' | 'audio' | 'motion', freezeDb: -50 },
+}
+
+ipcMain.handle('get-settings', async () => {
+  try {
+    const raw = JSON.parse(fs.readFileSync(settingsPath(), 'utf8'))
+    return { brand: { ...DEFAULT_SETTINGS.brand, ...raw.brand }, intro: { ...DEFAULT_SETTINGS.intro, ...raw.intro }, audio: { ...DEFAULT_SETTINGS.audio, ...raw.audio }, caption: { ...DEFAULT_SETTINGS.caption, ...raw.caption }, silence: { ...DEFAULT_SETTINGS.silence, ...raw.silence } }
+  } catch { return DEFAULT_SETTINGS }
+})
+
+ipcMain.handle('set-settings', async (_event, data: any) => {
+  try { fs.writeFileSync(settingsPath(), JSON.stringify(data, null, 2), 'utf8'); return true } catch { return false }
+})
+
+ipcMain.handle('pick-logo', async () => {
+  if (!win) return null
+  const { filePaths } = await dialog.showOpenDialog(win, {
+    title: 'Choose Logo (PNG with transparency recommended)', properties: ['openFile'],
+    filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp'] }],
+  })
+  if (!filePaths || !filePaths[0]) return null
+  const dir = path.join(app.getPath('userData'), 'brand')
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+  const dest = path.join(dir, `logo_${Date.now()}${path.extname(filePaths[0])}`)
+  fs.copyFileSync(filePaths[0], dest) // copy so the logo persists even if the original moves
+  return dest
+})
+
+// Escape a path or string for use inside an ffmpeg filtergraph option
+const escFilter = (s: string) => s.replace(/\\/g, '/').replace(/:/g, '\\:').replace(/'/g, "\\'")
+// Build a piecewise-linear volume expression (eval=frame) from automation points.
+// pts: [{t: secondsFromClipStart, v: gain}], clipStart shifts to absolute timeline time.
+const volumeExpr = (pts: { t: number; v: number }[], clipStart: number, clipVol: number) => {
+  if (!pts || pts.length === 0) return null
+  const P = pts.slice().sort((a, b) => a.t - b.t).map(p => ({ a: clipStart + p.t, v: p.v }))
+  let expr = `${P[P.length - 1].v}`
+  for (let i = P.length - 1; i > 0; i--) {
+    const p0 = P[i - 1], p1 = P[i]
+    const span = (p1.a - p0.a) || 0.0001
+    const seg = `(${p0.v}+(${p1.v}-${p0.v})*(t-${p0.a})/${span})`
+    expr = `if(lt(t\\,${p1.a})\\,${seg}\\,${expr})`
+  }
+  expr = `if(lt(t\\,${P[0].a})\\,${P[0].v}\\,${expr})`
+  return expr
+}
+// Build a 0..1 alpha expression with optional fade in/out for drawtext
+const alphaExpr = (start: number, end: number, fi: number, fo: number) => {
+  if (fi <= 0 && fo <= 0) return '1'
+  const inE = fi > 0 ? `min(1\\,(t-${start})/${fi})` : '1'
+  const outE = fo > 0 ? `min(1\\,(${end}-t)/${fo})` : '1'
+  return `max(0\\,min(${inE}\\,${outE}))`
+}
+
+// ---------------- SFX library ----------------
+// A set of classic cartoon/UI sound effects synthesized with ffmpeg (no downloads, no licensing).
+// Generated once into userData/sfx on first request. Users can drop extra .wav/.mp3 files into
+// userData/sfx/custom and they appear in the same list.
+const SFX_RECIPES: Record<string, { d: number; graph: string }> = {
+  whoosh: { d: 0.5, graph: `anoisesrc=d=0.5:c=pink:a=0.6,highpass=f=300,lowpass=f=4500,afade=t=in:d=0.18,afade=t=out:st=0.24:d=0.26,volume=0.7[a]` },
+  pop: { d: 0.25, graph: `aevalsrc='0.8*sin(2*PI*880*t)*exp(-t*34)+0.5*sin(2*PI*1760*t)*exp(-t*55)':d=0.25:s=48000,alimiter=limit=0.95[a]` },
+  boing: { d: 0.8, graph: `aevalsrc='0.55*sin(2*PI*(150+520*(1-exp(-t*7)))*t+5*sin(2*PI*7*t))*exp(-t*1.6)':d=0.8:s=48000[a]` },
+  squish: { d: 0.34, graph: `aevalsrc='0.5*sin(2*PI*(360-260*t/0.34)*t)*exp(-t*4)':d=0.34:s=48000[s];anoisesrc=d=0.34:c=brown:a=0.4,lowpass=f=1600,volume=0.5[n];[s][n]amix=inputs=2:normalize=0,alimiter=limit=0.9[a]` },
+  'gummy-squish': { d: 0.45, graph: `aevalsrc='0.5*sin(2*PI*(210-110*t/0.45)*t+3.5*sin(2*PI*9*t))*exp(-t*5)':d=0.45:s=48000[w];anoisesrc=d=0.45:c=brown:a=0.5,bandpass=f=700:w=500,afade=t=in:d=0.04,afade=t=out:st=0.2:d=0.25,volume=0.45[n];[w][n]amix=inputs=2:normalize=0,alimiter=limit=0.9[a]` },
+  gloop: { d: 1.0, graph: `aevalsrc='0.55*sin(2*PI*(150-70*t/0.9)*t+4.5*sin(2*PI*5.5*t))*exp(-t*2.2)':d=1:s=48000[g];aevalsrc='0.4*sin(2*PI*300*t)*exp(-t*30)':d=1:s=48000,adelay=140|140[b1];aevalsrc='0.35*sin(2*PI*380*t)*exp(-t*32)':d=1:s=48000,adelay=520|520[b2];anoisesrc=d=1:c=brown:a=0.5,lowpass=f=420,afade=t=out:st=0.5:d=0.5,volume=0.5[r];[g][b1][b2][r]amix=inputs=4:normalize=0,lowpass=f=750,alimiter=limit=0.9[a]` },
+  poof: { d: 0.5, graph: `aevalsrc='0.65*sin(2*PI*(105-40*t/0.5)*t)*exp(-t*9)':d=0.5:s=48000[t];anoisesrc=d=0.5:c=pink:a=0.55,lowpass=f=900,afade=t=in:d=0.015,afade=t=out:st=0.08:d=0.4,volume=0.55[p];[t][p]amix=inputs=2:normalize=0,lowpass=f=2200,alimiter=limit=0.9[a]` },
+  spoosh: { d: 0.9, graph: `anoisesrc=d=0.9:c=white:a=0.8,highpass=f=380,lowpass=f=9500,afade=t=in:d=0.012,afade=t=out:st=0.12:d=0.75,volume=0.9[s];anoisesrc=d=0.9:c=pink:a=0.7,highpass=f=1800,afade=t=out:st=0.05:d=0.3,volume=0.5[c];aevalsrc='0.4*sin(2*PI*95*t)*exp(-t*16)':d=0.9:s=48000[b];[s][c][b]amix=inputs=3:normalize=0,alimiter=limit=0.9[a]` },
+  sparkle: { d: 1.0, graph: `aevalsrc='0.25*(sin(2*PI*2637*t)+sin(2*PI*3520*t)+sin(2*PI*5274*t))*exp(-t*3.2)*(0.6+0.4*sin(2*PI*18*t))':d=1:s=48000[a]` },
+  party: { d: 1.4, graph: `aevalsrc='0.7*sin(2*PI*760*t)*exp(-t*30)':d=1.4:s=48000[p];aevalsrc='0.35*(sin(2*PI*(300+700*t/0.35)*t)+0.5*sin(2*PI*2*(300+700*t/0.35)*t))*exp(-t*2.5)':d=1.4:s=48000[h];aevalsrc='0.22*(sin(2*PI*2637*t)+sin(2*PI*3951*t))*exp(-max(0,t-0.15)*3)*(0.5+0.5*sin(2*PI*16*t))':d=1.4:s=48000[k];[p][h][k]amix=inputs=3:normalize=0,alimiter=limit=0.95[a]` },
+  riser: { d: 1.2, graph: `aevalsrc='0.4*sin(2*PI*(120+900*t*t/1.44)*t)':d=1.2:s=48000,afade=t=in:d=0.5,afade=t=out:st=1.05:d=0.15[t];anoisesrc=d=1.2:c=pink:a=0.5,highpass=f=500,afade=t=in:d=1.0,volume=0.4[n];[t][n]amix=inputs=2:normalize=0,alimiter=limit=0.9[a]` },
+  ding: { d: 0.8, graph: `aevalsrc='0.5*sin(2*PI*1318.5*t)*exp(-t*5)+0.25*sin(2*PI*2637*t)*exp(-t*7)':d=0.8:s=48000[a]` },
+  thud: { d: 0.4, graph: `aevalsrc='0.8*sin(2*PI*(90-30*t)*t)*exp(-t*11)':d=0.4:s=48000[t];anoisesrc=d=0.4:c=brown:a=0.4,lowpass=f=300,afade=t=out:st=0.05:d=0.3,volume=0.4[n];[t][n]amix=inputs=2:normalize=0,alimiter=limit=0.9[a]` },
+}
+
+const sfxDir = () => path.join(app.getPath('userData'), 'sfx')
+const genSfx = (name: string, recipe: { d: number; graph: string }) => new Promise<string>((resolve, reject) => {
+  const out = path.join(sfxDir(), `${name}.wav`)
+  if (fs.existsSync(out)) return resolve(out)
+  const proc = spawn(paths.ffmpeg, ['-y', '-hide_banner', '-loglevel', 'error', '-filter_complex', recipe.graph, '-map', '[a]', '-ar', '48000', '-ac', '2', out])
+  proc.on('close', code => code === 0 ? resolve(out) : reject(new Error(`sfx ${name} failed (${code})`)))
+  proc.on('error', reject)
+})
+
+// Returns the full SFX list, generating the built-ins on first call.
+// Custom user sounds: drop .wav/.mp3 into <userData>/sfx/custom
+ipcMain.handle('sfx-library', async () => {
+  const dir = sfxDir()
+  const custom = path.join(dir, 'custom')
+  fs.mkdirSync(custom, { recursive: true })
+  const items: { name: string; path: string; duration: number; builtin: boolean }[] = []
+  for (const [name, recipe] of Object.entries(SFX_RECIPES)) {
+    try { items.push({ name, path: await genSfx(name, recipe), duration: recipe.d, builtin: true }) }
+    catch (e) { console.error(e) }
+  }
+  for (const f of fs.readdirSync(custom)) {
+    if (!/\.(wav|mp3|ogg|m4a|flac)$/i.test(f)) continue
+    const p = path.join(custom, f)
+    const duration = await new Promise<number>(res => ffmpeg.ffprobe(p, (err, data) => res(err ? 1 : (data.format.duration || 1))))
+    items.push({ name: f.replace(/\.[^.]+$/, ''), path: p, duration, builtin: false })
+  }
+  return { dir: custom, items }
+})
+
+ipcMain.handle('open-sfx-folder', async () => {
+  const custom = path.join(sfxDir(), 'custom')
+  fs.mkdirSync(custom, { recursive: true })
+  shell.openPath(custom)
+})
+
+// ---------------- Voice clone (external tool adapter) ----------------
+// Runs a user-configured narration command (e.g. an XTTS clone_voice.py wrapper).
+// Template placeholders: {script} -> path of a temp file holding the script text (one line per scene),
+// {outdir} -> a fresh output dir. When the command exits, every .wav in {outdir} (sorted naturally)
+// is returned so the renderer can place them on the timeline.
+ipcMain.handle('voice-clone', async (_event, { command, scriptText }: { command: string; scriptText: string }) => {
+  if (!command || !command.trim()) return { error: 'No narration command configured (Settings → Narration).' }
+  if (!scriptText || !scriptText.trim()) return { error: 'Script is empty.' }
+  const workDir = path.join(app.getPath('userData'), 'narration', String(Date.now()))
+  fs.mkdirSync(workDir, { recursive: true })
+  const scriptFile = path.join(workDir, 'script.txt')
+  fs.writeFileSync(scriptFile, scriptText.trim() + '\n', 'utf8')
+  const outDir = path.join(workDir, 'out')
+  fs.mkdirSync(outDir, { recursive: true })
+  const cmd = command.replace(/\{script\}/g, `"${scriptFile}"`).replace(/\{outdir\}/g, `"${outDir}"`)
+  return new Promise(resolve => {
+    const proc = spawn(cmd, { shell: true, windowsHide: true })
+    let log = ''
+    proc.stdout?.on('data', d => { log += d; if (win) win.webContents.send('voice-clone-progress', String(d)) })
+    proc.stderr?.on('data', d => { log += d; if (win) win.webContents.send('voice-clone-progress', String(d)) })
+    proc.on('close', code => {
+      const wavs = fs.existsSync(outDir)
+        ? fs.readdirSync(outDir).filter(f => /\.wav$/i.test(f))
+            .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+            .map(f => path.join(outDir, f))
+        : []
+      if (!wavs.length) resolve({ error: `Command finished (code ${code}) but produced no .wav files in {outdir}.`, log: log.slice(-2000) })
+      else resolve({ files: wavs, log: log.slice(-2000) })
+    })
+    proc.on('error', err => resolve({ error: String(err), log: log.slice(-2000) }))
+  })
+})
+
+ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outputPath, settings }: { clips: any[], texts: any[], brand: any, audio: any, outputPath: string, settings: any }) => {
+  return new Promise((resolve, reject) => {
+    clips = clips || []
+    texts = texts || []
+    audio = audio || { optimize: settings?.normalizeAudio !== false, noiseReduction: false }
+    if (clips.length === 0 && texts.length === 0) return reject('Nothing to export')
+
+    const W = Math.round(settings?.width) || 1920
+    const H = Math.round(settings?.height) || 1080
+    const FPS = [24, 30, 60].includes(settings?.fps) ? settings.fps : 30
+    const master = typeof settings?.masterVolume === 'number' ? settings.masterVolume : 1
+    const fontFile = escFilter(path.join(process.env.WINDIR || 'C:/Windows', 'Fonts', 'arial.ttf'))
+    const ends = [...clips.map(c => c.start + c.duration), ...texts.map(t => t.start + t.duration)]
+    const totalDuration = ends.length ? Math.max(...ends) : 1
+
+    const tmpDir = path.join(app.getPath('temp'), 'randosnap_text')
+    if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true })
+
+    let command = ffmpeg()
+    // 0: black base video at target resolution/fps, 1: silent base audio at 48kHz (YouTube spec)
+    command.input(`color=c=black:s=${W}x${H}:r=${FPS}:d=${totalDuration}`).inputFormat('lavfi')
+    command.input(`anullsrc=channel_layout=stereo:sample_rate=48000:d=${totalDuration}`).inputFormat('lavfi')
+
+    const filterComplex: string[] = []
+    let currentVOut = '0:v'
+    const audioMixInputs: string[] = ['1:a']
+
+    clips.forEach((clip, i) => {
+      const idx = i + 2
+      const end = clip.start + clip.duration
+      if (clip.type === 'image') {
+        command.input(clip.path).inputOptions([`-loop 1`, `-t ${clip.duration}`])
+      } else {
+        command.input(clip.path)
+      }
+
+      if (clip.hasVideo || clip.type === 'image') {
+        // Fit into frame with transparent padding so overlapping clips can crossfade through each other
+        let v = `[${idx}:v]format=yuva420p,scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=0x00000000,setpts=PTS-STARTPTS+${clip.start}/TB`
+        if (clip.fadeIn > 0) v += `,fade=t=in:st=${clip.start}:d=${clip.fadeIn}:alpha=1`
+        if (clip.fadeOut > 0) v += `,fade=t=out:st=${(end - clip.fadeOut).toFixed(3)}:d=${clip.fadeOut}:alpha=1`
+        filterComplex.push(`${v}[v_scaled_${idx}]`)
+        filterComplex.push(`[${currentVOut}][v_scaled_${idx}]overlay=enable='between(t,${clip.start},${end})':eof_action=pass[v_out_${idx}]`)
+        currentVOut = `v_out_${idx}`
+      }
+
+      if (clip.hasAudio) {
+        const vExpr = volumeExpr(clip.volumePoints, clip.start, clip.volume ?? 1.0)
+        let a = `[${idx}:a]aresample=48000,adelay=${Math.round(clip.start * 1000)}|${Math.round(clip.start * 1000)}`
+        // Volume automation (graph) takes precedence over the flat per-clip volume
+        a += vExpr ? `,volume='${vExpr}':eval=frame` : `,volume=${clip.volume ?? 1.0}`
+        if (clip.fadeIn > 0) a += `,afade=t=in:st=${clip.start}:d=${clip.fadeIn}`
+        if (clip.fadeOut > 0) a += `,afade=t=out:st=${(end - clip.fadeOut).toFixed(3)}:d=${clip.fadeOut}`
+        filterComplex.push(`${a}[a_delayed_${idx}]`)
+        audioMixInputs.push(`a_delayed_${idx}`)
+      }
+    })
+
+    // Burn in text overlays on top of the video chain
+    texts.forEach((t, i) => {
+      const end = t.start + t.duration
+      const txtFile = path.join(tmpDir, `t_${i}_${Date.now()}.txt`)
+      fs.writeFileSync(txtFile, String(t.text ?? ''), 'utf8')
+      const color = `0x${(t.color || '#ffffff').replace('#', '')}`
+      const size = Math.max(8, Math.round((t.fontSize / 1080) * H))
+      const dt = [
+        `fontfile='${fontFile}'`,
+        `textfile='${escFilter(txtFile)}'`,
+        `fontcolor=${color}`,
+        `fontsize=${size}`,
+        `x=${Math.round(t.x * W)}-text_w/2`,
+        `y=${Math.round(t.y * H)}-text_h/2`,
+        ...(t.box ? [`box=1`, `boxcolor=black@${typeof t.boxOpacity === 'number' ? t.boxOpacity : 0.5}`, `boxborderw=${Math.round(size * 0.25)}`] : [`box=0`]),
+        `enable='between(t,${t.start},${end})'`,
+        `alpha='${alphaExpr(t.start, end, t.fadeIn || 0, t.fadeOut || 0)}'`,
+      ].join(':')
+      filterComplex.push(`[${currentVOut}]drawtext=${dt}[v_txt_${i}]`)
+      currentVOut = `v_txt_${i}`
+    })
+
+    // Brand logo / outro watermark (applied on top of everything) — from persistent settings
+    if (brand && brand.enabled && brand.logoPath && fs.existsSync(brand.logoPath)) {
+      const logoIdx = 2 + clips.length
+      command.input(brand.logoPath).inputOptions(['-loop 1', '-t', String(totalDuration)])
+      const m = Math.round((brand.margin ?? 40) / 1080 * H)
+      const logoW = Math.max(16, Math.round((brand.sizePct ?? 16) / 100 * W))
+      const op = typeof brand.opacity === 'number' ? brand.opacity : 0.85
+      const fade = brand.fade ?? 0.5
+      let s = 0, e = totalDuration
+      if (brand.showMode === 'intro') { s = 0; e = Math.min(totalDuration, brand.windowSec ?? 5) }
+      else if (brand.showMode === 'outro') { s = Math.max(0, totalDuration - (brand.windowSec ?? 5)); e = totalDuration }
+      const posMap: Record<string, string> = {
+        tl: `${m}:${m}`,
+        tr: `main_w-overlay_w-${m}:${m}`,
+        bl: `${m}:main_h-overlay_h-${m}`,
+        br: `main_w-overlay_w-${m}:main_h-overlay_h-${m}`,
+        center: `(main_w-overlay_w)/2:(main_h-overlay_h)/2`,
+      }
+      let lf = `[${logoIdx}:v]format=rgba,scale=${logoW}:-1,colorchannelmixer=aa=${op}`
+      if (fade > 0) { lf += `,fade=t=in:st=${s}:d=${fade}:alpha=1,fade=t=out:st=${(e - fade).toFixed(3)}:d=${fade}:alpha=1` }
+      filterComplex.push(`${lf}[logo]`)
+      filterComplex.push(`[${currentVOut}][logo]overlay=${posMap[brand.position] || posMap.br}:enable='between(t,${s},${e})'[v_brand]`)
+      currentVOut = 'v_brand'
+    }
+
+    // Audio: mix (normalize=0 so per-clip volumes are honored) → denoise → master gain → loudness optimize
+    if (audioMixInputs.length > 1) {
+      filterComplex.push(`${audioMixInputs.map(a => `[${a}]`).join('')}amix=inputs=${audioMixInputs.length}:duration=first:dropout_transition=0:normalize=0[amixed]`)
+      let chain = '[amixed]'
+      if (audio.noiseReduction) { filterComplex.push(`${chain}highpass=f=80,afftdn=nf=-25[aclean]`); chain = '[aclean]' }
+      filterComplex.push(`${chain}volume=${master}[amaster]`)
+      // "Loud for YouTube" master: compress dynamics for higher perceived loudness, then land at -13 LUFS / -1 dBTP
+      // (the loud end of YouTube's window, tighter LRA=7 = denser/punchier). Falls back to a safety limiter when optimize is off.
+      filterComplex.push(audio.optimize
+        ? `[amaster]acompressor=threshold=-18dB:ratio=3:attack=20:release=250:makeup=3,loudnorm=I=-13:LRA=7:TP=-1.0[aout]`
+        : `[amaster]alimiter=limit=0.97[aout]`)
+    } else {
+      filterComplex.push(`[1:a]volume=${master}[aout]`)
+    }
+
+    command
+      .complexFilter(filterComplex)
+      .map(`[${currentVOut}]`)
+      .map(`[aout]`)
+      .videoCodec('libx264')
+      .audioCodec('aac')
+      .audioBitrate('384k')
+      .audioFrequency(48000)
+      .audioChannels(2)
+      .outputOptions([
+        // x264 tuned for YouTube: High profile, fixed 2s closed GOP, BT.709 SDR color
+        '-preset', settings?.quality === 'high' ? 'medium' : 'fast',
+        '-crf', settings?.quality === 'high' ? '17' : '20',
+        '-profile:v', 'high',
+        '-pix_fmt', 'yuv420p',
+        '-r', String(FPS),
+        '-g', String(FPS * 2),
+        '-keyint_min', String(FPS * 2),
+        '-sc_threshold', '0',
+        '-colorspace', 'bt709', '-color_primaries', 'bt709', '-color_trc', 'bt709',
+        '-movflags', '+faststart',
+        '-t', totalDuration.toString(),
+      ])
+      .on('start', (cmd) => console.log('FFmpeg started:', cmd))
+      .on('progress', (progress) => { if (win) win.webContents.send('export-progress', progress.percent) })
+      .on('end', () => resolve({ success: true }))
+      .on('error', (err) => { console.error('FFmpeg error:', err); reject(err) })
+      .save(outputPath)
+  })
+})

@@ -1,0 +1,1302 @@
+import { useState, useRef, useEffect, useCallback } from 'react'
+import './App.css'
+import { SfxPanel, MarkerPanel, KaraokeBooth, NarrationModal, newMarker, type Marker, type SfxItem } from './extras'
+
+interface MediaFile {
+  id: string
+  name: string
+  path: string
+  type: 'video' | 'audio' | 'image'
+  duration: number
+  hasVideo: boolean
+  hasAudio: boolean
+}
+
+interface TimelineClip {
+  id: string
+  mediaId: string
+  type: 'video' | 'audio' | 'image'
+  trackId: 'v1' | 'a1' | 'a2'   // video · voice/music · SFX
+  start: number       // seconds on timeline
+  duration: number    // seconds
+  sourceStart: number // seconds into source
+  volume: number      // 0.0 - 2.0 (flat gain when no automation points)
+  fadeIn: number      // seconds
+  fadeOut: number     // seconds
+  volumePoints?: { t: number; v: number }[] // automation: t = seconds from clip start, v = gain 0..2
+}
+
+interface AppSettings {
+  brand: { enabled: boolean; logoPath: string | null; position: 'tl' | 'tr' | 'bl' | 'br' | 'center'; sizePct: number; margin: number; opacity: number; showMode: 'whole' | 'intro' | 'outro'; windowSec: number; fade: number }
+  intro: { segment: 'first' | 'last'; seconds: number; fade: number; treatment: 'ripple' | 'overlay' }
+  audio: { optimize: boolean; noiseReduction: boolean }
+  caption: { fontSize: number; color: string; position: 'lower' | 'top' | 'center'; box: boolean; boxOpacity: number; model: 'tiny' | 'base' | 'small'; language: string; mode: 'phrase' | 'word' }
+  silence: { minPause: number; thresholdDb: number; pad: number; smooth: boolean; transition: number; detectBy: 'auto' | 'audio' | 'motion'; freezeDb: number }
+  narration: { command: string }
+}
+
+const DEFAULT_SETTINGS: AppSettings = {
+  brand: { enabled: false, logoPath: null, position: 'br', sizePct: 16, margin: 40, opacity: 0.85, showMode: 'whole', windowSec: 5, fade: 0.5 },
+  intro: { segment: 'first', seconds: 5, fade: 0.6, treatment: 'ripple' },
+  audio: { optimize: true, noiseReduction: false },
+  caption: { fontSize: 44, color: '#ffffff', position: 'lower', box: true, boxOpacity: 0.5, model: 'tiny', language: 'en', mode: 'phrase' },
+  silence: { minPause: 0.8, thresholdDb: -30, pad: 0.12, smooth: true, transition: 0.12, detectBy: 'auto', freezeDb: -50 },
+  narration: { command: '' },
+}
+
+const CAPTION_LANGS: [string, string][] = [['en', 'English (fast)'], ['auto', 'Auto-detect'], ['es', 'Spanish'], ['fr', 'French'], ['de', 'German'], ['pt', 'Portuguese'], ['hi', 'Hindi'], ['ja', 'Japanese'], ['zh', 'Chinese'], ['ko', 'Korean'], ['it', 'Italian']]
+
+const CAPTION_Y: Record<'lower' | 'top' | 'center', number> = { lower: 0.86, top: 0.12, center: 0.5 }
+
+interface TextClip {
+  id: string
+  text: string
+  start: number
+  duration: number
+  x: number           // 0..1 relative to frame
+  y: number           // 0..1
+  fontSize: number    // px referenced at 1080p height
+  color: string
+  fadeIn: number
+  fadeOut: number
+  box?: boolean       // background bar behind text
+  boxOpacity?: number // 0..1
+}
+
+type OrientationKey = 'landscape' | 'portrait' | 'square'
+type ResolutionKey = '4K' | '1440p' | '1080p' | '720p'
+
+const ORIENTATIONS: Record<OrientationKey, { label: string; sub: string; ratio: number; dims: Record<ResolutionKey, [number, number]> }> = {
+  landscape: { label: 'Landscape', sub: '16:9', ratio: 16 / 9, dims: { '4K': [3840, 2160], '1440p': [2560, 1440], '1080p': [1920, 1080], '720p': [1280, 720] } },
+  portrait:  { label: 'Portrait',  sub: '9:16', ratio: 9 / 16, dims: { '4K': [2160, 3840], '1440p': [1440, 2560], '1080p': [1080, 1920], '720p': [720, 1280] } },
+  square:    { label: 'Square',    sub: '1:1',  ratio: 1,      dims: { '4K': [2160, 2160], '1440p': [1440, 1440], '1080p': [1080, 1080], '720p': [720, 720] } },
+}
+
+// Icons
+const IconExport = () => <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+const IconPlus = () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+const IconAudio = () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+const IconFolder = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>
+const IconScissors = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><line x1="20" y1="4" x2="8.12" y2="15.88"/><line x1="14.47" y1="14.48" x2="20" y2="20"/><line x1="8.12" y1="8.12" x2="12" y2="12"/></svg>
+const IconTrash = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+const IconPlay = () => <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M8 5v14l11-7z"/></svg>
+const IconPause = () => <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M6 4h4v16H6zM14 4h4v16h-4z"/></svg>
+const IconText = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 7V4h16v3M9 20h6M12 4v16"/></svg>
+const IconMic = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v3"/></svg>
+const IconExpand = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>
+const IconVolume = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 5 6 9H2v6h4l5 4V5Z"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
+const IconUndo = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"/></svg>
+const IconRedo = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 7v6h-6"/><path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3L21 13"/></svg>
+const IconChevron = ({ open }: { open: boolean }) => <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" style={{ transform: open ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 0.15s' }}><path d="m9 18 6-6-6-6"/></svg>
+const IconCaptions = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M7 13h2M7 10h2M13 10h4M13 13h4"/></svg>
+const IconGear = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg>
+
+// Inline volume-automation editor: draggable line of gain points over a clip's duration.
+function VolumeGraph({ points, duration, base, onChange }: { points: { t: number; v: number }[]; duration: number; base: number; onChange: (pts: { t: number; v: number }[]) => void }) {
+  const ref = useRef<SVGSVGElement>(null)
+  const W = 240, H = 90
+  const pts = points.length ? [...points].sort((a, b) => a.t - b.t) : []
+  const toX = (t: number) => (t / Math.max(0.001, duration)) * W
+  const toY = (v: number) => H - (v / 2) * H
+  const fromEvt = (e: MouseEvent | React.MouseEvent) => {
+    const r = ref.current!.getBoundingClientRect()
+    const t = clamp(((e.clientX - r.left) / r.width) * duration, 0, duration)
+    const v = clamp((1 - (e.clientY - r.top) / r.height) * 2, 0, 2)
+    return { t, v }
+  }
+  const addPoint = (e: React.MouseEvent) => {
+    if ((e.target as HTMLElement).tagName === 'circle') return
+    const p = fromEvt(e)
+    onChange([...pts, p].sort((a, b) => a.t - b.t))
+  }
+  const dragPoint = (e: React.MouseEvent, i: number) => {
+    e.stopPropagation()
+    const move = (m: MouseEvent) => {
+      const p = fromEvt(m)
+      const next = pts.map((x, j) => j === i ? p : x).sort((a, b) => a.t - b.t)
+      onChange(next)
+    }
+    const up = () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up) }
+    window.addEventListener('mousemove', move); window.addEventListener('mouseup', up)
+  }
+  const line = pts.length
+    ? `M ${toX(0)} ${toY(pts[0].v)} ` + pts.map(p => `L ${toX(p.t)} ${toY(p.v)}`).join(' ') + ` L ${toX(duration)} ${toY(pts[pts.length - 1].v)}`
+    : `M 0 ${toY(base)} L ${W} ${toY(base)}`
+  return (
+    <svg ref={ref} className="vol-graph" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" onClick={addPoint}>
+      <line x1="0" y1={toY(1)} x2={W} y2={toY(1)} className="vg-unity" />
+      <path d={line} className="vg-line" />
+      {pts.map((p, i) => (
+        <circle key={i} cx={toX(p.t)} cy={toY(p.v)} r="5" className="vg-pt" onMouseDown={(e) => dragPoint(e, i)} onDoubleClick={(e) => { e.stopPropagation(); onChange(pts.filter((_, j) => j !== i)) }} />
+      ))}
+    </svg>
+  )
+}
+
+const rid = () => Math.random().toString(36).substr(2, 9)
+const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v))
+// Build a VALID file:// URL from a Windows path. Backslashes -> forward slashes, and every
+// segment after the drive letter is percent-encoded (so spaces like "Claude Play" and #/? work).
+const fileUrl = (p?: string | null) => p
+  ? 'file:///' + p.replace(/\\/g, '/').split('/').map((seg, i) => i === 0 ? seg : encodeURIComponent(seg)).join('/')
+  : ''
+const fmt = (s: number) => `${Math.floor(s / 60)}:${Math.floor(s % 60).toString().padStart(2, '0')}.${Math.floor((s % 1) * 10)}`
+const fmtEta = (s: number) => s >= 60 ? `${Math.floor(s / 60)}:${Math.floor(s % 60).toString().padStart(2, '0')}` : `${Math.ceil(s)}s`
+
+// Opacity of a clip at time t given its fades (used for preview + mirrors export)
+function fadeFactor(c: { start: number; duration: number; fadeIn: number; fadeOut: number }, t: number) {
+  const into = t - c.start
+  const toEnd = c.start + c.duration - t
+  let o = 1
+  if (c.fadeIn > 0) o = Math.min(o, into / c.fadeIn)
+  if (c.fadeOut > 0) o = Math.min(o, toEnd / c.fadeOut)
+  return clamp(o, 0, 1)
+}
+
+// Interpolated gain at an absolute time, following the clip's volume automation line.
+function gainAt(c: TimelineClip, tAbs: number) {
+  const pts = c.volumePoints
+  if (!pts || pts.length === 0) return c.volume ?? 1
+  const rel = tAbs - c.start
+  const P = [...pts].sort((a, b) => a.t - b.t)
+  if (rel <= P[0].t) return P[0].v
+  if (rel >= P[P.length - 1].t) return P[P.length - 1].v
+  for (let i = 1; i < P.length; i++) {
+    if (rel <= P[i].t) { const a = P[i - 1], b = P[i]; const f = (rel - a.t) / ((b.t - a.t) || 1); return a.v + (b.v - a.v) * f }
+  }
+  return c.volume ?? 1
+}
+
+// Remove timeline range [s,e] and ripple everything after it left. Used to cut silent dead space.
+// If `transition` > 0, surviving edges get a short fade for a smoother seam.
+function removeRange(clips: TimelineClip[], texts: TextClip[], s: number, e: number, transition: number) {
+  const len = e - s
+  const td = Math.max(0, Math.min(transition, len, 0.3))
+  const outClips: TimelineClip[] = []
+  for (const c of clips) {
+    const cs = c.start, ce = c.start + c.duration
+    if (ce <= s) { outClips.push(c); continue }
+    if (cs >= e) { outClips.push({ ...c, start: cs - len }); continue }
+    const left = s - cs, right = ce - e
+    if (left > 0.05) outClips.push({ ...c, duration: left, fadeOut: td > 0 ? td : c.fadeOut })
+    if (right > 0.05) outClips.push({ ...c, id: rid(), start: s, duration: right, sourceStart: c.sourceStart + (e - cs), fadeIn: td > 0 ? td : c.fadeIn, volumePoints: undefined })
+  }
+  const outTexts: TextClip[] = []
+  for (const t of texts) {
+    const ts = t.start, te = t.start + t.duration
+    if (te <= s) { outTexts.push(t); continue }
+    if (ts >= e) { outTexts.push({ ...t, start: ts - len }); continue }
+    const left = s - ts, right = te - e
+    if (left > 0.05) outTexts.push({ ...t, duration: left })
+    if (right > 0.05) outTexts.push({ ...t, id: rid(), start: s, duration: right })
+  }
+  return { clips: outClips, texts: outTexts }
+}
+
+function App() {
+  if (!window.ipcRenderer) {
+    return (
+      <div style={{ background: '#131314', color: '#ffb4ab', height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', textAlign: 'center', padding: '20px' }}>
+        <div><h1>Bridge Error</h1><p>Electron IPC bridge (window.ipcRenderer) is missing.</p></div>
+      </div>
+    )
+  }
+
+  const [mediaBin, setMediaBin] = useState<MediaFile[]>([])
+  const [clips, setClips] = useState<TimelineClip[]>([])
+  const [texts, setTexts] = useState<TextClip[]>([])
+  const [currentTime, setCurrentTime] = useState(0)
+  const [isPlaying, setIsPlaying] = useState(false)
+  const [exportProgress, setExportProgress] = useState<number | null>(null)
+
+  const [selectedId, setSelectedId] = useState<string | null>(null) // clip or text id
+  const [orientation, setOrientation] = useState<OrientationKey>('landscape')
+  const [resolution, setResolution] = useState<ResolutionKey>('1080p')
+  const [fps, setFps] = useState<24 | 30 | 60>(30)
+  const [masterVolume, setMasterVolume] = useState(1)
+  const [customExportPath, setCustomExportPath] = useState<string | null>(null)
+  const [exportQuality, setExportQuality] = useState<'medium' | 'high'>('high')
+  const [lastExport, setLastExport] = useState<string | null>(null)
+  const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS)
+  const [showSettings, setShowSettings] = useState(false)
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; mediaId: string } | null>(null)
+  const [qcReport, setQcReport] = useState<any>(null)
+  const [qcRunning, setQcRunning] = useState(false)
+  const [showQC, setShowQC] = useState(false)
+  const [captioning, setCaptioning] = useState<string | null>(null) // status text while transcribing
+  const [captionPct, setCaptionPct] = useState<number | null>(null)
+  const [thumbs, setThumbs] = useState<Record<string, { sig: string; path: string }>>({})
+  const thumbsRef = useRef<Record<string, { sig: string; path: string }>>({})
+  const [collapsed, setCollapsed] = useState<{ text: boolean; video: boolean; audio: boolean; sfx: boolean }>({ text: false, video: false, audio: false, sfx: false })
+  const [markers, setMarkers] = useState<Marker[]>([])
+  const [showBooth, setShowBooth] = useState(false)
+  const [showNarration, setShowNarration] = useState(false)
+  const [sidebarTab, setSidebarTab] = useState<'media' | 'sfx'>('media')
+  const [silenceBusy, setSilenceBusy] = useState<string | null>(null)
+  const [eta, setEta] = useState<number | null>(null)
+  const exportStartRef = useRef(0)
+  const settingsLoaded = useRef(false)
+
+  const runQualityCheck = async (filePath: string) => {
+    setQcRunning(true)
+    setShowQC(true)
+    setQcReport(null)
+    try { setQcReport(await window.ipcRenderer.qualityCheck(filePath)) }
+    catch (e) { console.error(e); setQcReport({ error: 'Quality check failed' }) }
+    setQcRunning(false)
+  }
+
+  const [pxPerSec, setPxPerSec] = useState(40)
+  const [timelineH, setTimelineH] = useState(300)
+  const [expanded, setExpanded] = useState(false)
+  const [isRecording, setIsRecording] = useState(false)
+
+  const timelineRef = useRef<HTMLDivElement>(null)
+  const stageRef = useRef<HTMLDivElement>(null)
+  const [stageH, setStageH] = useState(400)
+  const videoEls = useRef<Map<string, HTMLVideoElement>>(new Map())
+  const audioEls = useRef<Map<string, HTMLAudioElement>>(new Map())
+  const recorderRef = useRef<{ rec: MediaRecorder; chunks: Blob[]; startTime: number } | null>(null)
+  const draggingRef = useRef(false)
+
+  // Undo/redo history over the editable document (clips + texts).
+  // Changes are coalesced: a snapshot is taken ~450ms after the last edit,
+  // so a drag or a slider sweep collapses into a single undo step.
+  const history = useRef<{ clips: TimelineClip[]; texts: TextClip[] }[]>([{ clips: [], texts: [] }])
+  const histIndex = useRef(0)
+  const skipRecord = useRef(false)
+  const [canUndo, setCanUndo] = useState(false)
+  const [canRedo, setCanRedo] = useState(false)
+
+  const [w, h] = ORIENTATIONS[orientation].dims[resolution]
+  const totalDuration = (() => {
+    const ends = [...clips.map(c => c.start + c.duration), ...texts.map(t => t.start + t.duration)]
+    return ends.length ? Math.max(...ends) : 0
+  })()
+
+  const selClip = clips.find(c => c.id === selectedId) || null
+  const selText = texts.find(t => t.id === selectedId) || null
+
+  const activeVideoClips = clips.filter(c => c.trackId === 'v1' && currentTime >= c.start && currentTime < c.start + c.duration)
+  const activeTexts = texts.filter(t => currentTime >= t.start && currentTime < t.start + t.duration)
+  const activeKey = activeVideoClips.map(c => c.id).join(',')
+
+  // ---- effects ----
+  useEffect(() => {
+    const handleProgress = (_e: any, percent: number) => {
+      const pct = Math.max(0, Math.min(100, percent || 0))
+      setExportProgress(pct)
+      if (pct > 1 && pct < 100 && exportStartRef.current) {
+        const elapsed = (Date.now() - exportStartRef.current) / 1000
+        setEta((elapsed * (100 - pct)) / pct)
+      } else if (pct >= 100) setEta(null)
+    }
+    window.ipcRenderer.on('export-progress', handleProgress)
+    const handleTranscribe = (_e: any, p: { stage: string; pct: number }) => {
+      setCaptioning(p.stage === 'download' ? 'Downloading model' : 'Transcribing')
+      setCaptionPct(p.pct)
+    }
+    window.ipcRenderer.on('transcribe-progress', handleTranscribe)
+    return () => { window.ipcRenderer.off('export-progress', handleProgress); window.ipcRenderer.off('transcribe-progress', handleTranscribe) }
+  }, [])
+
+  useEffect(() => {
+    if (!stageRef.current) return
+    const ro = new ResizeObserver(entries => setStageH(entries[0].contentRect.height))
+    ro.observe(stageRef.current)
+    return () => ro.disconnect()
+  }, [])
+
+  // Playback clock
+  useEffect(() => {
+    if (!isPlaying) return
+    if (totalDuration <= 0) { setIsPlaying(false); return }
+    let raf = 0
+    let last = performance.now()
+    const tick = (now: number) => {
+      const dt = (now - last) / 1000
+      last = now
+      setCurrentTime(t => {
+        const next = t + dt
+        if (next >= totalDuration) { setIsPlaying(false); return totalDuration }
+        return next
+      })
+      raf = requestAnimationFrame(tick)
+    }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  }, [isPlaying, totalDuration])
+
+  // Sync preview video layers
+  useEffect(() => {
+    const map = videoEls.current
+    map.forEach((el, id) => { if (!activeVideoClips.find(c => c.id === id)) el.pause() })
+    activeVideoClips.forEach(c => {
+      const media = mediaBin.find(m => m.id === c.mediaId)
+      if (media?.type !== 'video') return
+      const el = map.get(c.id)
+      if (!el) return
+      el.volume = clamp(gainAt(c, currentTime) * masterVolume * fadeFactor(c, currentTime), 0, 1)
+      const target = c.sourceStart + (currentTime - c.start)
+      if (isPlaying) {
+        if (Math.abs(el.currentTime - target) > 0.3) el.currentTime = target
+        if (el.paused) el.play().catch(() => {})
+      } else {
+        if (!el.paused) el.pause()
+        if (Math.abs(el.currentTime - target) > 0.05) el.currentTime = target
+      }
+    })
+  }, [currentTime, isPlaying, activeKey, clips, masterVolume, mediaBin])
+
+  // Manage hidden audio elements for audio-track clips
+  useEffect(() => {
+    const map = audioEls.current
+    const audioClips = clips.filter(c => c.trackId === 'a1' || c.trackId === 'a2')
+    audioClips.forEach(c => {
+      const media = mediaBin.find(m => m.id === c.mediaId)
+      if (media && !map.has(c.id)) map.set(c.id, new Audio(fileUrl(media.path)))
+    })
+    for (const [id, el] of map) { if (!audioClips.find(c => c.id === id)) { el.pause(); map.delete(id) } }
+  }, [clips, mediaBin])
+
+  useEffect(() => {
+    const map = audioEls.current
+    clips.filter(c => c.trackId === 'a1' || c.trackId === 'a2').forEach(c => {
+      const el = map.get(c.id)
+      if (!el) return
+      const active = currentTime >= c.start && currentTime < c.start + c.duration
+      el.volume = clamp(gainAt(c, currentTime) * masterVolume * fadeFactor(c, currentTime), 0, 1)
+      if (active && isPlaying) {
+        const target = c.sourceStart + (currentTime - c.start)
+        if (Math.abs(el.currentTime - target) > 0.3) el.currentTime = target
+        if (el.paused) el.play().catch(() => {})
+      } else if (!el.paused) el.pause()
+    })
+  }, [currentTime, isPlaying, clips, masterVolume])
+
+  useEffect(() => () => { audioEls.current.forEach(el => el.pause()) }, [])
+
+  // Record history snapshots (debounced/coalesced)
+  useEffect(() => {
+    if (skipRecord.current) { skipRecord.current = false; return }
+    const handle = setTimeout(() => {
+      const snap = { clips, texts }
+      const top = history.current[histIndex.current]
+      if (JSON.stringify(top) === JSON.stringify(snap)) return
+      history.current = history.current.slice(0, histIndex.current + 1)
+      history.current.push(snap)
+      if (history.current.length > 100) history.current.shift()
+      histIndex.current = history.current.length - 1
+      setCanUndo(histIndex.current > 0)
+      setCanRedo(false)
+    }, 450)
+    return () => clearTimeout(handle)
+  }, [clips, texts])
+
+  const applyHistory = (i: number) => {
+    const snap = history.current[i]
+    if (!snap) return
+    skipRecord.current = true
+    setClips(snap.clips)
+    setTexts(snap.texts)
+    setSelectedId(null)
+    histIndex.current = i
+    setCanUndo(i > 0)
+    setCanRedo(i < history.current.length - 1)
+  }
+  const undo = () => { if (histIndex.current > 0) applyHistory(histIndex.current - 1) }
+  const redo = () => { if (histIndex.current < history.current.length - 1) applyHistory(histIndex.current + 1) }
+
+  // Keyboard shortcuts (ignored while typing in a field)
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); return }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') { e.preventDefault(); redo(); return }
+      const tag = (e.target as HTMLElement)?.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+      if (e.code === 'Space') { e.preventDefault(); if (totalDuration > 0) setIsPlaying(p => !p) }
+      else if (e.key === 'Delete' || e.key === 'Backspace') { if (selectedId) { e.preventDefault(); deleteSelected() } }
+      else if (e.key.toLowerCase() === 's') { if (selClip) { e.preventDefault(); splitAtPlayhead() } }
+      else if (e.key === 'ArrowLeft') { e.preventDefault(); setCurrentTime(t => Math.max(0, t - (e.shiftKey ? 1 : 1 / 30))) }
+      else if (e.key === 'ArrowRight') { e.preventDefault(); setCurrentTime(t => Math.min(totalDuration, t + (e.shiftKey ? 1 : 1 / 30))) }
+      else if (e.key === 'Home') { e.preventDefault(); setCurrentTime(0) }
+      else if (e.key.toLowerCase() === 'm') { e.preventDefault(); setMarkers(m => [...m, newMarker(currentTime)]) }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [totalDuration, selectedId, selClip, currentTime])
+
+  // Load persistent settings (brand kit, intro defaults, audio) once
+  useEffect(() => {
+    window.ipcRenderer.getSettings().then((s: AppSettings) => {
+      if (s) setSettings({ ...DEFAULT_SETTINGS, ...s, brand: { ...DEFAULT_SETTINGS.brand, ...s.brand }, intro: { ...DEFAULT_SETTINGS.intro, ...s.intro }, audio: { ...DEFAULT_SETTINGS.audio, ...s.audio } })
+      settingsLoaded.current = true
+    }).catch(() => { settingsLoaded.current = true })
+  }, [])
+
+  // Persist settings whenever they change (after initial load)
+  useEffect(() => {
+    if (!settingsLoaded.current) return
+    window.ipcRenderer.setSettings(settings).catch(() => {})
+  }, [settings])
+
+  // Close the right-click context menu on any outside click
+  useEffect(() => {
+    if (!ctxMenu) return
+    const close = () => setCtxMenu(null)
+    window.addEventListener('click', close)
+    return () => window.removeEventListener('click', close)
+  }, [ctxMenu])
+
+  // Generate timeline filmstrip thumbnails for video clips (debounced; regenerates when trimmed)
+  useEffect(() => { thumbsRef.current = thumbs }, [thumbs])
+  useEffect(() => {
+    const vids = clips.filter(c => c.trackId === 'v1' && mediaBin.find(m => m.id === c.mediaId)?.type === 'video')
+    if (!vids.length) return
+    const handle = setTimeout(() => {
+      vids.forEach(c => {
+        const media = mediaBin.find(m => m.id === c.mediaId)
+        if (!media) return
+        const sig = `${Math.round(c.sourceStart * 2)}:${Math.round(c.duration * 2)}`
+        if (thumbsRef.current[c.id]?.sig === sig) return
+        window.ipcRenderer.makeThumbnails({ filePath: media.path, sourceStart: c.sourceStart, duration: c.duration })
+          .then(r => { const p = r?.path; if (p) setThumbs(prev => ({ ...prev, [c.id]: { sig, path: p } })) })
+      })
+    }, 400)
+    return () => clearTimeout(handle)
+  }, [clips, mediaBin])
+
+  // ---- media import ----
+  const importFiles = useCallback(async (files: File[]): Promise<MediaFile[]> => {
+    const added: MediaFile[] = []
+    for (const file of files) {
+      try {
+        const path = window.ipcRenderer.getPathForFile(file)
+        const metadata = await window.ipcRenderer.getMetadata(path)
+        let type: 'video' | 'audio' | 'image' = 'audio'
+        if (file.type.startsWith('video')) type = 'video'
+        else if (file.type.startsWith('image')) type = 'image'
+        added.push({
+          id: rid(), name: file.name, path, type,
+          duration: type === 'image' ? 5 : (metadata.duration || 5),
+          hasVideo: metadata.hasVideo || type === 'image',
+          hasAudio: metadata.hasAudio,
+        })
+      } catch (err) { console.error(err) }
+    }
+    if (added.length) setMediaBin(prev => [...prev, ...added])
+    return added
+  }, [])
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files) await importFiles(Array.from(e.target.files))
+    e.target.value = ''
+  }
+
+  const placeOnTimeline = (media: MediaFile, at: number) => {
+    const isAudio = media.type === 'audio'
+    setClips(prev => [...prev, {
+      id: rid(), mediaId: media.id, type: media.type,
+      trackId: isAudio ? 'a1' : 'v1',
+      start: Math.max(0, at), duration: media.duration, sourceStart: 0,
+      volume: 1.0, fadeIn: 0, fadeOut: 0,
+    }])
+  }
+
+  const addToTimeline = (media: MediaFile) => {
+    const isAudio = media.type === 'audio'
+    const track = clips.filter(c => c.trackId === (isAudio ? 'a1' : 'v1'))
+    const at = isAudio ? currentTime : (track.length ? Math.max(...track.map(c => c.start + c.duration)) : 0)
+    placeOnTimeline(media, at)
+  }
+
+  // Add a media item as an intro at the very front, using the configured intro defaults.
+  const addAsIntro = (media: MediaFile) => {
+    const { segment, seconds, fade, treatment } = settings.intro
+    const dur = Math.min(Math.max(0.5, seconds), media.type === 'image' ? seconds : media.duration)
+    const sourceStart = segment === 'last' && media.type !== 'image' ? Math.max(0, media.duration - dur) : 0
+    const isAudio = media.type === 'audio'
+    const intro: TimelineClip = {
+      id: rid(), mediaId: media.id, type: media.type, trackId: isAudio ? 'a1' : 'v1',
+      start: 0, duration: dur, sourceStart, volume: 1, fadeIn: fade, fadeOut: fade,
+    }
+    if (treatment === 'ripple') {
+      setClips(prev => [intro, ...prev.map(c => ({ ...c, start: c.start + dur }))])
+      setTexts(prev => prev.map(t => ({ ...t, start: t.start + dur })))
+    } else {
+      setClips(prev => [intro, ...prev])
+    }
+    setSelectedId(intro.id)
+    setCurrentTime(0)
+  }
+
+  // ---- SFX / booth / narration ----
+  // Drop a library sound onto the SFX track at the playhead (imports it into the bin on first use)
+  const placeSfx = async (item: SfxItem) => {
+    let media = mediaBin.find(m => m.path === item.path)
+    if (!media) {
+      media = { id: rid(), name: `${item.name} ✦`, path: item.path, type: 'audio', duration: item.duration, hasVideo: false, hasAudio: true }
+      setMediaBin(prev => [...prev, media!])
+    }
+    setClips(prev => [...prev, { id: rid(), mediaId: media!.id, type: 'audio', trackId: 'a2', start: currentTime, duration: item.duration, sourceStart: 0, volume: 1, fadeIn: 0, fadeOut: 0 }])
+  }
+
+  // A finished karaoke-booth take lands on the voice track at its start time
+  const boothRecorded = async (path: string, startAt: number) => {
+    const metadata = await window.ipcRenderer.getMetadata(path)
+    const media: MediaFile = { id: rid(), name: `Take ${new Date().toLocaleTimeString()}`, path, type: 'audio', duration: metadata.duration || 1, hasVideo: false, hasAudio: true }
+    setMediaBin(prev => [...prev, media])
+    setClips(prev => [...prev, { id: rid(), mediaId: media.id, type: 'audio', trackId: 'a1', start: startAt, duration: media.duration, sourceStart: 0, volume: 1, fadeIn: 0, fadeOut: 0 }])
+  }
+
+  // Generated narration lines: pin to tag points when there are enough, otherwise lay back-to-back
+  const narrationGenerated = async (files: string[], lines: string[]) => {
+    const sorted = [...markers].sort((a, b) => a.t - b.t)
+    const useTags = sorted.length >= files.length
+    let cursor = 0
+    const newMedia: MediaFile[] = []
+    const newClips: TimelineClip[] = []
+    for (let i = 0; i < files.length; i++) {
+      const meta = await window.ipcRenderer.getMetadata(files[i])
+      const media: MediaFile = { id: rid(), name: lines[i]?.slice(0, 26) || `line ${i + 1}`, path: files[i], type: 'audio', duration: meta.duration || 1, hasVideo: false, hasAudio: true }
+      const start = useTags ? sorted[i].t : cursor
+      cursor = start + media.duration
+      newMedia.push(media)
+      newClips.push({ id: rid(), mediaId: media.id, type: 'audio', trackId: 'a1', start, duration: media.duration, sourceStart: 0, volume: 1, fadeIn: 0, fadeOut: 0 })
+    }
+    setMediaBin(prev => [...prev, ...newMedia])
+    setClips(prev => [...prev, ...newClips])
+    setShowNarration(false)
+  }
+
+  // ---- timeline geometry helpers ----
+  const timeAtClientX = (clientX: number) => {
+    const el = timelineRef.current!
+    const rect = el.getBoundingClientRect()
+    return Math.max(0, (clientX - rect.left + el.scrollLeft) / pxPerSec)
+  }
+
+  const onTimelineDrop = async (e: React.DragEvent) => {
+    e.preventDefault()
+    const dropTime = timeAtClientX(e.clientX)
+    const files = Array.from(e.dataTransfer.files)
+    if (!files.length) return
+    const added = await importFiles(files)
+    let cursor = dropTime
+    added.forEach(m => { placeOnTimeline(m, m.type === 'audio' ? dropTime : cursor); if (m.type !== 'audio') cursor += m.duration })
+  }
+
+  // ---- editing actions ----
+  const deleteSelected = () => {
+    if (!selectedId) return
+    setClips(c => c.filter(x => x.id !== selectedId))
+    setTexts(t => t.filter(x => x.id !== selectedId))
+    setSelectedId(null)
+  }
+
+  const splitAtPlayhead = () => {
+    if (!selClip) return
+    if (currentTime <= selClip.start || currentTime >= selClip.start + selClip.duration) return
+    const off = currentTime - selClip.start
+    const a = { ...selClip, id: rid(), duration: off, fadeOut: 0 }
+    const b = { ...selClip, id: rid(), start: currentTime, duration: selClip.duration - off, sourceStart: selClip.sourceStart + off, fadeIn: 0 }
+    setClips(prev => { const i = prev.findIndex(c => c.id === selClip.id); const n = [...prev]; n.splice(i, 1, a, b); return n })
+    setSelectedId(b.id)
+  }
+
+  const addText = () => {
+    const t: TextClip = { id: rid(), text: 'New text', start: currentTime, duration: 3, x: 0.5, y: 0.5, fontSize: 64, color: '#ffffff', fadeIn: 0.3, fadeOut: 0.3 }
+    setTexts(prev => [...prev, t])
+    setSelectedId(t.id)
+  }
+
+  // Local Whisper captions for the WHOLE timeline → timed text cues styled by caption settings
+  const generateCaptions = async () => {
+    const audioClips = clips.filter(c => c.trackId === 'a1' || mediaBin.find(m => m.id === c.mediaId)?.hasAudio)
+    if (!audioClips.length) { alert('Add a clip with audio to the timeline first.'); return }
+    const cs = settings.caption
+    setCaptioning('Mixing audio…'); setCaptionPct(null)
+    try {
+      const payload = clips.map(c => { const m = mediaBin.find(x => x.id === c.mediaId); return { path: m?.path, hasAudio: m?.hasAudio, start: c.start, duration: c.duration, volume: c.volume } })
+      const mix = await window.ipcRenderer.renderMixAudio({ clips: payload })
+      if (mix.error || !mix.path) { alert('Captions: ' + (mix.error || 'could not prepare audio')); return }
+      const res = await window.ipcRenderer.transcribe(mix.path, { model: cs.model, language: cs.language, word: cs.mode === 'word' })
+      if (res.error) { alert('Captions: ' + res.error); return }
+      const cues: TextClip[] = []
+      for (const c of res.chunks || []) {
+        const text = (c.text || '').trim()
+        if (!text) continue
+        const dur = Math.max(cs.mode === 'word' ? 0.2 : 0.4, (c.end || c.start + (cs.mode === 'word' ? 0.4 : 2)) - c.start)
+        cues.push({ id: rid(), text, start: c.start, duration: dur, x: 0.5, y: CAPTION_Y[cs.position], fontSize: cs.fontSize, color: cs.color, fadeIn: cs.mode === 'word' ? 0 : 0.08, fadeOut: cs.mode === 'word' ? 0 : 0.08, box: cs.box, boxOpacity: cs.boxOpacity })
+      }
+      if (cues.length) setTexts(prev => [...prev, ...cues])
+      else alert('No speech detected.')
+    } catch (e) { console.error(e); alert('Captioning failed.') }
+    setCaptioning(null); setCaptionPct(null)
+  }
+
+  // Detect dead space (silent pauses OR motionless video) across the timeline and ripple it out
+  const cutDeadSpace = async () => {
+    const S = settings.silence
+    const hasAudio = clips.some(c => c.trackId === 'a1' || mediaBin.find(m => m.id === c.mediaId)?.hasAudio)
+    const videoClips = clips.filter(c => c.trackId === 'v1' && mediaBin.find(m => m.id === c.mediaId)?.type === 'video')
+    const useMotion = S.detectBy === 'motion' || (S.detectBy === 'auto' && !hasAudio)
+    if (useMotion && !videoClips.length) { alert('No video clips to scan for still frames.'); return }
+    if (!useMotion && !hasAudio) { alert('No audio to scan. Switch “Detect by” to Visual stillness in settings for silent footage.'); return }
+    setSilenceBusy(useMotion ? 'Scanning frames…' : 'Analyzing audio…')
+    try {
+      let intervals: { start: number; end: number }[] = []
+      if (useMotion) {
+        // scan each video clip for frozen/static stretches, mapped to timeline time
+        for (const c of videoClips) {
+          const media = mediaBin.find(m => m.id === c.mediaId)!
+          const r = await window.ipcRenderer.detectFreeze({ filePath: media.path, sourceStart: c.sourceStart, duration: c.duration, freezeDb: S.freezeDb, minDur: S.minPause })
+          for (const iv of r.intervals || []) intervals.push({ start: c.start + iv.start, end: c.start + Math.min(iv.end, c.duration) })
+        }
+      } else {
+        const payload = clips.map(c => { const m = mediaBin.find(x => x.id === c.mediaId); return { path: m?.path, hasAudio: m?.hasAudio, start: c.start, duration: c.duration, volume: c.volume } })
+        const mix = await window.ipcRenderer.renderMixAudio({ clips: payload })
+        if (mix.error || !mix.path) { alert('Cut pauses: ' + (mix.error || 'could not prepare audio')); return }
+        const res = await window.ipcRenderer.detectSilence({ filePath: mix.path, thresholdDb: S.thresholdDb, minPause: S.minPause })
+        if (res.error) { alert('Cut pauses: ' + res.error); return }
+        intervals = res.intervals || []
+      }
+      let ranges = intervals.map(iv => ({ start: iv.start + S.pad, end: iv.end - S.pad })).filter(r => r.end - r.start > 0.1)
+      if (!ranges.length) { alert(useMotion ? 'No long static stretches found (lower the min length or stillness sensitivity in settings).' : 'No long pauses found (try lowering the minimum pause length in settings).'); return }
+      ranges.sort((a, b) => b.start - a.start) // apply last→first so earlier times stay valid
+      let nc = clips, nt = texts, removed = 0
+      for (const r of ranges) { const out = removeRange(nc, nt, r.start, r.end, S.smooth ? S.transition : 0); nc = out.clips; nt = out.texts; removed += (r.end - r.start) }
+      setClips(nc); setTexts(nt); setSelectedId(null); setCurrentTime(0)
+      alert(`Removed ${ranges.length} ${useMotion ? 'static stretch' : 'pause'}${ranges.length > 1 ? (useMotion ? 'es' : 's') : ''} (~${removed.toFixed(1)}s). Undo with Ctrl+Z if needed.`)
+    } catch (e) { console.error(e); alert('Cut pauses failed.') }
+    setSilenceBusy(null)
+  }
+
+  // ---- voiceover ----
+  const toggleRecord = async () => {
+    if (isRecording) {
+      recorderRef.current?.rec.stop()
+      return
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const rec = new MediaRecorder(stream)
+      const chunks: Blob[] = []
+      const startTime = currentTime
+      rec.ondataavailable = e => { if (e.data.size) chunks.push(e.data) }
+      rec.onstop = async () => {
+        stream.getTracks().forEach(t => t.stop())
+        setIsRecording(false)
+        const blob = new Blob(chunks, { type: 'audio/webm' })
+        const buf = new Uint8Array(await blob.arrayBuffer())
+        const b64 = btoa(Array.from(buf).map(b => String.fromCharCode(b)).join(''))
+        const path = await window.ipcRenderer.saveRecording(b64)
+        const metadata = await window.ipcRenderer.getMetadata(path)
+        const media: MediaFile = { id: rid(), name: `Voiceover ${new Date().toLocaleTimeString()}`, path, type: 'audio', duration: metadata.duration || 1, hasVideo: false, hasAudio: true }
+        setMediaBin(prev => [...prev, media])
+        setClips(prev => [...prev, { id: rid(), mediaId: media.id, type: 'audio', trackId: 'a1', start: startTime, duration: media.duration, sourceStart: 0, volume: 1, fadeIn: 0, fadeOut: 0 }])
+      }
+      recorderRef.current = { rec, chunks, startTime }
+      rec.start()
+      setIsRecording(true)
+    } catch (err) {
+      console.error(err)
+      alert('Could not access microphone.')
+    }
+  }
+
+  // ---- export ----
+  const pickExportPath = async () => {
+    try { const p = await window.ipcRenderer.selectSavePath('randosnap_export.mp4'); if (p) setCustomExportPath(p) } catch (e) { console.error(e) }
+  }
+
+  const handleExport = async () => {
+    if (clips.length === 0 && texts.length === 0) return
+    setIsPlaying(false)
+    setExportProgress(0)
+    setEta(null)
+    exportStartRef.current = Date.now()
+    try {
+      let finalPath = customExportPath
+      if (!finalPath) {
+        finalPath = await window.ipcRenderer.selectSavePath('randosnap_export.mp4')
+        if (!finalPath) { setExportProgress(null); return }
+        setCustomExportPath(finalPath)
+      }
+      const payload = {
+        clips: clips.map(c => {
+          const media = mediaBin.find(m => m.id === c.mediaId)
+          return { ...c, path: media?.path, hasVideo: media?.hasVideo, hasAudio: media?.hasAudio }
+        }),
+        texts,
+        brand: settings.brand,
+        audio: settings.audio,
+        outputPath: finalPath,
+        settings: { width: w, height: h, fps, quality: exportQuality, masterVolume },
+      }
+      await window.ipcRenderer.exportVideo(payload)
+      setExportProgress(100)
+      setLastExport(finalPath)
+      setTimeout(() => setExportProgress(null), 3000)
+      runQualityCheck(finalPath) // auto "watch & verify" the result
+    } catch (err) { console.error('Export failed', err); setExportProgress(null) }
+  }
+
+  const saveProject = async () => {
+    try {
+      await window.ipcRenderer.saveProject({ version: 2, mediaBin, clips, texts, markers, orientation, resolution, fps, masterVolume, exportQuality })
+    } catch (e) { console.error(e) }
+  }
+
+  const loadProject = async () => {
+    try {
+      const data = await window.ipcRenderer.loadProject()
+      if (!data) return
+      setIsPlaying(false)
+      setMediaBin(data.mediaBin || [])
+      setClips(data.clips || [])
+      setTexts(data.texts || [])
+      setMarkers(data.markers || [])
+      if (data.orientation) setOrientation(data.orientation)
+      if (data.resolution) setResolution(data.resolution)
+      if (data.fps) setFps(data.fps)
+      if (typeof data.masterVolume === 'number') setMasterVolume(data.masterVolume)
+      if (data.exportQuality) setExportQuality(data.exportQuality)
+      setSelectedId(null)
+      setCurrentTime(0)
+      // reset history to the loaded state
+      skipRecord.current = true
+      history.current = [{ clips: data.clips || [], texts: data.texts || [] }]
+      histIndex.current = 0
+      setCanUndo(false); setCanRedo(false)
+    } catch (e) { console.error(e) }
+  }
+
+  // ---- generic drags on timeline ----
+  const startClipMove = (e: React.MouseEvent, clip: TimelineClip) => {
+    e.stopPropagation()
+    setSelectedId(clip.id)
+    const startX = e.clientX
+    const origStart = clip.start
+    draggingRef.current = false
+    const others = clips.filter(c => c.trackId === clip.trackId && c.id !== clip.id)
+    const move = (m: MouseEvent) => {
+      const dx = m.clientX - startX
+      if (Math.abs(dx) > 3) draggingRef.current = true
+      let ns = Math.max(0, origStart + dx / pxPerSec)
+      // snap to 0, playhead, tag points and neighbour edges
+      const snaps = [0, currentTime, ...markers.map(mk => mk.t), ...others.flatMap(o => [o.start, o.start + o.duration])]
+      for (const s of snaps) { if (Math.abs(ns - s) < 6 / pxPerSec) { ns = s; break } }
+      setClips(prev => prev.map(c => c.id === clip.id ? { ...c, start: ns } : c))
+    }
+    const up = () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); setTimeout(() => { draggingRef.current = false }, 0) }
+    window.addEventListener('mousemove', move); window.addEventListener('mouseup', up)
+  }
+
+  const startTrim = (e: React.MouseEvent, clip: TimelineClip, side: 'left' | 'right') => {
+    e.stopPropagation()
+    const startX = e.clientX
+    const o = { ...clip }
+    const move = (m: MouseEvent) => {
+      const dt = (m.clientX - startX) / pxPerSec
+      setClips(prev => prev.map(c => {
+        if (c.id !== clip.id) return c
+        if (side === 'left') {
+          const newStart = Math.max(0, Math.min(o.start + dt, o.start + o.duration - 0.3))
+          return { ...c, start: newStart, duration: o.duration - (newStart - o.start), sourceStart: o.sourceStart + (newStart - o.start) }
+        }
+        return { ...c, duration: Math.max(0.3, o.duration + dt) }
+      }))
+    }
+    const up = () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up) }
+    window.addEventListener('mousemove', move); window.addEventListener('mouseup', up)
+  }
+
+  const startResizeTimeline = (e: React.MouseEvent) => {
+    e.preventDefault()
+    const startY = e.clientY
+    const orig = timelineH
+    const move = (m: MouseEvent) => setTimelineH(clamp(orig + (startY - m.clientY), 140, 560))
+    const up = () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up) }
+    window.addEventListener('mousemove', move); window.addEventListener('mouseup', up)
+  }
+
+  // drag a text overlay on the stage
+  const startTextDrag = (e: React.MouseEvent, t: TextClip) => {
+    e.stopPropagation()
+    setSelectedId(t.id)
+    if (!stageRef.current) return
+    const rect = stageRef.current.getBoundingClientRect()
+    const move = (m: MouseEvent) => {
+      const nx = clamp((m.clientX - rect.left) / rect.width, 0, 1)
+      const ny = clamp((m.clientY - rect.top) / rect.height, 0, 1)
+      setTexts(prev => prev.map(x => x.id === t.id ? { ...x, x: nx, y: ny } : x))
+    }
+    const up = () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up) }
+    window.addEventListener('mousemove', move); window.addEventListener('mouseup', up)
+  }
+
+  const onTimelineClick = (e: React.MouseEvent) => {
+    if (draggingRef.current) return
+    setCurrentTime(timeAtClientX(e.clientX))
+    setSelectedId(null)
+  }
+
+  const patchClip = (patch: Partial<TimelineClip>) => setClips(prev => prev.map(c => c.id === selectedId ? { ...c, ...patch } : c))
+  const patchText = (patch: Partial<TextClip>) => setTexts(prev => prev.map(t => t.id === selectedId ? { ...t, ...patch } : t))
+
+  // ---- render ----
+  const rulerTicks = []
+  const tickStep = pxPerSec < 25 ? 5 : 1
+  for (let s = 0; s <= Math.ceil(totalDuration) + 5; s += tickStep) {
+    rulerTicks.push(<div key={s} className="tick" style={{ left: s * pxPerSec }}><span>{s}s</span></div>)
+  }
+
+  const renderClip = (c: TimelineClip) => {
+    const media = mediaBin.find(m => m.id === c.mediaId)
+    let bg: string | undefined
+    let bgSize = '100% 100%'
+    if (c.trackId === 'v1' && media) {
+      if (media.type === 'image') { bg = `url("${fileUrl(media.path)}")`; bgSize = 'cover' }
+      else if (thumbs[c.id]?.path) bg = `url("${fileUrl(thumbs[c.id].path)}")`
+    }
+    return (
+      <div
+        key={c.id}
+        onMouseDown={(e) => startClipMove(e, c)}
+        className={`clip ${c.trackId !== 'v1' ? 'a-clip' : 'v-clip'} ${c.type} ${bg ? 'has-thumb' : ''} ${selectedId === c.id ? 'selected' : ''}`}
+        style={{ left: c.start * pxPerSec, width: c.duration * pxPerSec, backgroundImage: bg, backgroundSize: bgSize, backgroundPosition: 'center', backgroundRepeat: 'no-repeat' }}
+        title={media?.name}
+      >
+        <div className="trim-handle left" onMouseDown={(e) => startTrim(e, c, 'left')} />
+        {c.fadeIn > 0 && <div className="fade-tri in" style={{ width: c.fadeIn * pxPerSec }} />}
+        <span className="clip-label">{media?.name}</span>
+        {c.fadeOut > 0 && <div className="fade-tri out" style={{ width: c.fadeOut * pxPerSec }} />}
+        <div className="trim-handle right" onMouseDown={(e) => startTrim(e, c, 'right')} />
+      </div>
+    )
+  }
+
+  return (
+    <div className="app-container" onDragOver={(e) => e.preventDefault()}>
+      <header>
+        <div className="logo-section">
+          <h1>RandoSnap</h1>
+          <button className="hdr-btn" onClick={saveProject} title="Save project">Save</button>
+          <button className="hdr-btn" onClick={loadProject} title="Open project">Open</button>
+          <button className="hdr-btn icon" onClick={() => setShowSettings(true)} title="Brand kit & settings"><IconGear /></button>
+        </div>
+        <div className="orientation-switch">
+          {(Object.keys(ORIENTATIONS) as OrientationKey[]).map(key => (
+            <button key={key} className={`orient-btn ${orientation === key ? 'active' : ''}`} onClick={() => setOrientation(key)} title={`${ORIENTATIONS[key].label} (${ORIENTATIONS[key].sub})`}>
+              <span className={`orient-glyph ${key}`} />{ORIENTATIONS[key].label}
+            </button>
+          ))}
+        </div>
+        <div className="header-info"><span>{clips.length + texts.length} items • {fmt(currentTime)} / {fmt(totalDuration)}</span></div>
+      </header>
+
+      <main className={expanded ? 'expanded' : ''}>
+        {!expanded && (
+          <div className="sidebar left">
+            <div className="section-header tabs">
+              <button className={`tab ${sidebarTab === 'media' ? 'active' : ''}`} onClick={() => setSidebarTab('media')}>Media Bin</button>
+              <button className={`tab ${sidebarTab === 'sfx' ? 'active' : ''}`} onClick={() => setSidebarTab('sfx')} title="Sound effects — audition and drop on the SFX track">SFX</button>
+              {sidebarTab === 'media' && <label className="add-btn" title="Add image, video or audio"><IconPlus /><input type="file" accept="video/*,audio/*,image/*" multiple onChange={handleFileUpload} hidden /></label>}
+            </div>
+            {sidebarTab === 'sfx' && <SfxPanel onPlace={placeSfx} />}
+            {sidebarTab === 'media' && <div className="media-list" onDrop={async (e) => { e.preventDefault(); await importFiles(Array.from(e.dataTransfer.files)) }} onDragOver={(e) => e.preventDefault()}>
+              {mediaBin.length === 0 && <div className="empty-hint">Click <IconPlus /> or drag files here. Double-click an item — or drop files on the timeline — to add them.</div>}
+              {mediaBin.map(m => (
+                <div key={m.id} className="media-item" onDoubleClick={() => addToTimeline(m)} onContextMenu={(e) => { e.preventDefault(); setCtxMenu({ x: e.clientX, y: e.clientY, mediaId: m.id }) }} title="Double-click to add • right-click for options">
+                  <div className="media-icon">
+                    {m.type === 'image'
+                      ? <img className="media-still" src={fileUrl(m.path)} alt="" />
+                      : m.type === 'video'
+                        ? <video className="media-still" src={`${fileUrl(m.path)}#t=0.5`} muted preload="metadata" />
+                        : <IconAudio/>}
+                  </div>
+                  <div className="media-info"><span className="name">{m.name}</span><span className="duration">{m.type === 'image' ? 'Image • 5s' : `${Math.round(m.duration)}s`}</span></div>
+                </div>
+              ))}
+            </div>}
+          </div>
+        )}
+
+        <div className="center-panel">
+          <div className="viewer-container">
+            <div className="stage" ref={stageRef} style={{ aspectRatio: String(ORIENTATIONS[orientation].ratio) }} onMouseDown={() => setSelectedId(null)}>
+              {activeVideoClips.length === 0 && activeTexts.length === 0 && <div className="placeholder">{w}×{h}</div>}
+              {activeVideoClips.map(c => {
+                const media = mediaBin.find(m => m.id === c.mediaId)
+                if (!media) return null
+                const op = fadeFactor(c, currentTime)
+                return media.type === 'image'
+                  ? <img key={c.id} className="layer" style={{ opacity: op }} src={fileUrl(media.path)} alt="" />
+                  : <video key={c.id} ref={el => { if (el) videoEls.current.set(c.id, el); else videoEls.current.delete(c.id) }} className="layer" style={{ opacity: op }} src={fileUrl(media.path)} />
+              })}
+              {activeTexts.map(t => (
+                <div key={t.id} className={`text-layer ${selectedId === t.id && !isPlaying ? 'editing' : ''}`}
+                  style={{ left: `${t.x * 100}%`, top: `${t.y * 100}%`, fontSize: `${t.fontSize / 1080 * stageH}px`, color: t.color, opacity: fadeFactor(t, currentTime), background: t.box ? `rgba(0,0,0,${t.boxOpacity ?? 0.5})` : 'transparent', padding: t.box ? '0.15em 0.4em' : 0, borderRadius: t.box ? '4px' : 0 }}
+                  onMouseDown={(e) => !isPlaying && startTextDrag(e, t)}>
+                  {t.text || ' '}
+                </div>
+              ))}
+              {settings.brand.enabled && settings.brand.logoPath && (() => {
+                const b = settings.brand
+                const inWindow = b.showMode === 'whole'
+                  || (b.showMode === 'intro' && currentTime <= b.windowSec)
+                  || (b.showMode === 'outro' && currentTime >= totalDuration - b.windowSec)
+                if (!inWindow) return null
+                const posStyle: React.CSSProperties = { position: 'absolute', width: `${b.sizePct}%`, opacity: b.opacity, pointerEvents: 'none' }
+                const mg = `${(b.margin / 1080) * 100 * (ORIENTATIONS[orientation].ratio >= 1 ? 1 / ORIENTATIONS[orientation].ratio : 1)}%`
+                if (b.position.includes('t')) posStyle.top = '4%'; else if (b.position.includes('b')) posStyle.bottom = '4%'
+                if (b.position.includes('l')) posStyle.left = '3%'; else if (b.position.includes('r')) posStyle.right = '3%'
+                if (b.position === 'center') { posStyle.top = '50%'; posStyle.left = '50%'; posStyle.transform = 'translate(-50%,-50%)' }
+                void mg
+                return <img className="brand-logo" style={posStyle} src={fileUrl(b.logoPath)} alt="logo" />
+              })()}
+            </div>
+            <button className="expand-btn" onClick={() => setExpanded(!expanded)} title="Toggle large preview"><IconExpand /></button>
+          </div>
+
+          <div className="timeline-actions">
+            <button className="tool-btn play" onClick={() => setIsPlaying(p => !p)} disabled={totalDuration <= 0}>{isPlaying ? <IconPause /> : <IconPlay />} {isPlaying ? 'Pause' : 'Play'}</button>
+            <div className="divider" />
+            <button className="tool-btn" onClick={undo} disabled={!canUndo} title="Undo (Ctrl+Z)"><IconUndo /> Undo</button>
+            <button className="tool-btn" onClick={redo} disabled={!canRedo} title="Redo (Ctrl+Shift+Z)"><IconRedo /> Redo</button>
+            <div className="divider" />
+            <button className="tool-btn" onClick={splitAtPlayhead} disabled={!selClip}><IconScissors /> Split</button>
+            <button className="tool-btn" onClick={deleteSelected} disabled={!selectedId}><IconTrash /> Delete</button>
+            <button className="tool-btn" onClick={addText}><IconText /> Text</button>
+            <button className={`tool-btn ${isRecording ? 'recording' : ''}`} onClick={toggleRecord}><IconMic /> {isRecording ? 'Stop' : 'Voiceover'}</button>
+            <button className={`tool-btn ${showBooth ? 'active' : ''}`} onClick={() => setShowBooth(b => !b)} title="Karaoke booth — read a script along with the video in one take">🎙 Booth</button>
+            <button className="tool-btn" onClick={() => setShowNarration(true)} title="Generate narration with a cloned voice (external TTS tool)">🗣 Narrate</button>
+            <button className="tool-btn captions-btn" onClick={generateCaptions} disabled={captioning !== null || totalDuration <= 0} title="Auto-caption the whole timeline (on-device Whisper)">
+              <IconCaptions /> {captioning ? `${captioning}${captionPct !== null ? ` ${captionPct}%` : '…'}` : 'Captions'}
+              {captioning && captionPct !== null && <span className="cap-bar"><span className="cap-fill" style={{ width: `${captionPct}%` }} /></span>}
+            </button>
+            <button className="tool-btn" onClick={cutDeadSpace} disabled={silenceBusy !== null || totalDuration <= 0} title="Detect & remove long silent pauses (great for faceless videos)"><IconScissors /> {silenceBusy || 'Cut Pauses'}</button>
+            <div className="spacer" />
+            <div className="zoom"><button onClick={() => setPxPerSec(p => clamp(p / 1.4, 8, 200))}>−</button><span>Zoom</span><button onClick={() => setPxPerSec(p => clamp(p * 1.4, 8, 200))}>+</button></div>
+          </div>
+
+          <div className="resize-handle" onMouseDown={startResizeTimeline} title="Drag to resize timeline" />
+
+          <div className="timeline-panel" style={{ height: timelineH }}>
+            <div className="timeline" ref={timelineRef} onClick={onTimelineClick} onDrop={onTimelineDrop} onDragOver={(e) => e.preventDefault()}>
+              <div className="time-ruler">{rulerTicks}</div>
+              {markers.map(m => (
+                <div key={m.id} className="marker-flag" style={{ left: m.t * pxPerSec, background: m.color }} title={m.label || 'tag point'}
+                  onClick={e => { e.stopPropagation(); setCurrentTime(m.t) }}
+                  onMouseDown={e => {
+                    e.stopPropagation()
+                    const startX = e.clientX, orig = m.t
+                    let moved = false
+                    const move = (ev: MouseEvent) => { const nt = Math.max(0, orig + (ev.clientX - startX) / pxPerSec); if (Math.abs(ev.clientX - startX) > 3) moved = true; setMarkers(ms => ms.map(x => x.id === m.id ? { ...x, t: nt } : x)) }
+                    const up = () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); if (!moved) setCurrentTime(m.t) }
+                    window.addEventListener('mousemove', move); window.addEventListener('mouseup', up)
+                  }}>
+                  {m.label && <span className="marker-flag-label">{m.label}</span>}
+                </div>
+              ))}
+              <div className="scrubber" style={{ left: currentTime * pxPerSec }} />
+              <div className="tracks">
+                <button className="track-label" onClick={() => setCollapsed(c => ({ ...c, text: !c.text }))}><IconChevron open={!collapsed.text} /> TEXT</button>
+                {!collapsed.text && (
+                  <div className="track text-track">
+                    {texts.map(t => (
+                      <div key={t.id} onMouseDown={(e) => { e.stopPropagation(); setSelectedId(t.id) }} className={`clip text-clip ${selectedId === t.id ? 'selected' : ''}`} style={{ left: t.start * pxPerSec, width: t.duration * pxPerSec }} title={t.text}>
+                        <span className="clip-label"><IconText /> {t.text}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <button className="track-label" onClick={() => setCollapsed(c => ({ ...c, video: !c.video }))}><IconChevron open={!collapsed.video} /> VIDEO</button>
+                {!collapsed.video && <div className="track v-track">{clips.filter(c => c.trackId === 'v1').map(renderClip)}</div>}
+                <button className="track-label" onClick={() => setCollapsed(c => ({ ...c, audio: !c.audio }))}><IconChevron open={!collapsed.audio} /> VOICE / MUSIC</button>
+                {!collapsed.audio && <div className="track a-track">{clips.filter(c => c.trackId === 'a1').map(renderClip)}</div>}
+                <button className="track-label" onClick={() => setCollapsed(c => ({ ...c, sfx: !c.sfx }))}><IconChevron open={!collapsed.sfx} /> SFX</button>
+                {!collapsed.sfx && <div className="track a-track sfx-track">{clips.filter(c => c.trackId === 'a2').map(renderClip)}</div>}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {!expanded && (
+          <div className="sidebar right">
+            <div className="control-group">
+              <h3 className="group-title">Export Settings</h3>
+              <div className="card">
+                <div className="field"><label>Format</label><div className="format-readout">{ORIENTATIONS[orientation].label} · {ORIENTATIONS[orientation].sub} · {w}×{h}</div></div>
+                <div className="field row">
+                  <div><label>Resolution</label>
+                    <select value={resolution} onChange={e => setResolution(e.target.value as ResolutionKey)}>
+                      <option value="4K">4K (2160)</option><option value="1440p">1440p</option><option value="1080p">1080p</option><option value="720p">720p</option>
+                    </select>
+                  </div>
+                  <div><label>Frame Rate</label>
+                    <select value={fps} onChange={e => setFps(parseInt(e.target.value) as 24 | 30 | 60)}>
+                      <option value={24}>24 fps</option><option value={30}>30 fps</option><option value={60}>60 fps</option>
+                    </select>
+                  </div>
+                </div>
+                <div className="field"><label>Encoding Quality</label>
+                  <select value={exportQuality} onChange={e => setExportQuality(e.target.value as any)}><option value="medium">Standard (faster)</option><option value="high">High (larger file)</option></select>
+                </div>
+                <div className="field"><label><IconVolume /> Master Volume — {Math.round(masterVolume * 100)}%</label>
+                  <input type="range" min="0" max="1.5" step="0.05" value={masterVolume} onChange={e => setMasterVolume(parseFloat(e.target.value))} style={{ width: '100%', accentColor: 'var(--accent-primary)' }} />
+                </div>
+                <div className="field chk" onClick={() => setSettings(s => ({ ...s, audio: { ...s.audio, optimize: !s.audio.optimize } }))}><input type="checkbox" checked={settings.audio.optimize} readOnly id="norm" /><label htmlFor="norm" style={{ cursor: 'pointer', marginBottom: 0 }}>Optimize loudness (−14 LUFS)</label></div>
+                <div className="field chk" onClick={() => setSettings(s => ({ ...s, audio: { ...s.audio, noiseReduction: !s.audio.noiseReduction } }))}><input type="checkbox" checked={settings.audio.noiseReduction} readOnly id="nr" /><label htmlFor="nr" style={{ cursor: 'pointer', marginBottom: 0 }}>Noise reduction</label></div>
+                <div className="field"><label>Save To</label><div className="path-box" onClick={pickExportPath}><IconFolder /><span>{customExportPath ? customExportPath.split(/[\\/]/).pop() : 'Choose on export…'}</span></div></div>
+                <div className={`progress-line ${exportProgress !== null ? 'show' : ''}`}><div className="fill" style={{ width: `${exportProgress || 0}%` }} /></div>
+                <button className="action-btn export" onClick={handleExport} disabled={(clips.length === 0 && texts.length === 0) || exportProgress !== null}><IconExport /> <span>{exportProgress !== null ? `Rendering ${Math.round(exportProgress)}%${eta && eta > 0 ? ` • ${fmtEta(eta)} left` : ''}` : 'Export Video'}</span></button>
+                {lastExport && exportProgress === null && (
+                  <div className="post-export">
+                    <button className="reveal-link" onClick={() => window.ipcRenderer.revealFile(lastExport)}>✓ Show in folder</button>
+                    <button className="reveal-link" onClick={() => runQualityCheck(lastExport)}>🔍 Watch &amp; Verify</button>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="control-group">
+              <h3 className="group-title">Tag Points {markers.length > 0 && <span className="count-badge">{markers.length}</span>}</h3>
+              <div className="card">
+                <MarkerPanel markers={markers} currentTime={currentTime} onChange={setMarkers} onSeek={t => setCurrentTime(t)} />
+              </div>
+            </div>
+
+            {selClip && (
+              <div className="control-group">
+                <h3 className="group-title">Clip Adjustments</h3>
+                <div className="card">
+                  <div className="field"><label>Volume — {Math.round(selClip.volume * 100)}%</label>
+                    <input type="range" min="0" max="2" step="0.05" value={selClip.volume} onChange={e => patchClip({ volume: parseFloat(e.target.value), volumePoints: [] })} style={{ width: '100%', accentColor: 'var(--accent-primary)' }} />
+                  </div>
+                  <div className="field">
+                    <label>Volume Automation {selClip.volumePoints?.length ? `(${selClip.volumePoints.length} pts)` : ''}</label>
+                    <VolumeGraph points={selClip.volumePoints || []} duration={selClip.duration} base={selClip.volume} onChange={pts => patchClip({ volumePoints: pts })} />
+                    <div className="vg-actions">
+                      <button onClick={() => { const rel = clamp(currentTime - selClip.start, 0, selClip.duration); patchClip({ volumePoints: [...(selClip.volumePoints || []), { t: rel, v: selClip.volume }].sort((a, b) => a.t - b.t) }) }}>+ Point at playhead</button>
+                      <button onClick={() => patchClip({ volumePoints: [] })} disabled={!selClip.volumePoints?.length}>Clear</button>
+                    </div>
+                    <p className="hint">Click the graph to add points, drag to shape the line, double-click a point to remove. Drag down to silence pops. Unity gain = the middle line.</p>
+                  </div>
+                  <div className="field row">
+                    <div><label>Fade In (s)</label><input type="number" step="0.1" min="0" className="duration-input" value={selClip.fadeIn} onChange={e => patchClip({ fadeIn: clamp(parseFloat(e.target.value) || 0, 0, selClip.duration) })} /></div>
+                    <div><label>Fade Out (s)</label><input type="number" step="0.1" min="0" className="duration-input" value={selClip.fadeOut} onChange={e => patchClip({ fadeOut: clamp(parseFloat(e.target.value) || 0, 0, selClip.duration) })} /></div>
+                  </div>
+                  <div className="field"><label>Duration (s)</label><input type="number" step="0.1" min="0.1" className="duration-input" value={selClip.duration.toFixed(2)} onChange={e => patchClip({ duration: parseFloat(e.target.value) || 0.1 })} /></div>
+                  <p className="hint">Overlap two video clips and give them fades for a transparent crossfade.</p>
+                </div>
+              </div>
+            )}
+
+            {selText && (
+              <div className="control-group">
+                <h3 className="group-title">Text</h3>
+                <div className="card">
+                  <div className="field"><label>Content</label><textarea className="duration-input" rows={2} value={selText.text} onChange={e => patchText({ text: e.target.value })} /></div>
+                  <div className="field row">
+                    <div><label>Size</label><input type="number" min="8" step="2" className="duration-input" value={selText.fontSize} onChange={e => patchText({ fontSize: parseFloat(e.target.value) || 12 })} /></div>
+                    <div><label>Color</label><input type="color" className="color-input" value={selText.color} onChange={e => patchText({ color: e.target.value })} /></div>
+                  </div>
+                  <div className="field row">
+                    <div><label>Start (s)</label><input type="number" step="0.1" min="0" className="duration-input" value={selText.start.toFixed(2)} onChange={e => patchText({ start: parseFloat(e.target.value) || 0 })} /></div>
+                    <div><label>Duration (s)</label><input type="number" step="0.1" min="0.2" className="duration-input" value={selText.duration.toFixed(2)} onChange={e => patchText({ duration: parseFloat(e.target.value) || 0.2 })} /></div>
+                  </div>
+                  <div className="field row">
+                    <div><label>Fade In (s)</label><input type="number" step="0.1" min="0" className="duration-input" value={selText.fadeIn} onChange={e => patchText({ fadeIn: parseFloat(e.target.value) || 0 })} /></div>
+                    <div><label>Fade Out (s)</label><input type="number" step="0.1" min="0" className="duration-input" value={selText.fadeOut} onChange={e => patchText({ fadeOut: parseFloat(e.target.value) || 0 })} /></div>
+                  </div>
+                  <div className="field chk" onClick={() => patchText({ box: !selText.box })}><input type="checkbox" checked={!!selText.box} readOnly id="tbox" /><label htmlFor="tbox" style={{ cursor: 'pointer', marginBottom: 0 }}>Background bar</label></div>
+                  <p className="hint">Drag the text on the preview to position it.</p>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </main>
+
+      <KaraokeBooth open={showBooth} onClose={() => setShowBooth(false)} markers={markers}
+        totalDuration={totalDuration} currentTime={currentTime} isPlaying={isPlaying}
+        onSeek={t => setCurrentTime(t)} onPlay={p => setIsPlaying(p)} onRecorded={boothRecorded} />
+      <NarrationModal open={showNarration} onClose={() => setShowNarration(false)}
+        command={settings.narration.command}
+        onCommand={c => setSettings(s => ({ ...s, narration: { command: c } }))}
+        onGenerated={narrationGenerated} />
+
+      {ctxMenu && (() => {
+        const media = mediaBin.find(m => m.id === ctxMenu.mediaId)
+        if (!media) return null
+        return (
+          <div className="ctx-menu" style={{ left: ctxMenu.x, top: ctxMenu.y }} onClick={e => e.stopPropagation()}>
+            <button onClick={() => { addToTimeline(media); setCtxMenu(null) }}>Add to timeline</button>
+            <button onClick={() => { addAsIntro(media); setCtxMenu(null) }}>Add as intro clip ({settings.intro.segment} {settings.intro.seconds}s)</button>
+            <div className="ctx-sep" />
+            <button onClick={() => { setMediaBin(prev => prev.filter(m => m.id !== media.id)); setCtxMenu(null) }}>Remove from bin</button>
+          </div>
+        )
+      })()}
+
+      {showSettings && (
+        <div className="modal-backdrop" onClick={() => setShowSettings(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-head"><h2>Brand Kit & Settings</h2><button className="modal-close" onClick={() => setShowSettings(false)}>✕</button></div>
+            <div className="modal-body">
+              <section>
+                <div className="sec-title">
+                  <h3>Logo / Watermark</h3>
+                  <label className="switch"><input type="checkbox" checked={settings.brand.enabled} onChange={e => setSettings(s => ({ ...s, brand: { ...s.brand, enabled: e.target.checked } }))} /> Apply to every export</label>
+                </div>
+                <div className="logo-row">
+                  <div className="logo-preview">{settings.brand.logoPath ? <img src={fileUrl(settings.brand.logoPath)} alt="logo" /> : <span>No logo</span>}</div>
+                  <div className="logo-actions">
+                    <button onClick={async () => { const p = await window.ipcRenderer.pickLogo(); if (p) setSettings(s => ({ ...s, brand: { ...s.brand, logoPath: p, enabled: true } })) }}>Choose PNG…</button>
+                    {settings.brand.logoPath && <button onClick={() => setSettings(s => ({ ...s, brand: { ...s.brand, logoPath: null } }))}>Remove</button>}
+                  </div>
+                </div>
+                <div className="grid2">
+                  <label>Position
+                    <select value={settings.brand.position} onChange={e => setSettings(s => ({ ...s, brand: { ...s.brand, position: e.target.value as any } }))}>
+                      <option value="tl">Top Left</option><option value="tr">Top Right</option><option value="bl">Bottom Left</option><option value="br">Bottom Right</option><option value="center">Center</option>
+                    </select>
+                  </label>
+                  <label>Show
+                    <select value={settings.brand.showMode} onChange={e => setSettings(s => ({ ...s, brand: { ...s.brand, showMode: e.target.value as any } }))}>
+                      <option value="whole">Whole video</option><option value="intro">Intro only</option><option value="outro">Outro watermark</option>
+                    </select>
+                  </label>
+                  <label>Size — {settings.brand.sizePct}% width<input type="range" min="4" max="40" step="1" value={settings.brand.sizePct} onChange={e => setSettings(s => ({ ...s, brand: { ...s.brand, sizePct: parseInt(e.target.value) } }))} /></label>
+                  <label>Opacity — {Math.round(settings.brand.opacity * 100)}%<input type="range" min="0.1" max="1" step="0.05" value={settings.brand.opacity} onChange={e => setSettings(s => ({ ...s, brand: { ...s.brand, opacity: parseFloat(e.target.value) } }))} /></label>
+                  {settings.brand.showMode !== 'whole' && <label>Window (s)<input type="number" min="1" step="0.5" value={settings.brand.windowSec} onChange={e => setSettings(s => ({ ...s, brand: { ...s.brand, windowSec: parseFloat(e.target.value) || 5 } }))} /></label>}
+                  <label>Fade (s)<input type="number" min="0" step="0.1" value={settings.brand.fade} onChange={e => setSettings(s => ({ ...s, brand: { ...s.brand, fade: parseFloat(e.target.value) || 0 } }))} /></label>
+                </div>
+              </section>
+
+              <section>
+                <h3>Intro Clip Defaults</h3>
+                <div className="grid2">
+                  <label>Use segment
+                    <select value={settings.intro.segment} onChange={e => setSettings(s => ({ ...s, intro: { ...s.intro, segment: e.target.value as any } }))}><option value="first">First seconds</option><option value="last">Last seconds</option></select>
+                  </label>
+                  <label>Seconds (0–20)<input type="number" min="0.5" max="20" step="0.5" value={settings.intro.seconds} onChange={e => setSettings(s => ({ ...s, intro: { ...s.intro, seconds: clamp(parseFloat(e.target.value) || 5, 0.5, 20) } }))} /></label>
+                  <label>Fade (s)<input type="number" min="0" step="0.1" value={settings.intro.fade} onChange={e => setSettings(s => ({ ...s, intro: { ...s.intro, fade: parseFloat(e.target.value) || 0 } }))} /></label>
+                  <label>At the start
+                    <select value={settings.intro.treatment} onChange={e => setSettings(s => ({ ...s, intro: { ...s.intro, treatment: e.target.value as any } }))}><option value="ripple">Push everything later</option><option value="overlay">Overlay on top</option></select>
+                  </label>
+                </div>
+                <p className="hint">Right-click any media item → “Add as intro clip” to apply these.</p>
+              </section>
+
+              <section>
+                <h3>Audio</h3>
+                <label className="switch"><input type="checkbox" checked={settings.audio.optimize} onChange={e => setSettings(s => ({ ...s, audio: { ...s.audio, optimize: e.target.checked } }))} /> Auto optimize loudness (−14 LUFS, YouTube target)</label>
+                <label className="switch"><input type="checkbox" checked={settings.audio.noiseReduction} onChange={e => setSettings(s => ({ ...s, audio: { ...s.audio, noiseReduction: e.target.checked } }))} /> Noise reduction (FFT denoise + rumble filter)</label>
+              </section>
+
+              <section>
+                <h3>Caption Style</h3>
+                <div className="grid2">
+                  <label>Position
+                    <select value={settings.caption.position} onChange={e => setSettings(s => ({ ...s, caption: { ...s.caption, position: e.target.value as any } }))}>
+                      <option value="lower">Lower third</option><option value="center">Center</option><option value="top">Top</option>
+                    </select>
+                  </label>
+                  <label>Color<input type="color" className="color-input" value={settings.caption.color} onChange={e => setSettings(s => ({ ...s, caption: { ...s.caption, color: e.target.value } }))} /></label>
+                  <label>Size — {settings.caption.fontSize}px<input type="range" min="20" max="90" step="2" value={settings.caption.fontSize} onChange={e => setSettings(s => ({ ...s, caption: { ...s.caption, fontSize: parseInt(e.target.value) } }))} /></label>
+                  <label>Box opacity — {Math.round(settings.caption.boxOpacity * 100)}%<input type="range" min="0" max="1" step="0.05" value={settings.caption.boxOpacity} onChange={e => setSettings(s => ({ ...s, caption: { ...s.caption, boxOpacity: parseFloat(e.target.value) } }))} /></label>
+                </div>
+                <label className="switch"><input type="checkbox" checked={settings.caption.box} onChange={e => setSettings(s => ({ ...s, caption: { ...s.caption, box: e.target.checked } }))} /> Background bar behind captions</label>
+                <div className="grid2">
+                  <label>Accuracy / speed
+                    <select value={settings.caption.model} onChange={e => setSettings(s => ({ ...s, caption: { ...s.caption, model: e.target.value as any } }))}>
+                      <option value="tiny">Tiny — fastest</option><option value="base">Base — balanced</option><option value="small">Small — most accurate, slower</option>
+                    </select>
+                  </label>
+                  <label>Language
+                    <select value={settings.caption.language} onChange={e => setSettings(s => ({ ...s, caption: { ...s.caption, language: e.target.value } }))}>
+                      {CAPTION_LANGS.map(([code, name]) => <option key={code} value={code}>{name}</option>)}
+                    </select>
+                  </label>
+                  <label>Style
+                    <select value={settings.caption.mode} onChange={e => setSettings(s => ({ ...s, caption: { ...s.caption, mode: e.target.value as any } }))}>
+                      <option value="phrase">Phrase (sentence cues)</option><option value="word">Word-by-word (karaoke)</option>
+                    </select>
+                  </label>
+                </div>
+                <p className="hint">The “Captions” button transcribes the whole timeline on-device (Whisper). Non-English languages use a larger multilingual model (bigger first download).</p>
+              </section>
+
+              <section>
+                <h3>Cut Dead Space</h3>
+                <div className="grid2">
+                  <label>Detect by
+                    <select value={settings.silence.detectBy} onChange={e => setSettings(s => ({ ...s, silence: { ...s.silence, detectBy: e.target.value as any } }))}>
+                      <option value="auto">Auto (audio if present, else video)</option>
+                      <option value="audio">Audio silence (voiceover/music)</option>
+                      <option value="motion">Visual stillness (no audio)</option>
+                    </select>
+                  </label>
+                  <label>Min length (s)<input type="number" min="0.2" step="0.1" value={settings.silence.minPause} onChange={e => setSettings(s => ({ ...s, silence: { ...s.silence, minPause: Math.max(0.2, parseFloat(e.target.value) || 0.8) } }))} /></label>
+                  <label>Silence threshold (dB)<input type="number" max="0" step="1" value={settings.silence.thresholdDb} onChange={e => setSettings(s => ({ ...s, silence: { ...s.silence, thresholdDb: parseFloat(e.target.value) || -30 } }))} /></label>
+                  <label>Stillness sensitivity (dB)<input type="number" max="0" step="1" value={settings.silence.freezeDb} onChange={e => setSettings(s => ({ ...s, silence: { ...s.silence, freezeDb: parseFloat(e.target.value) || -50 } }))} /></label>
+                  <label>Keep padding (s)<input type="number" min="0" step="0.02" value={settings.silence.pad} onChange={e => setSettings(s => ({ ...s, silence: { ...s.silence, pad: Math.max(0, parseFloat(e.target.value) || 0) } }))} /></label>
+                  <label>Transition (s)<input type="number" min="0" step="0.02" value={settings.silence.transition} disabled={!settings.silence.smooth} onChange={e => setSettings(s => ({ ...s, silence: { ...s.silence, transition: Math.max(0, parseFloat(e.target.value) || 0) } }))} /></label>
+                </div>
+                <label className="switch"><input type="checkbox" checked={settings.silence.smooth} onChange={e => setSettings(s => ({ ...s, silence: { ...s.silence, smooth: e.target.checked } }))} /> Smooth the cuts with a short fade</label>
+                <p className="hint">“Cut Pauses” removes dead space and ripples everything left. <b>Audio</b> mode cuts silent gaps; <b>Visual stillness</b> cuts motionless/frozen stretches (for silent footage) — raise the stillness sensitivity toward 0 to catch near-static shots.</p>
+              </section>
+            </div>
+            <div className="modal-foot"><span>Settings save automatically and apply to every video.</span><button className="primary" onClick={() => setShowSettings(false)}>Done</button></div>
+          </div>
+        </div>
+      )}
+
+      {showQC && (
+        <div className="modal-backdrop" onClick={() => setShowQC(false)}>
+          <div className="modal qc" onClick={e => e.stopPropagation()}>
+            <div className="modal-head">
+              <h2>Watch &amp; Verify {qcReport && !qcReport.error && <span className={`verdict ${qcReport.verdict}`}>{qcReport.verdict === 'pass' ? 'YouTube-ready' : qcReport.verdict === 'warn' ? 'Minor warnings' : 'Issues found'}</span>}</h2>
+              <button className="modal-close" onClick={() => setShowQC(false)}>✕</button>
+            </div>
+            <div className="modal-body">
+              {qcRunning && <div className="qc-loading">Analyzing render — loudness, peaks, black frames, sampling frames…</div>}
+              {!qcRunning && qcReport?.error && <div className="qc-loading">{qcReport.error}</div>}
+              {!qcRunning && qcReport && !qcReport.error && (
+                <>
+                  <div className="filmstrip">
+                    {qcReport.frames?.map((f: any, i: number) => (
+                      <div key={i} className="frame"><img src={`${fileUrl(f.path)}?t=${Date.now()}`} alt="" /><span>{f.t.toFixed(1)}s</span></div>
+                    ))}
+                  </div>
+                  <div className="qc-checks">
+                    {qcReport.checks?.map((c: any, i: number) => (
+                      <div key={i} className={`qc-row ${c.status}`}>
+                        <span className="dot" />
+                        <span className="qc-label">{c.label}</span>
+                        <span className="qc-detail">{c.detail}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="hint">Frames are sampled across the video so you can eyeball the picture. Loudness/peak are measured against YouTube's −14 LUFS / −1 dBTP target.</p>
+                </>
+              )}
+            </div>
+            <div className="modal-foot">
+              <span>{qcReport?.probe ? `${qcReport.probe.width}×${qcReport.probe.height} · ${qcReport.probe.fps}fps · ${qcReport.probe.vcodec} · ${qcReport.probe.duration?.toFixed(1)}s` : ''}</span>
+              <div style={{ display: 'flex', gap: 8 }}>
+                {lastExport && <button onClick={() => window.ipcRenderer.revealFile(lastExport)}>Show file</button>}
+                <button className="primary" onClick={() => setShowQC(false)}>Close</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+export default App
