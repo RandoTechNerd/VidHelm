@@ -10,6 +10,10 @@ Everything runs locally. FFmpeg does the rendering, Whisper runs on-device for c
 
 ## Features
 
+**Your workflow, automated**
+- **Start Recipe** — standing instructions like start G-code: a plain-text block with toggle chips (off = `#`-commented), free-type welcome. Default pipeline: cut dead air → thumbnail picker (frame + catchy subtitle + your logo) → 5 AI-pitched titles → brand watermark → intro sting at 0:00. One click (🚀 Recipe) or one sentence to your AI runs it
+- **Robust pause removal** — trim-aware audio analysis, tail-silence detection, overlap-safe splicing with crossfades
+
 **Editing**
 - Timeline with filmstrip thumbnails, trim/split/ripple, snapping, undo/redo
 - **Tag points** — press `M` to mark beats (a joke, a reveal, a cut). Tags are visible flags on the ruler; clips snap to them, SFX drop on them, narration lines align to them

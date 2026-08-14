@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import './App.css'
-import { SfxPanel, MarkerPanel, KaraokeBooth, NarrationModal, newMarker, type Marker, type SfxItem } from './extras'
+import { SfxPanel, MarkerPanel, KaraokeBooth, NarrationModal, RecipeSection, ThumbnailModal, DEFAULT_RECIPE, recipeActive, newMarker, type Marker, type SfxItem, type RecipeSettings } from './extras'
 
 interface MediaFile {
   id: string
@@ -33,6 +33,7 @@ interface AppSettings {
   caption: { fontSize: number; color: string; position: 'lower' | 'top' | 'center'; box: boolean; boxOpacity: number; model: 'tiny' | 'base' | 'small'; language: string; mode: 'phrase' | 'word' }
   silence: { minPause: number; thresholdDb: number; pad: number; smooth: boolean; transition: number; detectBy: 'auto' | 'audio' | 'motion'; freezeDb: number }
   narration: { command: string }
+  recipe: RecipeSettings
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -42,6 +43,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   caption: { fontSize: 44, color: '#ffffff', position: 'lower', box: true, boxOpacity: 0.5, model: 'tiny', language: 'en', mode: 'phrase' },
   silence: { minPause: 0.8, thresholdDb: -30, pad: 0.12, smooth: true, transition: 0.12, detectBy: 'auto', freezeDb: -50 },
   narration: { command: '' },
+  recipe: { text: DEFAULT_RECIPE, introAudioPath: null },
 }
 
 const CAPTION_LANGS: [string, string][] = [['en', 'English (fast)'], ['auto', 'Auto-detect'], ['es', 'Spanish'], ['fr', 'French'], ['de', 'German'], ['pt', 'Portuguese'], ['hi', 'Hindi'], ['ja', 'Japanese'], ['zh', 'Chinese'], ['ko', 'Korean'], ['it', 'Italian']]
@@ -231,6 +233,7 @@ function App() {
   const [markers, setMarkers] = useState<Marker[]>([])
   const [showBooth, setShowBooth] = useState(false)
   const [showNarration, setShowNarration] = useState(false)
+  const [showThumbnail, setShowThumbnail] = useState(false)
   const [sidebarTab, setSidebarTab] = useState<'media' | 'sfx'>('media')
   const [silenceBusy, setSilenceBusy] = useState<string | null>(null)
   const [eta, setEta] = useState<number | null>(null)
@@ -429,7 +432,7 @@ function App() {
   // Load persistent settings (brand kit, intro defaults, audio) once
   useEffect(() => {
     window.ipcRenderer.getSettings().then((s: AppSettings) => {
-      if (s) setSettings({ ...DEFAULT_SETTINGS, ...s, brand: { ...DEFAULT_SETTINGS.brand, ...s.brand }, intro: { ...DEFAULT_SETTINGS.intro, ...s.intro }, audio: { ...DEFAULT_SETTINGS.audio, ...s.audio } })
+      if (s) setSettings({ ...DEFAULT_SETTINGS, ...s, brand: { ...DEFAULT_SETTINGS.brand, ...s.brand }, intro: { ...DEFAULT_SETTINGS.intro, ...s.intro }, audio: { ...DEFAULT_SETTINGS.audio, ...s.audio }, recipe: { ...DEFAULT_SETTINGS.recipe, ...s.recipe } })
       settingsLoaded.current = true
     }).catch(() => { settingsLoaded.current = true })
   }, [])
@@ -569,6 +572,48 @@ function App() {
     setShowNarration(false)
   }
 
+  // ---- start recipe ----
+  const firstVideo = () => {
+    const c = clips.filter(x => x.trackId === 'v1').sort((a, b) => a.start - b.start)
+      .map(x => mediaBin.find(m => m.id === x.mediaId)).find(m => m?.type === 'video')
+    return c || mediaBin.find(m => m.type === 'video') || null
+  }
+
+  // Place the configured intro audio at 0:00 on the voice track (skips if it's already there)
+  const applyIntroAudio = async (): Promise<string> => {
+    const p = settings.recipe.introAudioPath
+    if (!p) return 'intro-audio: no file chosen (Settings → Start Recipe)'
+    let media = mediaBin.find(m => m.path === p)
+    if (!media) {
+      const meta = await window.ipcRenderer.getMetadata(p).catch(() => null)
+      if (!meta) return 'intro-audio: file unreadable'
+      media = { id: rid(), name: p.split(/[\\/]/).pop() || 'intro', path: p, type: 'audio', duration: meta.duration || 2, hasVideo: false, hasAudio: true }
+      setMediaBin(prev => [...prev, media!])
+    }
+    if (clips.some(c => c.mediaId === media!.id && c.start < 0.01)) return 'intro-audio: already placed'
+    setClips(prev => [...prev, { id: rid(), mediaId: media!.id, type: 'audio', trackId: 'a1', start: 0, duration: media!.duration, sourceStart: 0, volume: 1, fadeIn: 0, fadeOut: 0.2 }])
+    return `intro-audio: placed ${media.name} at 0:00`
+  }
+
+  // Run the app-native steps of the start recipe; AI-facing lines are reported for the agent/chat
+  const runRecipe = async () => {
+    const active = recipeActive(settings.recipe.text)
+    const notes: string[] = []
+    if (active['cut-pauses']) {
+      if (totalDuration > 0) { const r = await runCutDeadSpace(); notes.push(r.error ? `cut-pauses: ${r.error}` : `cut-pauses: removed ${r.removed} (${r.seconds}s)`) }
+      else notes.push('cut-pauses: timeline empty')
+    }
+    if (active['intro-audio']) notes.push(await applyIntroAudio())
+    if (active['logo']) {
+      if (settings.brand.logoPath) { setSettings(s => ({ ...s, brand: { ...s.brand, enabled: true } })); notes.push('logo: watermark enabled') }
+      else notes.push('logo: none set (Settings → Brand Kit)')
+    }
+    const aiSteps = ['titles', 'subtitle', 'captions'].filter(k => active[k])
+    if (aiSteps.length) notes.push(`for your AI (or do manually): ${aiSteps.join(', ')}`)
+    if (active['thumbnail']) { setShowThumbnail(true); notes.push('thumbnail: picker opened') }
+    alert('Start Recipe:\n\n' + notes.map(n => '• ' + n).join('\n'))
+  }
+
   // ---- agent bridge executor ----
   // Commands arrive from electron/main.ts (HTTP bridge -> 'agent-command'), run against live state,
   // and reply on 'agent-response'. The ref keeps the handler closure fresh across renders.
@@ -584,6 +629,7 @@ function App() {
           clips: clips.map(c => ({ id: c.id, track: c.trackId, media: mediaBin.find(m => m.id === c.mediaId)?.name, start: +c.start.toFixed(3), duration: +c.duration.toFixed(3), sourceStart: +c.sourceStart.toFixed(3), volume: c.volume, fadeIn: c.fadeIn, fadeOut: c.fadeOut, automationPoints: c.volumePoints?.length || 0 })),
           texts: texts.map(t => ({ id: t.id, text: t.text, start: +t.start.toFixed(3), duration: +t.duration.toFixed(3), x: t.x, y: t.y, fontSize: t.fontSize, color: t.color })),
           tags: [...markers].sort((a, b) => a.t - b.t).map(m => ({ id: m.id, t: +m.t.toFixed(3), label: m.label })),
+          startRecipe: { instructions: settings.recipe.text, active: Object.entries(recipeActive(settings.recipe.text)).filter(([, v]) => v).map(([k]) => k), introAudioPath: settings.recipe.introAudioPath, note: "The user's standing workflow (like start G-code). # lines are OFF. Lines like 'titles 5' are for YOU to do in chat." },
         }
       case 'add_media': {
         const meta = await window.ipcRenderer.getMetadata(cmd.path)
@@ -666,13 +712,27 @@ function App() {
         setClips(prev => [...prev, clip])
         return { ok: true, clipId: clip.id, at: clip.start }
       }
+      case 'cut_pauses': return await runCutDeadSpace()
+      case 'run_recipe': { await runRecipe(); return { ok: true } }
+      case 'sample_frames': {
+        const v = cmd.path ? { path: cmd.path } : firstVideo()
+        if (!v) return { error: 'no video on the timeline' }
+        return await window.ipcRenderer.sampleFrames({ filePath: v.path, count: cmd.count || 8 })
+      }
+      case 'compose_thumbnail': {
+        const v = cmd.path ? { path: cmd.path, name: 'video' } : firstVideo()
+        if (!v) return { error: 'no video on the timeline' }
+        if (!cmd.outPath) return { error: 'outPath required' }
+        return await window.ipcRenderer.composeThumbnail({ filePath: v.path, t: cmd.t ?? 1, subtitle: cmd.subtitle, logoPath: cmd.logoPath ?? settings.brand.logoPath, outPath: cmd.outPath })
+      }
       case 'ui': {
         if (cmd.panel === 'booth') setShowBooth(cmd.open !== false)
         else if (cmd.panel === 'narration') setShowNarration(cmd.open !== false)
         else if (cmd.panel === 'sfx') setSidebarTab('sfx')
         else if (cmd.panel === 'media') setSidebarTab('media')
         else if (cmd.panel === 'settings') setShowSettings(cmd.open !== false)
-        else return { error: `unknown panel: ${cmd.panel}. Use booth | narration | sfx | media | settings` }
+        else if (cmd.panel === 'thumbnail') setShowThumbnail(cmd.open !== false)
+        else return { error: `unknown panel: ${cmd.panel}. Use booth | narration | sfx | media | settings | thumbnail` }
         return { ok: true, panel: cmd.panel }
       }
       case 'seek': setCurrentTime(clamp(cmd.t ?? 0, 0, Math.max(totalDuration, cmd.t ?? 0))); return { ok: true }
@@ -777,14 +837,15 @@ function App() {
     setCaptioning(null); setCaptionPct(null)
   }
 
-  // Detect dead space (silent pauses OR motionless video) across the timeline and ripple it out
-  const cutDeadSpace = async () => {
+  // Detect dead space (silent pauses OR motionless video) across the timeline and ripple it out.
+  // Core is UI-free so both the toolbar button and the agent bridge can run it.
+  const runCutDeadSpace = async (): Promise<{ error?: string; removed?: number; seconds?: number; mode?: string }> => {
     const S = settings.silence
-    const hasAudio = clips.some(c => c.trackId === 'a1' || mediaBin.find(m => m.id === c.mediaId)?.hasAudio)
+    const hasAudio = clips.some(c => c.trackId !== 'v1' || mediaBin.find(m => m.id === c.mediaId)?.hasAudio)
     const videoClips = clips.filter(c => c.trackId === 'v1' && mediaBin.find(m => m.id === c.mediaId)?.type === 'video')
     const useMotion = S.detectBy === 'motion' || (S.detectBy === 'auto' && !hasAudio)
-    if (useMotion && !videoClips.length) { alert('No video clips to scan for still frames.'); return }
-    if (!useMotion && !hasAudio) { alert('No audio to scan. Switch “Detect by” to Visual stillness in settings for silent footage.'); return }
+    if (useMotion && !videoClips.length) return { error: 'No video clips to scan for still frames.' }
+    if (!useMotion && !hasAudio) return { error: 'No audio to scan. Switch "Detect by" to Visual stillness for silent footage.' }
     setSilenceBusy(useMotion ? 'Scanning frames…' : 'Analyzing audio…')
     try {
       let intervals: { start: number; end: number }[] = []
@@ -796,22 +857,39 @@ function App() {
           for (const iv of r.intervals || []) intervals.push({ start: c.start + iv.start, end: c.start + Math.min(iv.end, c.duration) })
         }
       } else {
-        const payload = clips.map(c => { const m = mediaBin.find(x => x.id === c.mediaId); return { path: m?.path, hasAudio: m?.hasAudio, start: c.start, duration: c.duration, volume: c.volume } })
+        const payload = clips.map(c => { const m = mediaBin.find(x => x.id === c.mediaId); return { path: m?.path, hasAudio: m?.hasAudio, start: c.start, duration: c.duration, sourceStart: c.sourceStart, volume: c.volume } })
         const mix = await window.ipcRenderer.renderMixAudio({ clips: payload })
-        if (mix.error || !mix.path) { alert('Cut pauses: ' + (mix.error || 'could not prepare audio')); return }
+        if (mix.error || !mix.path) return { error: 'Cut pauses: ' + (mix.error || 'could not prepare audio') }
         const res = await window.ipcRenderer.detectSilence({ filePath: mix.path, thresholdDb: S.thresholdDb, minPause: S.minPause })
-        if (res.error) { alert('Cut pauses: ' + res.error); return }
+        if (res.error) return { error: 'Cut pauses: ' + res.error }
         intervals = res.intervals || []
       }
-      let ranges = intervals.map(iv => ({ start: iv.start + S.pad, end: iv.end - S.pad })).filter(r => r.end - r.start > 0.1)
-      if (!ranges.length) { alert(useMotion ? 'No long static stretches found (lower the min length or stillness sensitivity in settings).' : 'No long pauses found (try lowering the minimum pause length in settings).'); return }
+      // pad, clamp to the timeline, drop slivers, then MERGE overlaps (overlapping clips / adjacent
+      // detections would otherwise double-cut and corrupt later ranges)
+      let ranges = intervals
+        .map(iv => ({ start: Math.max(0, iv.start + S.pad), end: Math.min(totalDuration, iv.end - S.pad) }))
+        .filter(r => r.end - r.start > 0.1)
+        .sort((a, b) => a.start - b.start)
+      const merged: { start: number; end: number }[] = []
+      for (const r of ranges) {
+        const last = merged[merged.length - 1]
+        if (last && r.start <= last.end + 0.01) last.end = Math.max(last.end, r.end)
+        else merged.push({ ...r })
+      }
+      ranges = merged
+      if (!ranges.length) return { error: useMotion ? 'No long static stretches found (lower the min length or stillness sensitivity in settings).' : 'No long pauses found (try lowering the minimum pause length in settings).' }
       ranges.sort((a, b) => b.start - a.start) // apply last→first so earlier times stay valid
       let nc = clips, nt = texts, removed = 0
       for (const r of ranges) { const out = removeRange(nc, nt, r.start, r.end, S.smooth ? S.transition : 0); nc = out.clips; nt = out.texts; removed += (r.end - r.start) }
       setClips(nc); setTexts(nt); setSelectedId(null); setCurrentTime(0)
-      alert(`Removed ${ranges.length} ${useMotion ? 'static stretch' : 'pause'}${ranges.length > 1 ? (useMotion ? 'es' : 's') : ''} (~${removed.toFixed(1)}s). Undo with Ctrl+Z if needed.`)
-    } catch (e) { console.error(e); alert('Cut pauses failed.') }
-    setSilenceBusy(null)
+      return { removed: ranges.length, seconds: +removed.toFixed(1), mode: useMotion ? 'stillness' : 'silence' }
+    } catch (e) { console.error(e); return { error: 'Cut pauses failed: ' + String(e) } }
+    finally { setSilenceBusy(null) }
+  }
+  const cutDeadSpace = async () => {
+    const r = await runCutDeadSpace()
+    if (r.error) alert(r.error)
+    else alert(`Removed ${r.removed} ${r.mode === 'stillness' ? 'static stretch(es)' : 'pause(s)'} (~${r.seconds}s). Undo with Ctrl+Z if needed.`)
   }
 
   // ---- voiceover ----
@@ -1026,6 +1104,7 @@ function App() {
           <h1>RandoSnap</h1>
           <button className="hdr-btn" onClick={saveProject} title="Save project">Save</button>
           <button className="hdr-btn" onClick={loadProject} title="Open project">Open</button>
+          <button className="hdr-btn" onClick={runRecipe} title="Run your Start Recipe on this timeline">🚀 Recipe</button>
           <button className="hdr-btn icon" onClick={() => setShowSettings(true)} title="Brand kit & settings"><IconGear /></button>
         </div>
         <div className="orientation-switch">
@@ -1270,6 +1349,9 @@ function App() {
         onCommand={c => setSettings(s => ({ ...s, narration: { command: c } }))}
         onGenerated={narrationGenerated} />
 
+      <ThumbnailModal open={showThumbnail} onClose={() => setShowThumbnail(false)}
+        videoPath={firstVideo()?.path || null} videoName={firstVideo()?.name || 'video'} logoPath={settings.brand.logoPath} />
+
       {ctxMenu && (() => {
         const media = mediaBin.find(m => m.id === ctxMenu.mediaId)
         if (!media) return null
@@ -1317,6 +1399,10 @@ function App() {
                   <label>Fade (s)<input type="number" min="0" step="0.1" value={settings.brand.fade} onChange={e => setSettings(s => ({ ...s, brand: { ...s.brand, fade: parseFloat(e.target.value) || 0 } }))} /></label>
                 </div>
               </section>
+
+              <RecipeSection recipe={settings.recipe} onChange={r => setSettings(s => ({ ...s, recipe: r }))}
+                logoPath={settings.brand.logoPath}
+                onPickLogo={async () => { const p = await window.ipcRenderer.pickLogo(); if (p) setSettings(s => ({ ...s, brand: { ...s.brand, logoPath: p, enabled: true } })) }} />
 
               <section>
                 <h3>Intro Clip Defaults</h3>

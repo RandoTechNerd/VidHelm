@@ -25,6 +25,9 @@ interface Window {
     detectFreeze: (data: { filePath: string; sourceStart: number; duration: number; freezeDb: number; minDur: number }) => Promise<{ intervals?: { start: number; end: number }[]; error?: string }>
     exportVideo: (data: { clips: any[], texts: any[], brand: any, audio: any, outputPath: string, settings: any }) => Promise<{ success: boolean }>
     sfxLibrary: () => Promise<{ dir: string; items: { name: string; path: string; duration: number; builtin: boolean }[] }>
+    pickAudio: () => Promise<string | null>
+    sampleFrames: (data: { filePath: string; count?: number; sourceStart?: number; duration?: number }) => Promise<{ frames?: { t: number; path: string }[]; error?: string }>
+    composeThumbnail: (data: { filePath: string; t: number; subtitle?: string; logoPath?: string | null; outPath: string }) => Promise<{ ok?: boolean; outPath?: string; error?: string }>
     openSfxFolder: () => Promise<void>
     voiceClone: (data: { command: string; scriptText: string }) => Promise<{ files?: string[]; error?: string; log?: string }>
   }

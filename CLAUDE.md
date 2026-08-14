@@ -4,14 +4,15 @@ RandoSnap is a desktop video editor (Electron + React) designed to be driven col
 
 ## Steering the running app (the good part)
 
-This repo ships an MCP server (`.mcp.json` — auto-discovered here; approve it when prompted). While the app is running (`npm run dev` or the installed app), you have 16 tools to drive it live: `get_state`, `screenshot`, `add_media`, `add_clip`, `update_clip`, `split_clip`, `delete_item`, `add_text`, `update_text`, `add_tag`, `update_tag`, `list_sfx`, `place_sfx`, `transport`, `set_format`, `export_video`.
+This repo ships an MCP server (`.mcp.json` — auto-discovered here; approve it when prompted). While the app is running (`npm run dev` or the installed app), you have 21 tools to drive it live: `get_state`, `screenshot`, `add_media`, `add_clip`, `update_clip`, `split_clip`, `delete_item`, `add_text`, `update_text`, `add_tag`, `update_tag`, `list_sfx`, `place_sfx`, `transport`, `set_format`, `export_video`, `cut_pauses`, `run_recipe`, `sample_frames`, `compose_thumbnail`, `open_panel`.
 
 Working style that works well:
 1. `get_state` first — it returns the whole timeline (clips per track, texts, tag points, format).
 2. Make edits in small batches, then `screenshot` to see what the human sees. Your edits appear **instantly in their GUI**, and they can drag things around between your calls — re-read state rather than assuming.
 3. **Tag points are the shared language.** The human taps `M` at beats they care about; you read tags from state and hang SFX (`place_sfx`), text, and narration on them. Prefer editing relative to tags over hardcoded times.
 4. `export_video` blocks until rendered and returns an automatic quality check (loudness/peaks/black frames) — report its verdict to the user.
-5. If tools fail with "RandoSnap is not running", ask the user to start the app (or run `npm run dev` yourself in the background).
+5. **Start Recipe**: `get_state.startRecipe` is the user's standing workflow (like start G-code; # = off). "Run my workflow" = execute active lines: `cut_pauses`, intro-audio/logo/thumbnail via `run_recipe`, and do the AI lines yourself (`titles 5` → pitch 5 titles in chat, `subtitle` → propose catchy thumbnail one-liners, then `compose_thumbnail`).
+6. If tools fail with "RandoSnap is not running", ask the user to start the app (or run `npm run dev` yourself in the background).
 
 Tracks: `v1` video · `a1` voice/music · `a2` SFX. Times are seconds. Text x/y are 0–1 of frame.
 

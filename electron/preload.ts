@@ -45,6 +45,9 @@ contextBridge.exposeInMainWorld('ipcRenderer', {
   detectFreeze: (data: { filePath: string; sourceStart: number; duration: number; freezeDb: number; minDur: number }) => ipcRenderer.invoke('detect-freeze', data),
   exportVideo: (data: { clips: any[], texts: any[], brand: any, audio: any, outputPath: string, settings: any }) => ipcRenderer.invoke('export-video', data),
   sfxLibrary: () => ipcRenderer.invoke('sfx-library'),
+  pickAudio: () => ipcRenderer.invoke('pick-audio'),
+  sampleFrames: (data: { filePath: string; count?: number; sourceStart?: number; duration?: number }) => ipcRenderer.invoke('sample-frames', data),
+  composeThumbnail: (data: { filePath: string; t: number; subtitle?: string; logoPath?: string | null; outPath: string }) => ipcRenderer.invoke('compose-thumbnail', data),
   openSfxFolder: () => ipcRenderer.invoke('open-sfx-folder'),
   voiceClone: (data: { command: string; scriptText: string }) => ipcRenderer.invoke('voice-clone', data),
 })

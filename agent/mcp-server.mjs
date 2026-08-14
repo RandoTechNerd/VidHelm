@@ -9,7 +9,7 @@ const BRIDGE = `http://127.0.0.1:${process.env.RS_AGENT_PORT || 5959}`
 const NOT_RUNNING = 'RandoSnap is not running. Start it first: `npm run dev` (or launch the installed app), then retry.'
 
 const call = (method, path, body) => new Promise((resolve) => {
-  const req = http.request(`${BRIDGE}${path}`, { method, headers: { 'Content-Type': 'application/json' }, timeout: method === 'POST' && body?.action === 'export' ? 30 * 60 * 1000 : 20000 }, res => {
+  const req = http.request(`${BRIDGE}${path}`, { method, headers: { 'Content-Type': 'application/json' }, timeout: method === 'POST' && body?.action === 'export' ? 30 * 60 * 1000 : ['cut_pauses','run_recipe','sample_frames','compose_thumbnail'].includes(body?.action) ? 5 * 60 * 1000 : 20000 }, res => {
     const chunks = []
     res.on('data', c => chunks.push(c))
     res.on('end', () => {
@@ -42,7 +42,11 @@ const TOOLS = [
   { name: 'transport', description: 'Move the playhead and/or start/stop playback in the app window.', inputSchema: { type: 'object', properties: { seek: { ...num, description: 'seconds' }, play: bool } } },
   { name: 'set_format', description: 'Set export format: orientation landscape|portrait|square, resolution 4K|1440p|1080p|720p, fps 24|30|60.', inputSchema: { type: 'object', properties: { orientation: str, resolution: str, fps: num } } },
   { name: 'export_video', description: 'Render the timeline to an mp4 at outputPath (absolute). Blocks until done; returns the automatic quality-check verdict (loudness, peaks, black frames).', inputSchema: { type: 'object', properties: { outputPath: str, qualityCheck: bool }, required: ['outputPath'] } },
-  { name: 'open_panel', description: 'Open/close a panel in the app for the user: booth (karaoke recorder), narration (cloned voice), sfx (sound library tab), media (bin tab), settings.', inputSchema: { type: 'object', properties: { panel: { ...str, enum: ['booth', 'narration', 'sfx', 'media', 'settings'] }, open: bool }, required: ['panel'] } },
+  { name: 'open_panel', description: 'Open/close a panel in the app for the user: booth (karaoke recorder), narration (cloned voice), sfx (sound library tab), media (bin tab), settings, thumbnail (frame picker).', inputSchema: { type: 'object', properties: { panel: { ...str, enum: ['booth', 'narration', 'sfx', 'media', 'settings', 'thumbnail'] }, open: bool }, required: ['panel'] } },
+  { name: 'cut_pauses', description: 'Detect and remove dead space (silent pauses, or motionless stretches for silent footage) across the whole timeline, splicing seamlessly with short crossfades. Uses the thresholds from Settings. Undoable.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'run_recipe', description: "Run the user's Start Recipe (their standing workflow, shown in get_state.startRecipe) — executes the app-native steps (cut-pauses, intro-audio, logo, thumbnail picker) and reports which steps are yours to do (titles, subtitle...).", inputSchema: { type: 'object', properties: {} } },
+  { name: 'sample_frames', description: 'Sample N evenly-spaced frames from the first timeline video (or an explicit path) — returns times + jpg paths for choosing a thumbnail moment.', inputSchema: { type: 'object', properties: { count: num, path: str } } },
+  { name: 'compose_thumbnail', description: "Compose a 1280x720 YouTube thumbnail: video frame at time t + catchy subtitle (bottom-left) + the user's brand logo (top-right, automatic). Writes PNG to outPath.", inputSchema: { type: 'object', properties: { t: num, subtitle: str, outPath: str, path: str }, required: ['t', 'outPath'] } },
 ]
 
 async function runTool(name, args = {}) {
@@ -61,6 +65,10 @@ async function runTool(name, args = {}) {
     }
     case 'export_video': return call('POST', '/command', { action: 'export', ...args })
     case 'open_panel': return call('POST', '/command', { action: 'ui', ...args })
+    case 'cut_pauses': return call('POST', '/command', { action: 'cut_pauses' })
+    case 'run_recipe': return call('POST', '/command', { action: 'run_recipe' })
+    case 'sample_frames': return call('POST', '/command', { action: 'sample_frames', ...args })
+    case 'compose_thumbnail': return call('POST', '/command', { action: 'compose_thumbnail', ...args })
     case 'add_media': case 'add_clip': case 'update_clip': case 'split_clip': case 'delete_item':
     case 'add_text': case 'update_text': case 'add_tag': case 'update_tag': case 'list_sfx':
     case 'place_sfx': case 'set_format':

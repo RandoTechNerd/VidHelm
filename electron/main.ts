@@ -109,14 +109,62 @@ app.on('window-all-closed', () => {
 
 ipcMain.handle('select-save-path', async (event, defaultName: string) => {
   if (!win) return null
+  const ext = (defaultName.split('.').pop() || 'mp4').toLowerCase()
   const { filePath } = await dialog.showSaveDialog(win, {
-    title: 'Export YouTube Video',
+    title: ext === 'png' || ext === 'jpg' ? 'Save Image' : 'Export YouTube Video',
     defaultPath: defaultName,
-    filters: [
-      { name: 'Video Files', extensions: ['mp4'] }
-    ]
+    filters: [{ name: ext.toUpperCase() + ' Files', extensions: [ext] }],
   })
   return filePath
+})
+
+ipcMain.handle('pick-audio', async () => {
+  if (!win) return null
+  const { filePaths } = await dialog.showOpenDialog(win, { title: 'Choose intro audio', filters: [{ name: 'Audio', extensions: ['wav', 'mp3', 'ogg', 'm4a', 'flac', 'aac'] }], properties: ['openFile'] })
+  return filePaths?.[0] || null
+})
+
+// Sample N evenly-spaced frames from a video (for the thumbnail picker)
+ipcMain.handle('sample-frames', async (_event, { filePath, count = 8, sourceStart = 0, duration }: { filePath: string; count?: number; sourceStart?: number; duration?: number }) => {
+  if (!filePath || !fs.existsSync(filePath)) return { error: 'no file' }
+  const dur: number = duration || await new Promise(res => ffmpeg.ffprobe(filePath, (e, d) => res(e ? 0 : (d.format.duration || 0))))
+  if (!dur) return { error: 'cannot read duration' }
+  const dir = path.join(app.getPath('temp'), 'randosnap_frames', String(Date.now()))
+  fs.mkdirSync(dir, { recursive: true })
+  const frames: { t: number; path: string }[] = []
+  for (let i = 0; i < count; i++) {
+    const t = sourceStart + ((i + 0.5) / count) * dur
+    const out = path.join(dir, `f_${i}.jpg`)
+    await new Promise<void>(res => {
+      const p = spawn(paths.ffmpeg, ['-y', '-hide_banner', '-loglevel', 'error', '-ss', String(t), '-i', filePath, '-frames:v', '1', '-vf', 'scale=480:-1', out])
+      p.on('close', () => res()); p.on('error', () => res())
+    })
+    if (fs.existsSync(out)) frames.push({ t: +t.toFixed(2), path: out })
+  }
+  return { frames }
+})
+
+// Compose a YouTube thumbnail: full-res frame + catchy subtitle + brand logo -> 1280x720 image
+ipcMain.handle('compose-thumbnail', async (_event, { filePath, t, subtitle, logoPath, outPath }: { filePath: string; t: number; subtitle?: string; logoPath?: string | null; outPath: string }) => {
+  if (!filePath || !fs.existsSync(filePath)) return { error: 'no video' }
+  const fontFile = escFilter(path.join(process.env.WINDIR || 'C:/Windows', 'Fonts', 'arialbd.ttf'))
+  const hasLogo = logoPath && fs.existsSync(logoPath)
+  const args = ['-y', '-hide_banner', '-loglevel', 'error', '-ss', String(t), '-i', filePath]
+  if (hasLogo) args.push('-i', logoPath!)
+  let vf = `[0:v]scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720`
+  if (subtitle && subtitle.trim()) {
+    const tmp = path.join(app.getPath('temp'), `rs_sub_${Date.now()}.txt`)
+    fs.writeFileSync(tmp, subtitle.trim(), 'utf8')
+    vf += `,drawtext=fontfile='${fontFile}':textfile='${escFilter(tmp)}':fontcolor=white:fontsize=72:borderw=8:bordercolor=black@0.9:x=48:y=h-text_h-48`
+  }
+  if (hasLogo) { vf += `[base];[1:v]format=rgba,scale=170:-1[lg];[base][lg]overlay=main_w-overlay_w-28:28` }
+  args.push('-filter_complex', vf, '-frames:v', '1', outPath)
+  return new Promise(resolve => {
+    const p = spawn(paths.ffmpeg, args)
+    let err = ''; p.stderr.on('data', d => err += d)
+    p.on('close', code => resolve(code === 0 && fs.existsSync(outPath) ? { ok: true, outPath } : { error: err.slice(-400) || 'compose failed' }))
+    p.on('error', e => resolve({ error: String(e) }))
+  })
 })
 
 ipcMain.handle('reveal-file', async (_event, filePath: string) => {
@@ -209,7 +257,10 @@ ipcMain.handle('render-mix-audio', async (_event, { clips }: { clips: any[] }) =
     withAudio.forEach((c, i) => {
       const idx = i + 1
       cmd.input(c.path)
-      fc.push(`[${idx}:a]aresample=48000,volume=${c.volume ?? 1},adelay=${Math.round(c.start * 1000)}|${Math.round(c.start * 1000)}[a${idx}]`)
+      // honor the clip's trim window (sourceStart/duration) so timeline alignment is exact
+      const ss = c.sourceStart || 0
+      const trim = `atrim=start=${ss}:end=${ss + (c.duration || 0) || 999999},asetpts=PTS-STARTPTS,`
+      fc.push(`[${idx}:a]${trim}aresample=48000,volume=${c.volume ?? 1},adelay=${Math.round(c.start * 1000)}|${Math.round(c.start * 1000)}[a${idx}]`)
       mix.push(`a${idx}`)
     })
     fc.push(`${mix.map(a => `[${a}]`).join('')}amix=inputs=${mix.length}:duration=first:normalize=0[m]`)
@@ -237,6 +288,13 @@ ipcMain.handle('detect-silence', async (_event, { filePath, thresholdDb = -30, m
   const re = /silence_start:\s*(-?[\d.]+)[\s\S]*?silence_end:\s*([\d.]+)/g
   let m: RegExpExecArray | null
   while ((m = re.exec(out))) intervals.push({ start: Math.max(0, parseFloat(m[1])), end: parseFloat(m[2]) })
+  // a silence running to EOF has no silence_end — close it at the file's duration
+  const starts = [...out.matchAll(/silence_start:\s*(-?[\d.]+)/g)]
+  if (starts.length > intervals.length) {
+    const lastStart = Math.max(0, parseFloat(starts[starts.length - 1][1]))
+    const dur: number = await new Promise(res => ffmpeg.ffprobe(filePath, (e, d) => res(e ? 0 : (d.format.duration || 0))))
+    if (dur > lastStart) intervals.push({ start: lastStart, end: dur })
+  }
   return { intervals }
 })
 
@@ -490,7 +548,8 @@ const agentServer = http.createServer(async (req, res) => {
       let cmd: any
       try { cmd = JSON.parse(Buffer.concat(chunks).toString() || '{}') } catch { res.writeHead(400); return res.end(JSON.stringify({ error: 'bad json' })) }
       if (!cmd.action) { res.writeHead(400); return res.end(JSON.stringify({ error: 'missing action' })) }
-      const timeout = cmd.action === 'export' ? 30 * 60 * 1000 : 15000
+      const LONG = ['export', 'cut_pauses', 'run_recipe', 'sample_frames', 'compose_thumbnail']
+      const timeout = cmd.action === 'export' ? 30 * 60 * 1000 : LONG.includes(cmd.action) ? 5 * 60 * 1000 : 15000
       return res.end(JSON.stringify(await askRenderer(cmd, timeout)))
     }
     res.writeHead(404); res.end(JSON.stringify({ error: 'not found' }))

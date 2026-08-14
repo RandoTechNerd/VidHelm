@@ -38,11 +38,19 @@ Add to `claude_desktop_config.json`:
 | `transport` | Seek / play / pause your window (e.g. "show me the reveal") |
 | `set_format` | Landscape/portrait/square, resolution, fps |
 | `export_video` | Render + automatic quality check (loudness, peaks, black frames) |
+| `cut_pauses` | Remove silent/static dead space across the timeline, spliced with crossfades |
+| `run_recipe` | Execute the user's Start Recipe (their standing workflow) |
+| `sample_frames` / `compose_thumbnail` | Pick a moment and produce a 1280×720 thumbnail with subtitle + logo |
+| `open_panel` | Open the booth / narration / thumbnail picker / settings for the user |
 
 A conversation that works well:
 
 > **You:** I dropped tags on all the beats. Make it fun.
 > **Agent:** *(get_state → sees `hook 3.5s`, `reveal 8.2s`, `punchline 11s`)* placing a riser into the reveal, a party horn on it, pop on the punchline, and a title over the hook… *(screenshot)* here's how it looks — want the horn louder?
+
+## The Start Recipe — your standing orders
+
+`get_state` returns `startRecipe`: the user's instruction block (# lines are OFF). Treat active lines as your to-do when they say "run my workflow": app-native steps go through `run_recipe`/`cut_pauses`/`compose_thumbnail`; lines like `titles 5` mean YOU pitch five title options in chat and let them pick. Free-typed lines are custom standing instructions — follow them.
 
 ## How it works / security
 

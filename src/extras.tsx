@@ -189,6 +189,155 @@ export function KaraokeBooth({ open, onClose, markers, totalDuration, currentTim
   )
 }
 
+// ---------------- Start Recipe ----------------
+// "Start G-code" for videos: a plain-text block of standing instructions that runs when you
+// (or your AI) kick off a project. Lines starting with # are off. Toggles below rewrite the
+// text; free-typed lines are preserved and shown to the AI via the agent bridge.
+export interface RecipeSettings { text: string; introAudioPath: string | null }
+
+export const RECIPE_TOGGLES: { key: string; label: string; hint: string }[] = [
+  { key: 'cut-pauses', label: 'Cut dead air', hint: 'remove silent/static pauses first' },
+  { key: 'thumbnail', label: 'Thumbnail', hint: 'pick a frame, add subtitle + logo' },
+  { key: 'subtitle', label: 'Catchy subtitle', hint: 'one-liner burned onto the thumbnail' },
+  { key: 'titles', label: '5 title options', hint: 'your AI pitches titles, you pick' },
+  { key: 'logo', label: 'Brand logo', hint: 'watermark on every export' },
+  { key: 'intro-audio', label: 'Intro audio', hint: 'your sting placed at 0:00' },
+  { key: 'captions', label: 'Captions', hint: 'on-device Whisper subtitles' },
+]
+
+export const DEFAULT_RECIPE = `# ── Start Recipe — runs when you (or your AI) kick off a video ──
+cut-pauses           # tighten dead air before anything else
+thumbnail            # sample frames, pick one in the picker
+subtitle             # catchy one-liner on the thumbnail
+titles 5             # AI pitches 5 title options, you pick
+logo bottom-right    # brand watermark (set it in Brand Kit above)
+intro-audio          # your intro sting at 0:00 (pick it below)
+# captions           # on-device Whisper captions
+# anything you type here is passed to your AI as standing instructions`
+
+const lineKey = (line: string) => line.replace(/^#/, '').trim().split(/\s+/)[0] || ''
+export const recipeActive = (text: string): Record<string, boolean> => {
+  const state: Record<string, boolean> = {}
+  for (const t of RECIPE_TOGGLES) state[t.key] = false
+  for (const raw of text.split('\n')) {
+    const key = lineKey(raw)
+    if (key && state[key] !== undefined && !raw.trim().startsWith('#')) state[key] = true
+  }
+  return state
+}
+export const toggleRecipeLine = (text: string, key: string, on: boolean): string => {
+  const lines = text.split('\n')
+  let found = false
+  const out = lines.map(raw => {
+    if (lineKey(raw) !== key) return raw
+    found = true
+    const isOff = raw.trim().startsWith('#')
+    if (on && isOff) return raw.replace(/^(\s*)#\s?/, '$1')
+    if (!on && !isOff) return '# ' + raw
+    return raw
+  })
+  if (on && !found) out.push(key)
+  return out.join('\n')
+}
+
+export function RecipeSection({ recipe, onChange, logoPath, onPickLogo }: {
+  recipe: RecipeSettings; onChange: (r: RecipeSettings) => void
+  logoPath: string | null; onPickLogo: () => void
+}) {
+  const active = recipeActive(recipe.text)
+  return (
+    <section>
+      <div className="sec-title">
+        <h3>Start Recipe <span className="hint" style={{ fontWeight: 400 }}>— your defaults, like start G-code. <b>#</b> = off</span></h3>
+      </div>
+      <div className="recipe-toggles">
+        {RECIPE_TOGGLES.map(t => (
+          <button key={t.key} className={`recipe-chip ${active[t.key] ? 'on' : ''}`} title={t.hint}
+            onClick={() => onChange({ ...recipe, text: toggleRecipeLine(recipe.text, t.key, !active[t.key]) })}>
+            {active[t.key] ? '●' : '○'} {t.label}
+          </button>
+        ))}
+      </div>
+      <textarea className="recipe-text" rows={9} spellCheck={false} value={recipe.text}
+        onChange={e => onChange({ ...recipe, text: e.target.value })} />
+      <div className="recipe-files">
+        <div className="recipe-file">
+          <span>Intro audio:</span>
+          <button onClick={async () => { const p = await window.ipcRenderer.pickAudio(); if (p) onChange({ ...recipe, introAudioPath: p }) }}>
+            {recipe.introAudioPath ? recipe.introAudioPath.split(/[\\/]/).pop() : 'Choose…'}
+          </button>
+          {recipe.introAudioPath && <button onClick={() => onChange({ ...recipe, introAudioPath: null })}>✕</button>}
+        </div>
+        <div className="recipe-file">
+          <span>Logo:</span>
+          <button onClick={onPickLogo}>{logoPath ? logoPath.split(/[\\/]/).pop() : 'Choose PNG…'}</button>
+        </div>
+      </div>
+      <p className="hint">Hit <b>🚀 Recipe</b> in the header to run it on the current timeline. Steps your AI handles (titles, subtitle ideas, free-typed lines) are picked up automatically when it reads the project.</p>
+    </section>
+  )
+}
+
+// ---------------- Thumbnail picker ----------------
+export function ThumbnailModal({ open, onClose, videoPath, videoName, logoPath }: {
+  open: boolean; onClose: () => void
+  videoPath: string | null; videoName: string; logoPath: string | null
+}) {
+  const [frames, setFrames] = useState<{ t: number; path: string }[]>([])
+  const [sel, setSel] = useState<number | null>(null)
+  const [subtitle, setSubtitle] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [status, setStatus] = useState('')
+
+  useEffect(() => {
+    if (!open || !videoPath) return
+    setFrames([]); setSel(null); setStatus('Sampling frames…')
+    window.ipcRenderer.sampleFrames({ filePath: videoPath, count: 8 }).then(r => {
+      if (r.frames?.length) { setFrames(r.frames); setStatus('') }
+      else setStatus(r.error || 'No frames found')
+    })
+  }, [open, videoPath])
+
+  const save = async () => {
+    if (sel === null || !videoPath) return
+    const out = await window.ipcRenderer.selectSavePath(`${videoName.replace(/\.[^.]+$/, '')}_thumbnail.png`)
+    if (!out) return
+    setBusy(true); setStatus('Composing…')
+    const r = await window.ipcRenderer.composeThumbnail({ filePath: videoPath, t: frames[sel].t, subtitle, logoPath, outPath: out })
+    setBusy(false)
+    if (r.ok) { setStatus('Saved ✓'); window.ipcRenderer.revealFile(out) }
+    else setStatus(r.error || 'failed')
+  }
+
+  if (!open) return null
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal" onClick={e => e.stopPropagation()}>
+        <div className="modal-head"><h2>Pick a thumbnail frame</h2><button className="modal-close" onClick={onClose}>✕</button></div>
+        <div className="modal-body">
+          {status && <p className="hint">{status}</p>}
+          <div className="thumb-grid">
+            {frames.map((f, i) => (
+              <button key={f.path} className={`thumb-cand ${sel === i ? 'selected' : ''}`} onClick={() => setSel(i)}>
+                <img src={fileUrl(f.path)} alt="" /><span>{f.t.toFixed(1)}s</span>
+              </button>
+            ))}
+          </div>
+          <section>
+            <h3>Catchy subtitle (burned on, bottom-left)</h3>
+            <input className="duration-input" style={{ width: '100%' }} placeholder="e.g.  Hide parts INSIDE your prints" value={subtitle} onChange={e => setSubtitle(e.target.value)} />
+            <p className="hint">{logoPath ? 'Your logo goes top-right automatically.' : 'Tip: set a logo in Settings → Brand Kit and it’s added top-right automatically.'}</p>
+          </section>
+        </div>
+        <div className="modal-foot">
+          <span>1280×720 PNG — YouTube-ready</span>
+          <button className="primary" disabled={sel === null || busy} onClick={save}>{busy ? 'Composing…' : 'Save thumbnail…'}</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ---------------- Cloned-voice narration ----------------
 export function NarrationModal({ open, onClose, command, onCommand, onGenerated }: {
   open: boolean; onClose: () => void

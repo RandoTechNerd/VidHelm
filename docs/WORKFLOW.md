@@ -2,6 +2,22 @@
 
 This is the editing pipeline RandoSnap is designed around. You can use it like any timeline editor, but the fast path is: **import → tag → tighten → narrate → sound → export**.
 
+## 0 · Your Start Recipe (like start G-code)
+
+Settings → **Start Recipe** holds your standing instructions — a plain-text block where each line is a step and `#` comments a step out. Toggle chips rewrite the text (off = the line gets `#`-ed), and anything you free-type is preserved and handed to your AI as instructions. The default recipe:
+
+```
+cut-pauses           # tighten dead air before anything else
+thumbnail            # sample frames, pick one in the picker
+subtitle             # catchy one-liner on the thumbnail
+titles 5             # AI pitches 5 title options, you pick
+logo bottom-right    # brand watermark (set it in Brand Kit)
+intro-audio          # your intro sting at 0:00 (pick it below)
+# captions           # on-device Whisper captions
+```
+
+Pick your **logo** (PNG) and **intro audio** right in the section. Then drop a video on the timeline and hit **🚀 Recipe** in the header: dead air is cut, your intro sting lands at 0:00, the watermark arms itself, and the **thumbnail picker** opens — choose a frame, type the catchy subtitle, and save a YouTube-ready 1280×720 PNG with your logo composited on. Steps marked for AI (like `titles 5`) are picked up automatically when your assistant reads the project (see [AGENT.md](AGENT.md)).
+
 ## 1 · Import
 
 - Drag files into the **Media Bin** (left panel) or straight onto the timeline.
