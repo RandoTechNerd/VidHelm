@@ -56,6 +56,8 @@ function createWindow() {
     win.loadFile(path.join(process.env.DIST, 'index.html'))
   }
 
+  win.webContents.setBackgroundThrottling(false)   // keep rendering when unfocused (agent screenshots)
+
   win.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
     console.error(`Page failed to load: ${errorDescription} (${errorCode}) at ${validatedURL}`);
   });
@@ -542,6 +544,9 @@ const agentServer = http.createServer(async (req, res) => {
     }
     if (req.method === 'GET' && req.url === '/screenshot') {
       if (!win) { res.writeHead(503); return res.end(JSON.stringify({ error: 'no window' })) }
+      // force a fresh composite — capturePage can return a stale frame on idle/background windows
+      win.webContents.invalidate()
+      await new Promise(r => setTimeout(r, 120))
       const img = await win.webContents.capturePage()
       res.setHeader('Content-Type', 'image/png')
       return res.end(img.toPNG())
