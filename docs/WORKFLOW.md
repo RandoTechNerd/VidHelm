@@ -1,6 +1,6 @@
-# The RandoSnap workflow
+# The VidHelm workflow
 
-This is the editing pipeline RandoSnap is designed around. You can use it like any timeline editor, but the fast path is: **import → tag → tighten → narrate → sound → export**.
+This is the editing pipeline VidHelm is designed around. You can use it like any timeline editor, but the fast path is: **import → tag → tighten → narrate → sound → export**.
 
 ## 0 · Your Start Recipe (like start G-code)
 
@@ -47,7 +47,7 @@ Tag points are the backbone of everything else.
 
 ## 4 · Narrate — three ways
 
-RandoSnap treats narration as a first-class citizen. All three routes end with audio on the **VOICE / MUSIC** track:
+VidHelm treats narration as a first-class citizen. All three routes end with audio on the **VOICE / MUSIC** track:
 
 ### 🎙 The karaoke booth (one-take read-along)
 1. Click **Booth**. Paste your script — one line per beat.
@@ -56,7 +56,7 @@ RandoSnap treats narration as a first-class citizen. All three routes end with a
 4. It auto-stops at the end and drops the take at 0:00 on the voice track. Don't like it? Delete the clip and go again.
 
 ### 🗣 Cloned-voice narration
-Write the script in the **Narrate** dialog, and RandoSnap runs your local TTS/voice-clone tool on it — one WAV per line, placed at your tag points automatically. Any CLI works via a command template; a complete free local setup (XTTS-v2) is documented in [VOICE_CLONE.md](VOICE_CLONE.md).
+Write the script in the **Narrate** dialog, and VidHelm runs your local TTS/voice-clone tool on it — one WAV per line, placed at your tag points automatically. Any CLI works via a command template; a complete free local setup (XTTS-v2) is documented in [VOICE_CLONE.md](VOICE_CLONE.md).
 
 ### Plain voiceover
 The **Voiceover** button punch-in records from the playhead — good for one-off pickups.

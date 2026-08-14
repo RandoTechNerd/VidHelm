@@ -981,7 +981,7 @@ textarea.duration-input { resize: vertical; font-family: inherit; }
 ::-webkit-scrollbar-thumb { background: var(--bg-surface-elevated); border-radius: 4px; border: 2px solid var(--bg-deep); }
 ::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
 
-/* ============ RandoSnap 1.0 additions: tabs, SFX, tag points, booth, narration ============ */
+/* ============ VidHelm 1.0 additions: tabs, SFX, tag points, booth, narration ============ */
 .section-header.tabs { display: flex; gap: 4px; align-items: center; }
 .section-header.tabs .tab { background: none; border: none; color: var(--text-secondary, #9aa3af); font: inherit; font-weight: 700; font-size: 13px; padding: 4px 8px; border-radius: 6px; cursor: pointer; }
 .section-header.tabs .tab.active { color: var(--text-primary, #f8fafc); background: rgba(255,255,255,0.07); }
@@ -1052,3 +1052,15 @@ textarea.duration-input { resize: vertical; font-family: inherit; }
 .thumb-cand img { display: block; width: 100%; height: auto; }
 .thumb-cand span { position: absolute; bottom: 4px; right: 6px; font-size: 11px; background: rgba(0,0,0,0.7); color: #fff; padding: 1px 6px; border-radius: 4px; }
 .thumb-cand.selected { border-color: var(--accent-primary, #3b82f6); box-shadow: 0 0 0 2px rgba(59,130,246,0.35); }
+
+/* ============ Social / support links ============ */
+.header-info { display: flex; align-items: center; gap: 14px; }
+.social-row { display: flex; align-items: center; gap: 2px; }
+.social-row button { background: none; border: none; color: var(--text-secondary, #9aa3af); width: 28px; height: 28px; border-radius: 7px; display: flex; align-items: center; justify-content: center; cursor: pointer; font-size: 14px; padding: 0; }
+.social-row button:hover { color: var(--text-primary, #f8fafc); background: rgba(255,255,255,0.08); }
+.social-row button.bmc:hover { background: rgba(255,221,0,0.15); }
+
+/* ============ Toast notifications (replaces native alerts) ============ */
+.toasts { position: fixed; top: 52px; left: 50%; transform: translateX(-50%); z-index: 200; display: flex; flex-direction: column; gap: 8px; pointer-events: none; }
+.toast { pointer-events: auto; cursor: pointer; background: rgba(15,18,28,0.97); border: 1px solid rgba(255,255,255,0.14); border-left: 3px solid var(--accent-primary, #3b82f6); color: #eef3f9; border-radius: 12px; padding: 12px 18px; font-size: 13.5px; line-height: 1.55; max-width: 460px; white-space: pre-line; box-shadow: 0 12px 40px rgba(0,0,0,0.5); animation: toast-in 0.22s ease; }
+@keyframes toast-in { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: none; } }

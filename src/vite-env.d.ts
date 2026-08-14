@@ -26,6 +26,7 @@ interface Window {
     exportVideo: (data: { clips: any[], texts: any[], brand: any, audio: any, outputPath: string, settings: any }) => Promise<{ success: boolean }>
     sfxLibrary: () => Promise<{ dir: string; items: { name: string; path: string; duration: number; builtin: boolean }[] }>
     pickAudio: () => Promise<string | null>
+    openExternal: (url: string) => Promise<void>
     sampleFrames: (data: { filePath: string; count?: number; sourceStart?: number; duration?: number }) => Promise<{ frames?: { t: number; path: string }[]; error?: string }>
     composeThumbnail: (data: { filePath: string; t: number; subtitle?: string; logoPath?: string | null; outPath: string }) => Promise<{ ok?: boolean; outPath?: string; error?: string }>
     openSfxFolder: () => Promise<void>

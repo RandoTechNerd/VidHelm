@@ -1,6 +1,6 @@
 # Cloned-voice narration
 
-RandoSnap's **🗣 Narrate** button runs any local TTS / voice-clone tool through a simple contract, then places the generated lines on your timeline (pinned to tag points when you have enough).
+VidHelm's **🗣 Narrate** button runs any local TTS / voice-clone tool through a simple contract, then places the generated lines on your timeline (pinned to tag points when you have enough).
 
 ## The contract
 
@@ -28,7 +28,7 @@ xtts-venv\Scripts\pip install TTS
 Save this as `clone_voice.py` next to the venv:
 
 ```python
-# clone_voice.py — RandoSnap narration adapter for XTTS-v2
+# clone_voice.py — VidHelm narration adapter for XTTS-v2
 # usage: python clone_voice.py <reference_voice.wav> <script.txt> <outdir>
 import sys, os
 from TTS.api import TTS
@@ -54,7 +54,7 @@ for i, line in enumerate(lines, 1):
 print("done", flush=True)
 ```
 
-Then in RandoSnap's Narrate dialog, set the command to:
+Then in VidHelm's Narrate dialog, set the command to:
 
 ```
 xtts-venv\Scripts\python.exe clone_voice.py C:\voices\me.wav {script} {outdir}

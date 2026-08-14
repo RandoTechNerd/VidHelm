@@ -1,6 +1,6 @@
-# RandoSnap — agent guide
+# VidHelm — agent guide
 
-RandoSnap is a desktop video editor (Electron + React) designed to be driven collaboratively: a human in the GUI and an AI agent through the **agent bridge**, at the same time.
+VidHelm is a desktop video editor (Electron + React) designed to be driven collaboratively: a human in the GUI and an AI agent through the **agent bridge**, at the same time.
 
 ## Steering the running app (the good part)
 
@@ -12,7 +12,7 @@ Working style that works well:
 3. **Tag points are the shared language.** The human taps `M` at beats they care about; you read tags from state and hang SFX (`place_sfx`), text, and narration on them. Prefer editing relative to tags over hardcoded times.
 4. `export_video` blocks until rendered and returns an automatic quality check (loudness/peaks/black frames) — report its verdict to the user.
 5. **Start Recipe**: `get_state.startRecipe` is the user's standing workflow (like start G-code; # = off). "Run my workflow" = execute active lines: `cut_pauses`, intro-audio/logo/thumbnail via `run_recipe`, and do the AI lines yourself (`titles 5` → pitch 5 titles in chat, `subtitle` → propose catchy thumbnail one-liners, then `compose_thumbnail`).
-6. If tools fail with "RandoSnap is not running", ask the user to start the app (or run `npm run dev` yourself in the background).
+6. If tools fail with "VidHelm is not running", ask the user to start the app (or run `npm run dev` yourself in the background).
 
 Tracks: `v1` video · `a1` voice/music · `a2` SFX. Times are seconds. Text x/y are 0–1 of frame.
 

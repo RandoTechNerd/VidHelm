@@ -1,12 +1,14 @@
-# RandoSnap 🎬
+# VidHelm 🎬
 
-**A lean desktop video editor for makers who narrate their own videos.**
+**A lean desktop video editor for makers — you take the helm, your AI crews the busywork.**
 
-RandoSnap is an Electron + React editor built around one workflow: drop in footage, **tag the beats**, add **sound effects** and **narration** (your mic, a karaoke-style read-along, or a cloned voice), and export a **YouTube-ready** MP4 — correct resolution, loudness and encoding, every time.
+[vidhelm.com](https://vidhelm.com) · [YouTube](https://www.youtube.com/@randotechnerd) · [Instagram](https://www.instagram.com/randotechnerd/) · [Buy me a coffee ☕](https://buymeacoffee.com/randotechnerd) · [randotechnerd@gmail.com](mailto:randotechnerd@gmail.com)
+
+VidHelm is an Electron + React editor built around one workflow: drop in footage, **tag the beats**, add **sound effects** and **narration** (your mic, a karaoke-style read-along, or a cloned voice), and export a **YouTube-ready** MP4 — correct resolution, loudness and encoding, every time.
 
 Everything runs locally. FFmpeg does the rendering, Whisper runs on-device for captions, and the SFX library is synthesized on your machine — no accounts, no uploads, no license worries.
 
-![RandoSnap](docs/screenshot.png)
+![VidHelm](docs/screenshot.png)
 
 ## Features
 
@@ -28,7 +30,7 @@ Everything runs locally. FFmpeg does the rendering, Whisper runs on-device for c
 - Loudness done right: one checkbox masters the mix to YouTube's target with a compressor + `loudnorm`; optional noise reduction
 
 **🤖 AI copilot built in**
-- RandoSnap ships an **MCP server** — open the repo in Claude Code (or wire it to Claude Desktop) and your AI assistant can drive the running app **while you watch**: read the timeline, drop SFX on your tag points, write titles, seek your window, take screenshots of what you see, and export with a quality report
+- VidHelm ships an **MCP server** — open the repo in Claude Code (or wire it to Claude Desktop) and your AI assistant can drive the running app **while you watch**: read the timeline, drop SFX on your tag points, write titles, seek your window, take screenshots of what you see, and export with a quality report
 - You edit in the GUI, the agent edits through the bridge — same timeline, live, with shared undo. Tag points become the language between you: you mark the beats, it does the busywork
 - Zero config in Claude Code (`.mcp.json` is auto-discovered) · works with any framework via plain HTTP — see [docs/AGENT.md](docs/AGENT.md)
 
@@ -41,8 +43,8 @@ Everything runs locally. FFmpeg does the rendering, Whisper runs on-device for c
 ## Quickstart
 
 ```bash
-git clone https://github.com/RandoTechNerd/RandoSnap
-cd RandoSnap
+git clone https://github.com/RandoTechNerd/VidHelm
+cd VidHelm
 npm install
 npm run dev        # full desktop app (Electron)
 ```
@@ -84,3 +86,5 @@ Full walkthrough with details: [docs/WORKFLOW.md](docs/WORKFLOW.md)
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+Built by [RandoTechNerd](https://www.youtube.com/@randotechnerd). If VidHelm saves you time, [a coffee keeps the updates coming](https://buymeacoffee.com/randotechnerd). ☕

@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "randosnap": {
+    "vidhelm": {
       "command": "node",
       "args": ["agent/mcp-server.mjs"]
     }

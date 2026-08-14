@@ -1,4 +1,4 @@
-// RandoSnap add-on panels: SFX library, timeline markers, karaoke booth, cloned-voice narration.
+// VidHelm add-on panels: SFX library, timeline markers, karaoke booth, cloned-voice narration.
 // All components are props-driven; App.tsx owns the state.
 import { useState, useRef, useEffect } from 'react'
 
@@ -290,6 +290,7 @@ export function ThumbnailModal({ open, onClose, videoPath, videoName, logoPath }
   const [status, setStatus] = useState('')
 
   useEffect(() => {
+    if (open && !videoPath) { setFrames([]); setStatus('No video yet — drag one into the Media Bin (or onto the timeline), then reopen this picker.'); return }
     if (!open || !videoPath) return
     setFrames([]); setSel(null); setStatus('Sampling frames…')
     window.ipcRenderer.sampleFrames({ filePath: videoPath, count: 8 }).then(r => {

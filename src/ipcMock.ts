@@ -27,6 +27,7 @@ export function installIpcMock() {
     exportVideo: async () => { throw new Error('Export needs the desktop app (npm run dev)') },
     sfxLibrary: async () => ({ dir: 'mock', items: demoSfx.map((name, i) => ({ name, path: `mock://sfx/${name}.wav`, duration: 0.3 + (i % 5) * 0.25, builtin: true })) }),
     openSfxFolder: async () => {},
+    openExternal: async (url: string) => { window.open(url, "_blank") },
     voiceClone: async () => ({ error: 'Narration needs the desktop app (npm run dev)' }),
   } as unknown as Window['ipcRenderer']
 }

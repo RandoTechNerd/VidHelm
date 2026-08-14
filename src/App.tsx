@@ -234,6 +234,8 @@ function App() {
   const [showBooth, setShowBooth] = useState(false)
   const [showNarration, setShowNarration] = useState(false)
   const [showThumbnail, setShowThumbnail] = useState(false)
+  const [toasts, setToasts] = useState<{ id: string; text: string }[]>([])
+  const notify = (text: string, ms = 7000) => { const id = rid(); setToasts(t => [...t, { id, text }]); setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), ms) }
   const [sidebarTab, setSidebarTab] = useState<'media' | 'sfx'>('media')
   const [silenceBusy, setSilenceBusy] = useState<string | null>(null)
   const [eta, setEta] = useState<number | null>(null)
@@ -597,6 +599,10 @@ function App() {
 
   // Run the app-native steps of the start recipe; AI-facing lines are reported for the agent/chat
   const runRecipe = async () => {
+    if (totalDuration <= 0 && !mediaBin.some(m => m.type === 'video')) {
+      notify('🚀 Start Recipe needs footage first — drag a video into the Media Bin (or ask your AI to load one), then hit Recipe again.', 9000)
+      return
+    }
     const active = recipeActive(settings.recipe.text)
     const notes: string[] = []
     if (active['cut-pauses']) {
@@ -610,8 +616,8 @@ function App() {
     }
     const aiSteps = ['titles', 'subtitle', 'captions'].filter(k => active[k])
     if (aiSteps.length) notes.push(`for your AI (or do manually): ${aiSteps.join(', ')}`)
-    if (active['thumbnail']) { setShowThumbnail(true); notes.push('thumbnail: picker opened') }
-    alert('Start Recipe:\n\n' + notes.map(n => '• ' + n).join('\n'))
+    if (active['thumbnail']) { if (firstVideo()) { setShowThumbnail(true); notes.push('thumbnail: picker opened') } else notes.push('thumbnail: skipped (no video)') }
+    notify('Start Recipe:\n\n' + notes.map(n => '• ' + n).join('\n'))
   }
 
   // ---- agent bridge executor ----
@@ -815,15 +821,15 @@ function App() {
   // Local Whisper captions for the WHOLE timeline → timed text cues styled by caption settings
   const generateCaptions = async () => {
     const audioClips = clips.filter(c => c.trackId === 'a1' || mediaBin.find(m => m.id === c.mediaId)?.hasAudio)
-    if (!audioClips.length) { alert('Add a clip with audio to the timeline first.'); return }
+    if (!audioClips.length) { notify('Add a clip with audio to the timeline first.'); return }
     const cs = settings.caption
     setCaptioning('Mixing audio…'); setCaptionPct(null)
     try {
       const payload = clips.map(c => { const m = mediaBin.find(x => x.id === c.mediaId); return { path: m?.path, hasAudio: m?.hasAudio, start: c.start, duration: c.duration, volume: c.volume } })
       const mix = await window.ipcRenderer.renderMixAudio({ clips: payload })
-      if (mix.error || !mix.path) { alert('Captions: ' + (mix.error || 'could not prepare audio')); return }
+      if (mix.error || !mix.path) { notify('Captions: ' + (mix.error || 'could not prepare audio')); return }
       const res = await window.ipcRenderer.transcribe(mix.path, { model: cs.model, language: cs.language, word: cs.mode === 'word' })
-      if (res.error) { alert('Captions: ' + res.error); return }
+      if (res.error) { notify('Captions: ' + res.error); return }
       const cues: TextClip[] = []
       for (const c of res.chunks || []) {
         const text = (c.text || '').trim()
@@ -832,8 +838,8 @@ function App() {
         cues.push({ id: rid(), text, start: c.start, duration: dur, x: 0.5, y: CAPTION_Y[cs.position], fontSize: cs.fontSize, color: cs.color, fadeIn: cs.mode === 'word' ? 0 : 0.08, fadeOut: cs.mode === 'word' ? 0 : 0.08, box: cs.box, boxOpacity: cs.boxOpacity })
       }
       if (cues.length) setTexts(prev => [...prev, ...cues])
-      else alert('No speech detected.')
-    } catch (e) { console.error(e); alert('Captioning failed.') }
+      else notify('No speech detected.')
+    } catch (e) { console.error(e); notify('Captioning failed.') }
     setCaptioning(null); setCaptionPct(null)
   }
 
@@ -888,8 +894,8 @@ function App() {
   }
   const cutDeadSpace = async () => {
     const r = await runCutDeadSpace()
-    if (r.error) alert(r.error)
-    else alert(`Removed ${r.removed} ${r.mode === 'stillness' ? 'static stretch(es)' : 'pause(s)'} (~${r.seconds}s). Undo with Ctrl+Z if needed.`)
+    if (r.error) notify(r.error)
+    else notify(`Removed ${r.removed} ${r.mode === 'stillness' ? 'static stretch(es)' : 'pause(s)'} (~${r.seconds}s). Undo with Ctrl+Z if needed.`)
   }
 
   // ---- voiceover ----
@@ -921,13 +927,13 @@ function App() {
       setIsRecording(true)
     } catch (err) {
       console.error(err)
-      alert('Could not access microphone.')
+      notify('Could not access microphone.')
     }
   }
 
   // ---- export ----
   const pickExportPath = async () => {
-    try { const p = await window.ipcRenderer.selectSavePath('randosnap_export.mp4'); if (p) setCustomExportPath(p) } catch (e) { console.error(e) }
+    try { const p = await window.ipcRenderer.selectSavePath('vidhelm_export.mp4'); if (p) setCustomExportPath(p) } catch (e) { console.error(e) }
   }
 
   const handleExport = async () => {
@@ -939,7 +945,7 @@ function App() {
     try {
       let finalPath = customExportPath
       if (!finalPath) {
-        finalPath = await window.ipcRenderer.selectSavePath('randosnap_export.mp4')
+        finalPath = await window.ipcRenderer.selectSavePath('vidhelm_export.mp4')
         if (!finalPath) { setExportProgress(null); return }
         setCustomExportPath(finalPath)
       }
@@ -1101,7 +1107,7 @@ function App() {
     <div className="app-container" onDragOver={(e) => e.preventDefault()}>
       <header>
         <div className="logo-section">
-          <h1>RandoSnap</h1>
+          <h1>VidHelm</h1>
           <button className="hdr-btn" onClick={saveProject} title="Save project">Save</button>
           <button className="hdr-btn" onClick={loadProject} title="Open project">Open</button>
           <button className="hdr-btn" onClick={runRecipe} title="Run your Start Recipe on this timeline">🚀 Recipe</button>
@@ -1114,7 +1120,27 @@ function App() {
             </button>
           ))}
         </div>
-        <div className="header-info"><span>{clips.length + texts.length} items • {fmt(currentTime)} / {fmt(totalDuration)}</span></div>
+        <div className="header-info">
+          <span>{clips.length + texts.length} items • {fmt(currentTime)} / {fmt(totalDuration)}</span>
+          <div className="social-row">
+            <button title="vidhelm.com" onClick={() => window.ipcRenderer.openExternal('https://vidhelm.com')}>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+            </button>
+            <button title="GitHub — star the repo, report issues" onClick={() => window.ipcRenderer.openExternal('https://github.com/RandoTechNerd/VidHelm')}>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.58.11.79-.25.79-.55v-1.94c-3.2.7-3.87-1.54-3.87-1.54-.52-1.33-1.28-1.68-1.28-1.68-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.19 1.76 1.19 1.03 1.75 2.69 1.25 3.34.95.1-.74.4-1.25.72-1.54-2.55-.29-5.23-1.28-5.23-5.68 0-1.26.45-2.28 1.19-3.09-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.17 1.18a11 11 0 0 1 5.78 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.83 1.19 3.09 0 4.42-2.69 5.39-5.25 5.67.41.35.77 1.05.77 2.12v3.15c0 .3.21.66.8.55A11.5 11.5 0 0 0 23.5 12C23.5 5.65 18.35.5 12 .5z"/></svg>
+            </button>
+            <button title="YouTube — @randotechnerd" onClick={() => window.ipcRenderer.openExternal('https://www.youtube.com/@randotechnerd')}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M23.5 6.2a3 3 0 0 0-2.1-2.1C19.5 3.5 12 3.5 12 3.5s-7.5 0-9.4.6A3 3 0 0 0 .5 6.2 31.3 31.3 0 0 0 0 12a31.3 31.3 0 0 0 .5 5.8 3 3 0 0 0 2.1 2.1c1.9.6 9.4.6 9.4.6s7.5 0 9.4-.6a3 3 0 0 0 2.1-2.1A31.3 31.3 0 0 0 24 12a31.3 31.3 0 0 0-.5-5.8zM9.5 15.5v-7L15.8 12l-6.3 3.5z"/></svg>
+            </button>
+            <button title="Instagram — @randotechnerd" onClick={() => window.ipcRenderer.openExternal('https://www.instagram.com/randotechnerd/')}>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="2" y="2" width="20" height="20" rx="5"/><circle cx="12" cy="12" r="4"/><circle cx="17.5" cy="6.5" r="1" fill="currentColor" stroke="none"/></svg>
+            </button>
+            <button className="bmc" title="Buy me a coffee ☕" onClick={() => window.ipcRenderer.openExternal('https://buymeacoffee.com/randotechnerd')}>☕</button>
+            <button title="Contact — randotechnerd@gmail.com" onClick={() => window.ipcRenderer.openExternal('mailto:randotechnerd@gmail.com')}>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-10 6L2 7"/></svg>
+            </button>
+          </div>
+        </div>
       </header>
 
       <main className={expanded ? 'expanded' : ''}>
@@ -1340,6 +1366,8 @@ function App() {
           </div>
         )}
       </main>
+
+      <div className="toasts">{toasts.map(t => <div key={t.id} className="toast" onClick={() => setToasts(x => x.filter(y => y.id !== t.id))}>{t.text}</div>)}</div>
 
       <KaraokeBooth open={showBooth} onClose={() => setShowBooth(false)} markers={markers}
         totalDuration={totalDuration} currentTime={currentTime} isPlaying={isPlaying}

@@ -33,7 +33,7 @@ function createWindow() {
   win = new BrowserWindow({
     width: 1280,
     height: 800,
-    title: 'RandoSnap Studio',
+    title: 'VidHelm Studio',
     icon: path.join(process.env.VITE_PUBLIC, 'favicon.svg'),
     titleBarStyle: 'hidden',
     titleBarOverlay: {
@@ -51,7 +51,7 @@ function createWindow() {
 
   if (process.env.VITE_DEV_SERVER_URL) {
     win.loadURL(process.env.VITE_DEV_SERVER_URL)
-    if (!process.env.RS_NO_DEVTOOLS) win.webContents.openDevTools()
+    if (!process.env.VH_NO_DEVTOOLS) win.webContents.openDevTools()
   } else {
     win.loadFile(path.join(process.env.DIST, 'index.html'))
   }
@@ -60,9 +60,9 @@ function createWindow() {
     console.error(`Page failed to load: ${errorDescription} (${errorCode}) at ${validatedURL}`);
   });
 
-  // Dev helper: RS_SHOOT=<path.png> stages a small demo state, captures the window, writes the PNG and quits.
+  // Dev helper: VH_SHOOT=<path.png> stages a small demo state, captures the window, writes the PNG and quits.
   // Used to regenerate docs/screenshot.png reproducibly (see docs/ARCHITECTURE.md).
-  if (process.env.RS_SHOOT) {
+  if (process.env.VH_SHOOT) {
     win.webContents.once('did-finish-load', async () => {
       try {
         await new Promise(r => setTimeout(r, 2500))
@@ -90,9 +90,9 @@ function createWindow() {
           return 'staged'
         })()`)
         const img = await win!.webContents.capturePage()
-        fs.writeFileSync(process.env.RS_SHOOT!, img.toPNG())
-        console.log('RS_SHOOT saved', process.env.RS_SHOOT)
-      } catch (e) { console.error('RS_SHOOT failed', e) }
+        fs.writeFileSync(process.env.VH_SHOOT!, img.toPNG())
+        console.log('VH_SHOOT saved', process.env.VH_SHOOT)
+      } catch (e) { console.error('VH_SHOOT failed', e) }
       app.quit()
     })
   }
@@ -129,7 +129,7 @@ ipcMain.handle('sample-frames', async (_event, { filePath, count = 8, sourceStar
   if (!filePath || !fs.existsSync(filePath)) return { error: 'no file' }
   const dur: number = duration || await new Promise(res => ffmpeg.ffprobe(filePath, (e, d) => res(e ? 0 : (d.format.duration || 0))))
   if (!dur) return { error: 'cannot read duration' }
-  const dir = path.join(app.getPath('temp'), 'randosnap_frames', String(Date.now()))
+  const dir = path.join(app.getPath('temp'), 'vidhelm_frames', String(Date.now()))
   fs.mkdirSync(dir, { recursive: true })
   const frames: { t: number; path: string }[] = []
   for (let i = 0; i < count; i++) {
@@ -167,6 +167,10 @@ ipcMain.handle('compose-thumbnail', async (_event, { filePath, t, subtitle, logo
   })
 })
 
+ipcMain.handle('open-external', async (_event, url: string) => {
+  if (/^(https?:\/\/|mailto:)/.test(url)) shell.openExternal(url)
+})
+
 ipcMain.handle('reveal-file', async (_event, filePath: string) => {
   if (filePath) shell.showItemInFolder(filePath)
 })
@@ -174,7 +178,7 @@ ipcMain.handle('reveal-file', async (_event, filePath: string) => {
 // Generate a horizontal filmstrip (tiled frames) for a video clip's source range, for timeline previews
 ipcMain.handle('make-thumbnails', async (_event, { filePath, sourceStart, duration }: { filePath: string; sourceStart: number; duration: number }) => {
   if (!filePath || !fs.existsSync(filePath)) return { error: 'no file' }
-  const dir = path.join(app.getPath('temp'), 'randosnap_thumbs')
+  const dir = path.join(app.getPath('temp'), 'vidhelm_thumbs')
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
   const out = path.join(dir, `t_${Date.now()}_${Math.random().toString(36).slice(2, 7)}.jpg`)
   const count = 8
@@ -248,7 +252,7 @@ ipcMain.handle('render-mix-audio', async (_event, { clips }: { clips: any[] }) =
   const withAudio = clips.filter(c => c.hasAudio && c.path)
   if (!withAudio.length) return { error: 'No audio on the timeline to caption.' }
   const total = Math.max(...clips.map(c => c.start + c.duration))
-  const out = path.join(app.getPath('temp'), `randosnap_mix_${Date.now()}.wav`)
+  const out = path.join(app.getPath('temp'), `vidhelm_mix_${Date.now()}.wav`)
   return new Promise((resolve) => {
     const cmd = ffmpeg()
     cmd.input(`anullsrc=channel_layout=stereo:sample_rate=48000:d=${total}`).inputFormat('lavfi')
@@ -341,7 +345,7 @@ ipcMain.handle('quality-check', async (_event, filePath: string) => {
   while ((bm = bdRe.exec(bdOut))) black.push({ start: parseFloat(bm[1]), end: parseFloat(bm[2]) })
 
   // Sample frames (filmstrip)
-  const frameDir = path.join(app.getPath('temp'), 'randosnap_qc')
+  const frameDir = path.join(app.getPath('temp'), 'vidhelm_qc')
   if (fs.existsSync(frameDir)) { try { fs.rmSync(frameDir, { recursive: true, force: true }) } catch {} }
   fs.mkdirSync(frameDir, { recursive: true })
   const frames: { t: number; path: string }[] = []
@@ -410,7 +414,7 @@ ipcMain.handle('get-metadata', async (event, filePath: string) => {
 })
 
 ipcMain.handle('save-recording', async (_event, base64: string) => {
-  const dir = path.join(app.getPath('temp'), 'randosnap_vo')
+  const dir = path.join(app.getPath('temp'), 'vidhelm_vo')
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
   const filePath = path.join(dir, `vo_${Date.now()}.webm`)
   fs.writeFileSync(filePath, Buffer.from(base64, 'base64'))
@@ -421,7 +425,7 @@ ipcMain.handle('save-project', async (_event, data: any) => {
   if (!win) return null
   const { filePath } = await dialog.showSaveDialog(win, {
     title: 'Save Project', defaultPath: 'project.rsnap',
-    filters: [{ name: 'RandoSnap Project', extensions: ['rsnap', 'json'] }],
+    filters: [{ name: 'VidHelm Project', extensions: ['rsnap', 'json'] }],
   })
   if (!filePath) return null
   fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf8')
@@ -432,14 +436,14 @@ ipcMain.handle('load-project', async () => {
   if (!win) return null
   const { filePaths } = await dialog.showOpenDialog(win, {
     title: 'Open Project', properties: ['openFile'],
-    filters: [{ name: 'RandoSnap Project', extensions: ['rsnap', 'json'] }],
+    filters: [{ name: 'VidHelm Project', extensions: ['rsnap', 'json'] }],
   })
   if (!filePaths || !filePaths[0]) return null
   try { return JSON.parse(fs.readFileSync(filePaths[0], 'utf8')) } catch { return null }
 })
 
 // ---- Persistent app settings (brand kit, intro defaults, audio) ----
-const settingsPath = () => path.join(app.getPath('userData'), 'randosnap-settings.json')
+const settingsPath = () => path.join(app.getPath('userData'), 'vidhelm-settings.json')
 const DEFAULT_SETTINGS = {
   brand: { enabled: false, logoPath: null as string | null, position: 'br', sizePct: 16, margin: 40, opacity: 0.85, showMode: 'whole' as 'whole' | 'intro' | 'outro', windowSec: 5, fade: 0.5 },
   intro: { segment: 'first' as 'first' | 'last', seconds: 5, fade: 0.6, treatment: 'ripple' as 'ripple' | 'overlay' },
@@ -507,7 +511,7 @@ const alphaExpr = (start: number, end: number, fi: number, fo: number) => {
 //   GET  /ping        -> { ok, app, version }
 import http from 'node:http'
 
-const AGENT_PORT = Number(process.env.RS_AGENT_PORT || 5959)
+const AGENT_PORT = Number(process.env.VH_AGENT_PORT || 5959)
 let agentSeq = 0
 const agentPending = new Map<number, (result: any) => void>()
 
@@ -517,7 +521,7 @@ ipcMain.on('agent-response', (_e, { id, result }: { id: number; result: any }) =
 })
 
 const askRenderer = (cmd: any, timeoutMs = 15000) => new Promise<any>(resolve => {
-  if (!win) return resolve({ error: 'RandoSnap window is not open' })
+  if (!win) return resolve({ error: 'VidHelm window is not open' })
   const id = ++agentSeq
   const timer = setTimeout(() => { agentPending.delete(id); resolve({ error: `renderer timeout after ${timeoutMs / 1000}s` }) }, timeoutMs)
   agentPending.set(id, r => { clearTimeout(timer); resolve(r) })
@@ -531,7 +535,7 @@ const agentServer = http.createServer(async (req, res) => {
   res.setHeader('Content-Type', 'application/json')
   try {
     if (req.method === 'GET' && req.url === '/ping') {
-      return res.end(JSON.stringify({ ok: true, app: 'RandoSnap', version: app.getVersion() }))
+      return res.end(JSON.stringify({ ok: true, app: 'VidHelm', version: app.getVersion() }))
     }
     if (req.method === 'GET' && req.url === '/state') {
       return res.end(JSON.stringify(await askRenderer({ action: 'get_state' })))
@@ -661,7 +665,7 @@ ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outp
     const ends = [...clips.map(c => c.start + c.duration), ...texts.map(t => t.start + t.duration)]
     const totalDuration = ends.length ? Math.max(...ends) : 1
 
-    const tmpDir = path.join(app.getPath('temp'), 'randosnap_text')
+    const tmpDir = path.join(app.getPath('temp'), 'vidhelm_text')
     if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true })
 
     let command = ffmpeg()

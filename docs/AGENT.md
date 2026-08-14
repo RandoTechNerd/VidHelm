@@ -1,13 +1,13 @@
-# Driving RandoSnap with an AI agent
+# Driving VidHelm with an AI agent
 
-RandoSnap is built for **two-handed editing**: you in the GUI, an AI assistant on the other side of a local bridge — both working on the same timeline at the same time. You drag clips; the agent tags beats, drops SFX, writes titles, and exports. Everything the agent does appears live in your window.
+VidHelm is built for **two-handed editing**: you in the GUI, an AI assistant on the other side of a local bridge — both working on the same timeline at the same time. You drag clips; the agent tags beats, drops SFX, writes titles, and exports. Everything the agent does appears live in your window.
 
 ## Setup with Claude Code (zero config)
 
 The repo contains `.mcp.json`, so Claude Code discovers the server automatically:
 
-1. Start the app: `npm run dev` (or launch the installed RandoSnap).
-2. Open this repo folder in Claude Code and approve the `randosnap` MCP server when prompted.
+1. Start the app: `npm run dev` (or launch the installed VidHelm).
+2. Open this repo folder in Claude Code and approve the `vidhelm` MCP server when prompted.
 3. Talk: *"look at my timeline and put a whoosh on every tag point"*.
 
 ## Setup with Claude Desktop
@@ -17,9 +17,9 @@ Add to `claude_desktop_config.json`:
 ```json
 {
   "mcpServers": {
-    "randosnap": {
+    "vidhelm": {
       "command": "node",
-      "args": ["C:/path/to/RandoSnap/agent/mcp-server.mjs"]
+      "args": ["C:/path/to/VidHelm/agent/mcp-server.mjs"]
     }
   }
 }
@@ -54,7 +54,7 @@ A conversation that works well:
 
 ## How it works / security
 
-- The app runs a **localhost-only** HTTP bridge (`127.0.0.1:5959`, override with `RS_AGENT_PORT`). Connections from other machines are refused; nothing is exposed to the network.
+- The app runs a **localhost-only** HTTP bridge (`127.0.0.1:5959`, override with `VH_AGENT_PORT`). Connections from other machines are refused; nothing is exposed to the network.
 - `agent/mcp-server.mjs` is a dependency-free stdio MCP server that proxies tool calls to the bridge. If the app isn't running, tools return a clear "start the app" message instead of hanging.
 - The agent edits the same React state you do — undo (Ctrl+Z) works on its changes, and yours and its edits interleave safely.
 

@@ -1,4 +1,4 @@
-# RandoSnap architecture
+# VidHelm architecture
 
 For contributors. TL;DR: a React single-page renderer that owns *all* editing state, an Electron main process that is a thin FFmpeg/FS service, and one IPC bridge between them.
 

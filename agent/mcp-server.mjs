@@ -1,12 +1,12 @@
 #!/usr/bin/env node
-// RandoSnap MCP server — lets Claude (Code / Desktop) drive a running RandoSnap instance.
+// VidHelm MCP server — lets Claude (Code / Desktop) drive a running VidHelm instance.
 // Zero dependencies: speaks MCP JSON-RPC over stdio and proxies to the app's localhost
 // agent bridge (electron/main.ts, default http://127.0.0.1:5959). See docs/AGENT.md.
 import http from 'node:http'
 import readline from 'node:readline'
 
-const BRIDGE = `http://127.0.0.1:${process.env.RS_AGENT_PORT || 5959}`
-const NOT_RUNNING = 'RandoSnap is not running. Start it first: `npm run dev` (or launch the installed app), then retry.'
+const BRIDGE = `http://127.0.0.1:${process.env.VH_AGENT_PORT || 5959}`
+const NOT_RUNNING = 'VidHelm is not running. Start it first: `npm run dev` (or launch the installed app), then retry.'
 
 const call = (method, path, body) => new Promise((resolve) => {
   const req = http.request(`${BRIDGE}${path}`, { method, headers: { 'Content-Type': 'application/json' }, timeout: method === 'POST' && body?.action === 'export' ? 30 * 60 * 1000 : ['cut_pauses','run_recipe','sample_frames','compose_thumbnail'].includes(body?.action) ? 5 * 60 * 1000 : 20000 }, res => {
@@ -27,7 +27,7 @@ const call = (method, path, body) => new Promise((resolve) => {
 const num = { type: 'number' }, str = { type: 'string' }, bool = { type: 'boolean' }
 const TOOLS = [
   { name: 'get_state', description: 'Full editor state: format, duration, playhead, media bin, clips (all tracks), texts, and tag points. Call this first and after batches of edits.', inputSchema: { type: 'object', properties: {} } },
-  { name: 'screenshot', description: 'PNG screenshot of the RandoSnap window — see what the human sees.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'screenshot', description: 'PNG screenshot of the VidHelm window — see what the human sees.', inputSchema: { type: 'object', properties: {} } },
   { name: 'add_media', description: 'Import a video/audio/image file by absolute path into the media bin, and (by default) append it to the timeline.', inputSchema: { type: 'object', properties: { path: str, place: { ...bool, description: 'false = bin only' }, start: { ...num, description: 'explicit timeline position (s)' } }, required: ['path'] } },
   { name: 'add_clip', description: 'Place an already-imported media item on the timeline. media = bin item name (fuzzy) or id. track: v1=video, a1=voice/music, a2=sfx.', inputSchema: { type: 'object', properties: { media: str, track: { ...str, enum: ['v1', 'a1', 'a2'] }, start: num, duration: num, sourceStart: num, volume: num, fadeIn: num, fadeOut: num }, required: ['media'] } },
   { name: 'update_clip', description: 'Patch a clip (by clipId from get_state): start, duration, sourceStart, volume, fadeIn, fadeOut, trackId.', inputSchema: { type: 'object', properties: { clipId: str, start: num, duration: num, sourceStart: num, volume: num, fadeIn: num, fadeOut: num, trackId: str }, required: ['clipId'] } },
@@ -87,7 +87,7 @@ rl.on('line', async (line) => {
   try { req = JSON.parse(line) } catch { return }
   const { id, method, params } = req
   if (method === 'initialize') {
-    return send({ jsonrpc: '2.0', id, result: { protocolVersion: params?.protocolVersion || '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'randosnap', version: '1.0.0' } } })
+    return send({ jsonrpc: '2.0', id, result: { protocolVersion: params?.protocolVersion || '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'vidhelm', version: '1.0.0' } } })
   }
   if (method === 'notifications/initialized' || method?.startsWith('notifications/')) return
   if (method === 'ping') return send({ jsonrpc: '2.0', id, result: {} })
