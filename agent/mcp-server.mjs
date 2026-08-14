@@ -42,6 +42,7 @@ const TOOLS = [
   { name: 'transport', description: 'Move the playhead and/or start/stop playback in the app window.', inputSchema: { type: 'object', properties: { seek: { ...num, description: 'seconds' }, play: bool } } },
   { name: 'set_format', description: 'Set export format: orientation landscape|portrait|square, resolution 4K|1440p|1080p|720p, fps 24|30|60.', inputSchema: { type: 'object', properties: { orientation: str, resolution: str, fps: num } } },
   { name: 'export_video', description: 'Render the timeline to an mp4 at outputPath (absolute). Blocks until done; returns the automatic quality-check verdict (loudness, peaks, black frames).', inputSchema: { type: 'object', properties: { outputPath: str, qualityCheck: bool }, required: ['outputPath'] } },
+  { name: 'open_panel', description: 'Open/close a panel in the app for the user: booth (karaoke recorder), narration (cloned voice), sfx (sound library tab), media (bin tab), settings.', inputSchema: { type: 'object', properties: { panel: { ...str, enum: ['booth', 'narration', 'sfx', 'media', 'settings'] }, open: bool }, required: ['panel'] } },
 ]
 
 async function runTool(name, args = {}) {
@@ -59,6 +60,7 @@ async function runTool(name, args = {}) {
       return Object.keys(out).length ? out : { error: 'pass seek and/or play' }
     }
     case 'export_video': return call('POST', '/command', { action: 'export', ...args })
+    case 'open_panel': return call('POST', '/command', { action: 'ui', ...args })
     case 'add_media': case 'add_clip': case 'update_clip': case 'split_clip': case 'delete_item':
     case 'add_text': case 'update_text': case 'add_tag': case 'update_tag': case 'list_sfx':
     case 'place_sfx': case 'set_format':

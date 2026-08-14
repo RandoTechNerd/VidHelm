@@ -666,6 +666,15 @@ function App() {
         setClips(prev => [...prev, clip])
         return { ok: true, clipId: clip.id, at: clip.start }
       }
+      case 'ui': {
+        if (cmd.panel === 'booth') setShowBooth(cmd.open !== false)
+        else if (cmd.panel === 'narration') setShowNarration(cmd.open !== false)
+        else if (cmd.panel === 'sfx') setSidebarTab('sfx')
+        else if (cmd.panel === 'media') setSidebarTab('media')
+        else if (cmd.panel === 'settings') setShowSettings(cmd.open !== false)
+        else return { error: `unknown panel: ${cmd.panel}. Use booth | narration | sfx | media | settings` }
+        return { ok: true, panel: cmd.panel }
+      }
       case 'seek': setCurrentTime(clamp(cmd.t ?? 0, 0, Math.max(totalDuration, cmd.t ?? 0))); return { ok: true }
       case 'play': setIsPlaying(cmd.playing !== false); return { ok: true }
       case 'set_format': {
