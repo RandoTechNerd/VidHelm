@@ -440,6 +440,65 @@ const alphaExpr = (start: number, end: number, fi: number, fo: number) => {
   return `max(0\\,min(${inE}\\,${outE}))`
 }
 
+// ---------------- Agent bridge ----------------
+// A localhost-only HTTP server that lets an AI agent (via the bundled MCP server in agent/)
+// read the editor state and drive it while a human watches. See docs/AGENT.md.
+//   GET  /state       -> current project state (from the renderer)
+//   POST /command     -> { action, ...params } executed in the renderer, returns its result
+//   GET  /screenshot  -> PNG of the app window
+//   GET  /ping        -> { ok, app, version }
+import http from 'node:http'
+
+const AGENT_PORT = Number(process.env.RS_AGENT_PORT || 5959)
+let agentSeq = 0
+const agentPending = new Map<number, (result: any) => void>()
+
+ipcMain.on('agent-response', (_e, { id, result }: { id: number; result: any }) => {
+  const cb = agentPending.get(id)
+  if (cb) { agentPending.delete(id); cb(result) }
+})
+
+const askRenderer = (cmd: any, timeoutMs = 15000) => new Promise<any>(resolve => {
+  if (!win) return resolve({ error: 'RandoSnap window is not open' })
+  const id = ++agentSeq
+  const timer = setTimeout(() => { agentPending.delete(id); resolve({ error: `renderer timeout after ${timeoutMs / 1000}s` }) }, timeoutMs)
+  agentPending.set(id, r => { clearTimeout(timer); resolve(r) })
+  win.webContents.send('agent-command', { id, ...cmd })
+})
+
+const agentServer = http.createServer(async (req, res) => {
+  // localhost only
+  const remote = req.socket.remoteAddress || ''
+  if (!/^(127\.0\.0\.1|::1|::ffff:127\.0\.0\.1)$/.test(remote)) { res.writeHead(403); return res.end() }
+  res.setHeader('Content-Type', 'application/json')
+  try {
+    if (req.method === 'GET' && req.url === '/ping') {
+      return res.end(JSON.stringify({ ok: true, app: 'RandoSnap', version: app.getVersion() }))
+    }
+    if (req.method === 'GET' && req.url === '/state') {
+      return res.end(JSON.stringify(await askRenderer({ action: 'get_state' })))
+    }
+    if (req.method === 'GET' && req.url === '/screenshot') {
+      if (!win) { res.writeHead(503); return res.end(JSON.stringify({ error: 'no window' })) }
+      const img = await win.webContents.capturePage()
+      res.setHeader('Content-Type', 'image/png')
+      return res.end(img.toPNG())
+    }
+    if (req.method === 'POST' && req.url === '/command') {
+      const chunks: Buffer[] = []
+      for await (const c of req) chunks.push(c as Buffer)
+      let cmd: any
+      try { cmd = JSON.parse(Buffer.concat(chunks).toString() || '{}') } catch { res.writeHead(400); return res.end(JSON.stringify({ error: 'bad json' })) }
+      if (!cmd.action) { res.writeHead(400); return res.end(JSON.stringify({ error: 'missing action' })) }
+      const timeout = cmd.action === 'export' ? 30 * 60 * 1000 : 15000
+      return res.end(JSON.stringify(await askRenderer(cmd, timeout)))
+    }
+    res.writeHead(404); res.end(JSON.stringify({ error: 'not found' }))
+  } catch (e) { res.writeHead(500); res.end(JSON.stringify({ error: String(e) })) }
+})
+agentServer.on('error', (e) => console.warn('agent bridge disabled:', String(e)))
+app.whenReady().then(() => agentServer.listen(AGENT_PORT, '127.0.0.1', () => console.log(`agent bridge on http://127.0.0.1:${AGENT_PORT}`)))
+
 // ---------------- SFX library ----------------
 // A set of classic cartoon/UI sound effects synthesized with ffmpeg (no downloads, no licensing).
 // Generated once into userData/sfx on first request. Users can drop extra .wav/.mp3 files into

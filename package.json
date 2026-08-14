@@ -9,7 +9,8 @@
     "build": "tsc -b && vite build && electron-builder",
     "typecheck": "tsc -b --noEmit",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "agent": "node agent/mcp-server.mjs"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",

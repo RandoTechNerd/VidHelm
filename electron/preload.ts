@@ -1,14 +1,20 @@
 import { ipcRenderer, contextBridge, webUtils } from 'electron'
 
 // --------- Expose some API to the Renderer process ---------
+// Track wrapper functions so off() can actually unregister what on() registered
+const wrapped = new Map<Function, (...a: any[]) => void>()
 contextBridge.exposeInMainWorld('ipcRenderer', {
   on(...args: Parameters<typeof ipcRenderer.on>) {
     const [channel, listener] = args
-    return ipcRenderer.on(channel, (event, ...args) => listener(event, ...args))
+    const wrap = (event: any, ...rest: any[]) => listener(event, ...rest)
+    wrapped.set(listener, wrap)
+    return ipcRenderer.on(channel, wrap)
   },
   off(...args: Parameters<typeof ipcRenderer.off>) {
-    const [channel, ...omit] = args
-    return ipcRenderer.off(channel, ...omit)
+    const [channel, listener] = args
+    const wrap = wrapped.get(listener as any)
+    wrapped.delete(listener as any)
+    return ipcRenderer.off(channel, (wrap || listener) as any)
   },
   send(...args: Parameters<typeof ipcRenderer.send>) {
     const [channel, ...omit] = args

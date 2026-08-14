@@ -569,6 +569,139 @@ function App() {
     setShowNarration(false)
   }
 
+  // ---- agent bridge executor ----
+  // Commands arrive from electron/main.ts (HTTP bridge -> 'agent-command'), run against live state,
+  // and reply on 'agent-response'. The ref keeps the handler closure fresh across renders.
+  const agentExec = useRef<(cmd: any) => Promise<any>>(async () => ({}))
+  agentExec.current = async (cmd: any) => {
+    const findMedia = (ref: string) => mediaBin.find(m => m.id === ref) || mediaBin.find(m => m.name.toLowerCase().includes(String(ref).toLowerCase()))
+    switch (cmd.action) {
+      case 'get_state':
+        return {
+          format: { orientation, resolution, fps, width: w, height: h },
+          duration: totalDuration, currentTime, isPlaying,
+          mediaBin: mediaBin.map(m => ({ id: m.id, name: m.name, type: m.type, duration: m.duration, path: m.path })),
+          clips: clips.map(c => ({ id: c.id, track: c.trackId, media: mediaBin.find(m => m.id === c.mediaId)?.name, start: +c.start.toFixed(3), duration: +c.duration.toFixed(3), sourceStart: +c.sourceStart.toFixed(3), volume: c.volume, fadeIn: c.fadeIn, fadeOut: c.fadeOut, automationPoints: c.volumePoints?.length || 0 })),
+          texts: texts.map(t => ({ id: t.id, text: t.text, start: +t.start.toFixed(3), duration: +t.duration.toFixed(3), x: t.x, y: t.y, fontSize: t.fontSize, color: t.color })),
+          tags: [...markers].sort((a, b) => a.t - b.t).map(m => ({ id: m.id, t: +m.t.toFixed(3), label: m.label })),
+        }
+      case 'add_media': {
+        const meta = await window.ipcRenderer.getMetadata(cmd.path)
+        if (!meta || meta.error) return { error: `cannot read ${cmd.path}: ${meta?.error || 'no metadata'}` }
+        const type: MediaFile['type'] = /\.(png|jpe?g|webp|gif|bmp)$/i.test(cmd.path) ? 'image' : meta.hasVideo ? 'video' : 'audio'
+        const media: MediaFile = { id: rid(), name: cmd.path.split(/[\\/]/).pop() || 'media', path: cmd.path, type, duration: type === 'image' ? (cmd.duration || 5) : (meta.duration || 5), hasVideo: meta.hasVideo || type === 'image', hasAudio: meta.hasAudio }
+        setMediaBin(prev => [...prev, media])
+        if (cmd.place !== false) {
+          const isAudio = media.type === 'audio'
+          const track = clips.filter(c => c.trackId === (isAudio ? 'a1' : 'v1'))
+          const at = typeof cmd.start === 'number' ? cmd.start : (track.length ? Math.max(...track.map(c => c.start + c.duration)) : 0)
+          setClips(prev => [...prev, { id: rid(), mediaId: media.id, type: media.type, trackId: isAudio ? 'a1' : 'v1', start: at, duration: media.duration, sourceStart: 0, volume: 1, fadeIn: 0, fadeOut: 0 }])
+        }
+        return { ok: true, mediaId: media.id, name: media.name, type: media.type, duration: media.duration }
+      }
+      case 'add_clip': {
+        const media = findMedia(cmd.media)
+        if (!media) return { error: `media not found: ${cmd.media}` }
+        const isAudio = media.type === 'audio'
+        const clip: TimelineClip = { id: rid(), mediaId: media.id, type: media.type, trackId: cmd.track || (isAudio ? 'a1' : 'v1'), start: cmd.start ?? 0, duration: cmd.duration ?? media.duration, sourceStart: cmd.sourceStart ?? 0, volume: cmd.volume ?? 1, fadeIn: cmd.fadeIn ?? 0, fadeOut: cmd.fadeOut ?? 0 }
+        setClips(prev => [...prev, clip])
+        return { ok: true, clipId: clip.id }
+      }
+      case 'update_clip': {
+        if (!clips.find(c => c.id === cmd.clipId)) return { error: `clip not found: ${cmd.clipId}` }
+        const patch: Partial<TimelineClip> = {}
+        for (const k of ['start', 'duration', 'sourceStart', 'volume', 'fadeIn', 'fadeOut', 'trackId'] as const) if (cmd[k] !== undefined) (patch as any)[k] = cmd[k]
+        setClips(prev => prev.map(c => c.id === cmd.clipId ? { ...c, ...patch } : c))
+        return { ok: true }
+      }
+      case 'delete_item':
+        setClips(c => c.filter(x => x.id !== cmd.id))
+        setTexts(t => t.filter(x => x.id !== cmd.id))
+        setMarkers(m => m.filter(x => x.id !== cmd.id))
+        return { ok: true }
+      case 'split_clip': {
+        const c0 = clips.find(c => c.id === cmd.clipId)
+        if (!c0) return { error: `clip not found: ${cmd.clipId}` }
+        const t = cmd.t
+        if (t <= c0.start || t >= c0.start + c0.duration) return { error: `t=${t} outside clip [${c0.start}, ${c0.start + c0.duration}]` }
+        const off = t - c0.start
+        const a = { ...c0, id: rid(), duration: off, fadeOut: 0 }
+        const b = { ...c0, id: rid(), start: t, duration: c0.duration - off, sourceStart: c0.sourceStart + off, fadeIn: 0 }
+        setClips(prev => { const i = prev.findIndex(c => c.id === c0.id); const n = [...prev]; n.splice(i, 1, a, b); return n })
+        return { ok: true, left: a.id, right: b.id }
+      }
+      case 'add_text': {
+        const t: TextClip = { id: rid(), text: cmd.text || 'text', start: cmd.start ?? currentTime, duration: cmd.duration ?? 3, x: cmd.x ?? 0.5, y: cmd.y ?? 0.5, fontSize: cmd.fontSize ?? 64, color: cmd.color || '#ffffff', fadeIn: cmd.fadeIn ?? 0.3, fadeOut: cmd.fadeOut ?? 0.3, box: cmd.box, boxOpacity: cmd.boxOpacity }
+        setTexts(prev => [...prev, t])
+        return { ok: true, textId: t.id }
+      }
+      case 'update_text': {
+        if (!texts.find(t => t.id === cmd.textId)) return { error: `text not found: ${cmd.textId}` }
+        const patch: Partial<TextClip> = {}
+        for (const k of ['text', 'start', 'duration', 'x', 'y', 'fontSize', 'color', 'fadeIn', 'fadeOut', 'box', 'boxOpacity'] as const) if (cmd[k] !== undefined) (patch as any)[k] = cmd[k]
+        setTexts(prev => prev.map(t => t.id === cmd.textId ? { ...t, ...patch } : t))
+        return { ok: true }
+      }
+      case 'add_tag': {
+        const m = newMarker(cmd.t ?? currentTime, cmd.label || '')
+        setMarkers(prev => [...prev, m])
+        return { ok: true, tagId: m.id }
+      }
+      case 'update_tag': {
+        if (!markers.find(m => m.id === cmd.tagId)) return { error: `tag not found: ${cmd.tagId}` }
+        setMarkers(prev => prev.map(m => m.id === cmd.tagId ? { ...m, ...(cmd.t !== undefined ? { t: cmd.t } : {}), ...(cmd.label !== undefined ? { label: cmd.label } : {}) } : m))
+        return { ok: true }
+      }
+      case 'list_sfx': {
+        const lib = await window.ipcRenderer.sfxLibrary()
+        return { sfx: lib.items.map(i => ({ name: i.name, duration: i.duration, builtin: i.builtin })) }
+      }
+      case 'place_sfx': {
+        const lib = await window.ipcRenderer.sfxLibrary()
+        const item = lib.items.find(i => i.name.toLowerCase() === String(cmd.name).toLowerCase())
+        if (!item) return { error: `sfx not found: ${cmd.name}. Available: ${lib.items.map(i => i.name).join(', ')}` }
+        let media = mediaBin.find(m => m.path === item.path)
+        if (!media) { media = { id: rid(), name: `${item.name} ✦`, path: item.path, type: 'audio', duration: item.duration, hasVideo: false, hasAudio: true }; setMediaBin(prev => [...prev, media!]) }
+        const clip: TimelineClip = { id: rid(), mediaId: media.id, type: 'audio', trackId: 'a2', start: cmd.t ?? currentTime, duration: item.duration, sourceStart: 0, volume: cmd.volume ?? 1, fadeIn: 0, fadeOut: 0 }
+        setClips(prev => [...prev, clip])
+        return { ok: true, clipId: clip.id, at: clip.start }
+      }
+      case 'seek': setCurrentTime(clamp(cmd.t ?? 0, 0, Math.max(totalDuration, cmd.t ?? 0))); return { ok: true }
+      case 'play': setIsPlaying(cmd.playing !== false); return { ok: true }
+      case 'set_format': {
+        if (cmd.orientation && ORIENTATIONS[cmd.orientation as OrientationKey]) setOrientation(cmd.orientation)
+        if (cmd.resolution) setResolution(cmd.resolution)
+        if (cmd.fps) setFps(cmd.fps)
+        return { ok: true }
+      }
+      case 'export': {
+        if (!cmd.outputPath) return { error: 'outputPath required' }
+        if (clips.length === 0 && texts.length === 0) return { error: 'timeline is empty' }
+        setIsPlaying(false)
+        const payload = {
+          clips: clips.map(c => { const media = mediaBin.find(m => m.id === c.mediaId); return { ...c, path: media?.path, hasVideo: media?.hasVideo, hasAudio: media?.hasAudio } }),
+          texts, brand: settings.brand, audio: settings.audio, outputPath: cmd.outputPath,
+          settings: { width: w, height: h, fps, quality: exportQuality, masterVolume },
+        }
+        try { await window.ipcRenderer.exportVideo(payload) } catch (e) { return { error: 'export failed: ' + String(e) } }
+        setLastExport(cmd.outputPath)
+        const qc = cmd.qualityCheck === false ? null : await window.ipcRenderer.qualityCheck(cmd.outputPath).catch(() => null)
+        return { ok: true, outputPath: cmd.outputPath, qualityCheck: qc ? { verdict: qc.verdict, checks: qc.checks?.map((c: any) => `${c.status}: ${c.label} — ${c.detail}`) } : undefined }
+      }
+      default:
+        return { error: `unknown action: ${cmd.action}` }
+    }
+  }
+  useEffect(() => {
+    const h = async (_e: any, cmd: any) => {
+      let result: any
+      try { result = await agentExec.current(cmd) } catch (e) { result = { error: String(e) } }
+      window.ipcRenderer.send('agent-response', { id: cmd.id, result })
+    }
+    window.ipcRenderer.on('agent-command', h)
+    return () => window.ipcRenderer.off('agent-command', h)
+  }, [])
+
   // ---- timeline geometry helpers ----
   const timeAtClientX = (clientX: number) => {
     const el = timelineRef.current!

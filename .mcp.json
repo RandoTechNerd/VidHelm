@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "randosnap": {
+      "command": "node",
+      "args": ["agent/mcp-server.mjs"]
+    }
+  }
+}

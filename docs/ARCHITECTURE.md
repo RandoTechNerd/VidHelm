@@ -52,6 +52,8 @@ Progress streams to the renderer; a **quality check** pass (`quality-check`) the
 - **Voice clone** (`voice-clone`): spawns a user-configured shell command with `{script}`/`{outdir}` substitution, streams output, then returns the sorted `.wav` list. Placement logic lives in the renderer (`narrationGenerated`). See `docs/VOICE_CLONE.md` for the contract.
 - **Markers**: pure renderer state; rendered as draggable flags over the ruler, listed in `MarkerPanel`, included in project files (`version: 2`; older projects load fine — markers default to `[]`).
 
+- **Agent bridge** (`main.ts` + `agent/mcp-server.mjs`): a localhost-only HTTP server (127.0.0.1:5959) forwards agent commands into the renderer over IPC (`agent-command` → executor in App.tsx → `agent-response`), so agent edits go through the same React state (and undo history) as human edits. The MCP server is a dependency-free stdio JSON-RPC proxy over that bridge; `.mcp.json` makes Claude Code pick it up automatically. `GET /screenshot` uses `webContents.capturePage`. Export via agent runs the normal export pipeline with an explicit output path and returns the quality-check summary. See `docs/AGENT.md`.
+
 ## Dev modes
 
 - `npm run dev` — Vite + Electron via `vite-plugin-electron`; hot reload on both sides.
