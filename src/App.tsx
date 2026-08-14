@@ -718,6 +718,12 @@ function App() {
         setClips(prev => [...prev, clip])
         return { ok: true, clipId: clip.id, at: clip.start }
       }
+      case 'stage_rect': {
+        const r = stageRef.current?.getBoundingClientRect()
+        if (!r) return { error: 'no stage' }
+        const dpr = window.devicePixelRatio || 1
+        return { x: Math.round(r.x * dpr), y: Math.round(r.y * dpr), w: Math.round(r.width * dpr), h: Math.round(r.height * dpr), dpr }
+      }
       case 'cut_pauses': return await runCutDeadSpace()
       case 'run_recipe': { await runRecipe(); return { ok: true } }
       case 'sample_frames': {

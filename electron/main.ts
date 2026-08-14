@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import { spawn } from 'node:child_process'
 import ffmpeg from 'fluent-ffmpeg'
 
-app.disableHardwareAcceleration();
+if (!process.env.VH_GPU) app.disableHardwareAcceleration()   // VH_GPU=1 keeps the GPU on (needed for video-layer screenshots)
 
 const getBinaryPath = () => {
   if (app.isPackaged) {
