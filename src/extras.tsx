@@ -339,6 +339,126 @@ export function ThumbnailModal({ open, onClose, videoPath, videoName, logoPath }
   )
 }
 
+// ---------------- Connect your AI (setup + troubleshooter) ----------------
+// One place to wire VidHelm to any MCP-capable assistant: live diagnostics of the
+// agent bridge, ready-to-paste configs generated with the real install path, and
+// fixes for the usual snags. Agents can open it too (open_panel "connect").
+type AgentStatus = Awaited<ReturnType<Window['ipcRenderer']['agentStatus']>>
+
+const CLIENT_DOCS: { id: string; name: string; where: string; kind: 'json' | 'toml' | 'http' | 'auto' }[] = [
+  { id: 'claude-code', name: 'Claude Code', where: 'Zero config — open this repo folder and approve the "vidhelm" server when prompted (.mcp.json is auto-discovered). Installed-app users: run the command below once instead.', kind: 'auto' },
+  { id: 'claude-desktop', name: 'Claude Desktop', where: 'Settings → Developer → Edit Config, or edit  %APPDATA%\\Claude\\claude_desktop_config.json  — merge this in, then fully restart Claude Desktop.', kind: 'json' },
+  { id: 'cursor', name: 'Cursor', where: 'Zero config in the repo (.cursor/mcp.json ships with it). Otherwise: Settings → MCP → Add server, or merge into  %USERPROFILE%\\.cursor\\mcp.json.', kind: 'json' },
+  { id: 'vscode', name: 'VS Code (Copilot)', where: 'Zero config in the repo (.vscode/mcp.json ships with it). Otherwise: Command Palette → "MCP: Add Server", or merge into your user mcp.json.', kind: 'json' },
+  { id: 'windsurf', name: 'Windsurf', where: 'Merge into  %USERPROFILE%\\.codeium\\windsurf\\mcp_config.json  then reload Windsurf.', kind: 'json' },
+  { id: 'cline', name: 'Cline / Roo', where: 'Extension sidebar → MCP Servers → Configure → merge this into the JSON.', kind: 'json' },
+  { id: 'codex', name: 'Codex CLI', where: 'Append to  %USERPROFILE%\\.codex\\config.toml.', kind: 'toml' },
+  { id: 'gemini', name: 'Gemini CLI', where: 'Merge into  %USERPROFILE%\\.gemini\\settings.json.', kind: 'json' },
+  { id: 'http', name: 'Anything else', where: 'No MCP? Any agent that can run shell commands can drive the plain HTTP bridge directly:', kind: 'http' },
+]
+
+export function ConnectModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const [st, setSt] = useState<AgentStatus | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [client, setClient] = useState('claude-code')
+  const [copied, setCopied] = useState('')
+
+  const refresh = async () => {
+    setBusy(true)
+    try { setSt(await window.ipcRenderer.agentStatus()) } catch (e) { console.error(e) }
+    setBusy(false)
+  }
+  useEffect(() => { if (open) refresh() }, [open])
+
+  if (!open) return null
+
+  const port = st?.port ?? 5959
+  const mcpPath = st?.mcpFile.path ?? '<path to VidHelm>\\agent\\mcp-server.mjs'
+  const jsonPath = mcpPath.replace(/\\/g, '\\\\')
+  const stdJson = `{\n  "mcpServers": {\n    "vidhelm": {\n      "command": "node",\n      "args": ["${jsonPath}"]\n    }\n  }\n}`
+  const SNIPPETS: Record<string, string> = {
+    'claude-code': `claude mcp add vidhelm -- node "${mcpPath}"`,
+    'claude-desktop': stdJson,
+    'cursor': stdJson,
+    'vscode': `{\n  "servers": {\n    "vidhelm": {\n      "type": "stdio",\n      "command": "node",\n      "args": ["${jsonPath}"]\n    }\n  }\n}`,
+    'windsurf': stdJson,
+    'cline': stdJson,
+    'codex': `[mcp_servers.vidhelm]\ncommand = "node"\nargs = ["${jsonPath}"]`,
+    'gemini': stdJson,
+    'http': `# read the timeline          # drive the editor\ncurl http://127.0.0.1:${port}/state\ncurl -X POST http://127.0.0.1:${port}/command -H "Content-Type: application/json" -d "{\\"action\\":\\"place_sfx\\",\\"name\\":\\"pop\\",\\"t\\":3.2}"`,
+  }
+  const copy = (label: string, text: string) => {
+    navigator.clipboard.writeText(text).then(() => { setCopied(label); setTimeout(() => setCopied(''), 1600) })
+  }
+  const cdoc = CLIENT_DOCS.find(c => c.id === client)!
+
+  const Check = ({ ok, label, detail, fix }: { ok: boolean | undefined; label: string; detail?: string; fix?: string }) => (
+    <div className={`conn-check ${ok === undefined ? '' : ok ? 'ok' : 'bad'}`}>
+      <span className="conn-dot">{ok === undefined ? '…' : ok ? '✓' : '✕'}</span>
+      <div><b>{label}</b>{detail && <span className="conn-detail"> — {detail}</span>}
+        {ok === false && fix && <div className="conn-fix">{fix}</div>}
+      </div>
+    </div>
+  )
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal conn-modal" onClick={e => e.stopPropagation()}>
+        <div className="modal-head"><h2>🤖 Connect your AI</h2><button className="modal-close" onClick={onClose}>✕</button></div>
+        <div className="modal-body">
+          <section>
+            <div className="sec-title"><h3>Health check</h3>
+              <button onClick={refresh} disabled={busy}>{busy ? 'Testing…' : '↻ Test connection'}</button>
+            </div>
+            <Check ok={st?.bridge.listening} label={`Agent bridge on port ${port}`}
+              detail={st?.bridge.listening ? `http://127.0.0.1:${port}` : st?.bridge.error || undefined}
+              fix={`Another program may be using port ${port}. Close it, or launch VidHelm with the environment variable VH_AGENT_PORT set to a free port (and add the same env to your AI client's server config).`} />
+            <Check ok={st?.loopback.ok} label="Bridge answers HTTP" detail={st?.loopback.detail}
+              fix="The port is open but not answering — restart VidHelm. If a firewall prompt appeared, allow it (the bridge only ever listens on 127.0.0.1, nothing leaves your machine)." />
+            <Check ok={st?.mcpFile.ok} label="MCP server file" detail={st?.mcpFile.ok ? mcpPath : `missing: ${mcpPath}`}
+              fix="Reinstall VidHelm, or clone the repo — the file is agent/mcp-server.mjs." />
+            <Check ok={st?.node.ok} label={`Node.js for your AI client ${st?.node.version ? `(${st.node.version})` : ''}`}
+              detail={st?.node.ok ? 'found on PATH' : 'not found on PATH'}
+              fix="MCP clients start the server themselves with `node`. Install Node 18+ from nodejs.org, then restart your AI client. (VidHelm itself runs fine without it.)" />
+            <p className="hint">All green? Then any failure below is on the client side — pick yours and re-check its config.</p>
+          </section>
+          <section>
+            <div className="sec-title"><h3>Set up your AI of choice</h3></div>
+            <div className="conn-clients">
+              {CLIENT_DOCS.map(c => (
+                <button key={c.id} className={`recipe-chip ${client === c.id ? 'on' : ''}`} onClick={() => setClient(c.id)}>{c.name}</button>
+              ))}
+            </div>
+            <p className="hint">{cdoc.where}</p>
+            <pre className="conn-snippet">{SNIPPETS[client]}</pre>
+            <div className="conn-actions">
+              <button className="primary" onClick={() => copy('snippet', SNIPPETS[client])}>{copied === 'snippet' ? 'Copied ✓' : 'Copy config'}</button>
+              <button onClick={() => copy('path', mcpPath)}>{copied === 'path' ? 'Copied ✓' : 'Copy server path'}</button>
+              <button onClick={() => window.ipcRenderer.openExternal('https://github.com/RandoTechNerd/VidHelm/blob/main/docs/CONNECT.md')}>Full guide ↗</button>
+            </div>
+          </section>
+          <section>
+            <h3>Still stuck?</h3>
+            <details><summary>My AI says "VidHelm is not running"</summary>
+              <p className="hint">The bridge only exists while this app is open. Keep VidHelm running, then retry the tool call. (Dev mode: <code>npm run dev</code>.)</p></details>
+            <details><summary>I added the config but no tools show up</summary>
+              <p className="hint">Fully restart the AI client (most only read MCP configs at startup), make sure the JSON merged cleanly (no trailing commas), and confirm the file path in <code>args</code> exists. In Claude Code, run <code>/mcp</code> to see server status.</p></details>
+            <details><summary>Tools exist but every call errors</summary>
+              <p className="hint">Run the health check above. If the bridge is green, the client is probably launching the server without Node on PATH, or pointing at an old path after an update — re-copy the config.</p></details>
+            <details><summary>Port conflict (bridge check is red)</summary>
+              <p className="hint">Set <code>VH_AGENT_PORT</code> to a free port before launching VidHelm, and add <code>"env": {'{'}"VH_AGENT_PORT": "5960"{'}'}</code> to the server entry in your client config so both sides agree.</p></details>
+            <details><summary>My assistant doesn't support MCP at all</summary>
+              <p className="hint">If it can run shell commands, it can still steer VidHelm over plain HTTP — pick "Anything else" above and paste those curl examples into its instructions. The repo also ships a portable skill file (<code>agent/skills/vidhelm-skill.md</code>) you can paste into any assistant's custom instructions.</p></details>
+          </section>
+        </div>
+        <div className="modal-foot">
+          <span>VidHelm {st?.appVersion} · bridge http://127.0.0.1:{port} · local only, nothing leaves your machine</span>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ---------------- Cloned-voice narration ----------------
 export function NarrationModal({ open, onClose, command, onCommand, onGenerated }: {
   open: boolean; onClose: () => void

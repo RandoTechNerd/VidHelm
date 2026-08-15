@@ -2,6 +2,8 @@
 
 VidHelm is built for **two-handed editing**: you in the GUI, an AI assistant on the other side of a local bridge — both working on the same timeline at the same time. You drag clips; the agent tags beats, drops SFX, writes titles, and exports. Everything the agent does appears live in your window.
 
+> **Connecting a client?** [docs/CONNECT.md](CONNECT.md) covers every AI client (Claude, Cursor, VS Code, Windsurf, Cline, Codex, Gemini, plain HTTP) plus troubleshooting — or click **🤖 AI** in the app header for live diagnostics and configs generated with your real install path. This page documents the bridge itself.
+
 ## Setup with Claude Code (zero config)
 
 The repo contains `.mcp.json`, so Claude Code discovers the server automatically:

@@ -1,0 +1,9 @@
+{
+  "servers": {
+    "vidhelm": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["agent/mcp-server.mjs"]
+    }
+  }
+}

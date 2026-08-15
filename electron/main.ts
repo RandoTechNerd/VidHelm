@@ -564,8 +564,51 @@ const agentServer = http.createServer(async (req, res) => {
     res.writeHead(404); res.end(JSON.stringify({ error: 'not found' }))
   } catch (e) { res.writeHead(500); res.end(JSON.stringify({ error: String(e) })) }
 })
-agentServer.on('error', (e) => console.warn('agent bridge disabled:', String(e)))
-app.whenReady().then(() => agentServer.listen(AGENT_PORT, '127.0.0.1', () => console.log(`agent bridge on http://127.0.0.1:${AGENT_PORT}`)))
+let bridgeState = { listening: false, error: '' }
+agentServer.on('error', (e) => { bridgeState = { listening: false, error: String(e) }; console.warn('agent bridge disabled:', String(e)) })
+app.whenReady().then(() => agentServer.listen(AGENT_PORT, '127.0.0.1', () => { bridgeState = { listening: true, error: '' }; console.log(`agent bridge on http://127.0.0.1:${AGENT_PORT}`) }))
+
+// Where the MCP server file lives on disk (packaged builds ship it in resources/agent/).
+// The Connect panel hands this absolute path to MCP clients that need one.
+const MCP_SERVER_PATH = app.isPackaged
+  ? path.join(process.resourcesPath, 'agent', 'mcp-server.mjs')
+  : path.join(__dirname, '..', 'agent', 'mcp-server.mjs')
+
+// Diagnostics for the in-app "Connect your AI" panel: is the bridge up, does a real
+// loopback HTTP call work, is the MCP server file on disk, and is Node on PATH
+// (MCP clients launch the server themselves, so they need their own node).
+ipcMain.handle('agent-status', async () => {
+  const loopback = await new Promise<{ ok: boolean; detail: string }>(resolve => {
+    const req = http.get(`http://127.0.0.1:${AGENT_PORT}/ping`, res => {
+      const chunks: Buffer[] = []
+      res.on('data', c => chunks.push(c as Buffer))
+      res.on('end', () => {
+        try { const j = JSON.parse(Buffer.concat(chunks).toString()); resolve({ ok: !!j.ok, detail: `ping answered (v${j.version})` }) }
+        catch { resolve({ ok: false, detail: 'ping gave a bad response' }) }
+      })
+    })
+    req.on('error', e => resolve({ ok: false, detail: String(e) }))
+    req.setTimeout(3000, () => { req.destroy(); resolve({ ok: false, detail: 'ping timed out' }) })
+  })
+  const node = await new Promise<{ ok: boolean; version?: string }>(resolve => {
+    try {
+      const p = spawn('node', ['--version'], { shell: true })
+      let out = ''
+      p.stdout.on('data', d => { out += d })
+      p.on('close', code => resolve(code === 0 && out.trim().startsWith('v') ? { ok: true, version: out.trim() } : { ok: false }))
+      p.on('error', () => resolve({ ok: false }))
+    } catch { resolve({ ok: false }) }
+  })
+  return {
+    appVersion: app.getVersion(),
+    port: AGENT_PORT,
+    portOverridden: !!process.env.VH_AGENT_PORT,
+    bridge: bridgeState,
+    loopback,
+    mcpFile: { ok: fs.existsSync(MCP_SERVER_PATH), path: MCP_SERVER_PATH },
+    node,
+  }
+})
 
 // ---------------- SFX library ----------------
 // A set of classic cartoon/UI sound effects synthesized with ffmpeg (no downloads, no licensing).

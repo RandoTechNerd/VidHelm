@@ -29,10 +29,12 @@ Everything runs locally. FFmpeg does the rendering, Whisper runs on-device for c
 - **Cloned-voice narration** — plug in any TTS/voice-clone CLI (XTTS recipe included, see [docs/VOICE_CLONE.md](docs/VOICE_CLONE.md)); generated lines are placed at your tag points automatically
 - Loudness done right: one checkbox masters the mix to YouTube's target with a compressor + `loudnorm`; optional noise reduction
 
-**🤖 AI copilot built in**
-- VidHelm ships an **MCP server** — open the repo in Claude Code (or wire it to Claude Desktop) and your AI assistant can drive the running app **while you watch**: read the timeline, drop SFX on your tag points, write titles, seek your window, take screenshots of what you see, and export with a quality report
+**🤖 AI copilot built in — bring your AI of choice**
+- VidHelm ships an **MCP server** — your AI assistant drives the running app **while you watch**: read the timeline, drop SFX on your tag points, write titles, seek your window, take screenshots of what you see, and export with a quality report
 - You edit in the GUI, the agent edits through the bridge — same timeline, live, with shared undo. Tag points become the language between you: you mark the beats, it does the busywork
-- Zero config in Claude Code (`.mcp.json` is auto-discovered) · works with any framework via plain HTTP — see [docs/AGENT.md](docs/AGENT.md)
+- **Zero config** for Claude Code, Cursor, and VS Code (configs ship in the repo) · copy-paste setup for Claude Desktop, Windsurf, Cline, Codex CLI, Gemini CLI · plain-HTTP fallback for everything else — see [docs/CONNECT.md](docs/CONNECT.md)
+- A **portable skillset** teaches any assistant the workflow: `AGENTS.md` (read automatically by most agentic tools), a Claude Code skill in `.claude/skills/`, and a paste-anywhere version in `agent/skills/`
+- Stuck? Click **🤖 AI** in the app header — live connection diagnostics, per-client configs generated with your real install path, and fixes for the usual snags
 
 **Finishing**
 - On-device **Whisper captions** (phrase or word-by-word karaoke style, 10+ languages)
@@ -78,7 +80,8 @@ Full walkthrough with details: [docs/WORKFLOW.md](docs/WORKFLOW.md)
 | Doc | What's inside |
 |---|---|
 | [docs/WORKFLOW.md](docs/WORKFLOW.md) | The full editing pipeline, keyboard shortcuts, audio lanes explained |
-| [docs/AGENT.md](docs/AGENT.md) | Let Claude (or any agent) drive the app live — setup + tool list |
+| [docs/CONNECT.md](docs/CONNECT.md) | Hook up **your AI of choice** — zero-config + copy-paste setups, HTTP fallback, troubleshooting |
+| [docs/AGENT.md](docs/AGENT.md) | The agent bridge itself — endpoints, tool list, protocol details |
 | [docs/PROJECT_FORMAT.md](docs/PROJECT_FORMAT.md) | The JSON project/state format for scripts and tooling |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | How the app is built — for contributors |
 | [docs/VOICE_CLONE.md](docs/VOICE_CLONE.md) | Set up free local voice cloning (XTTS-v2) and wire it to the Narrate button |

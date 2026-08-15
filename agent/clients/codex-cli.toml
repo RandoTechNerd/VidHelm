@@ -1,0 +1,4 @@
+# Append to %USERPROFILE%\.codex\config.toml
+[mcp_servers.vidhelm]
+command = "node"
+args = ["C:\\path\\to\\VidHelm\\agent\\mcp-server.mjs"]

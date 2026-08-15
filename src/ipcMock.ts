@@ -29,5 +29,12 @@ export function installIpcMock() {
     openSfxFolder: async () => {},
     openExternal: async (url: string) => { window.open(url, "_blank") },
     voiceClone: async () => ({ error: 'Narration needs the desktop app (npm run dev)' }),
+    agentStatus: async () => ({
+      appVersion: 'web', port: 5959, portOverridden: false,
+      bridge: { listening: false, error: 'The agent bridge needs the desktop app (npm run dev)' },
+      loopback: { ok: false, detail: 'desktop app only' },
+      mcpFile: { ok: false, path: '<repo>/agent/mcp-server.mjs' },
+      node: { ok: false },
+    }),
   } as unknown as Window['ipcRenderer']
 }

@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import './App.css'
-import { SfxPanel, MarkerPanel, KaraokeBooth, NarrationModal, RecipeSection, ThumbnailModal, DEFAULT_RECIPE, recipeActive, newMarker, type Marker, type SfxItem, type RecipeSettings } from './extras'
+import { SfxPanel, MarkerPanel, KaraokeBooth, NarrationModal, RecipeSection, ThumbnailModal, ConnectModal, DEFAULT_RECIPE, recipeActive, newMarker, type Marker, type SfxItem, type RecipeSettings } from './extras'
 
 interface MediaFile {
   id: string
@@ -221,6 +221,7 @@ function App() {
   const [lastExport, setLastExport] = useState<string | null>(null)
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS)
   const [showSettings, setShowSettings] = useState(false)
+  const [showConnect, setShowConnect] = useState(false)
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; mediaId: string } | null>(null)
   const [qcReport, setQcReport] = useState<any>(null)
   const [qcRunning, setQcRunning] = useState(false)
@@ -744,7 +745,8 @@ function App() {
         else if (cmd.panel === 'media') setSidebarTab('media')
         else if (cmd.panel === 'settings') setShowSettings(cmd.open !== false)
         else if (cmd.panel === 'thumbnail') setShowThumbnail(cmd.open !== false)
-        else return { error: `unknown panel: ${cmd.panel}. Use booth | narration | sfx | media | settings | thumbnail` }
+        else if (cmd.panel === 'connect') setShowConnect(cmd.open !== false)
+        else return { error: `unknown panel: ${cmd.panel}. Use booth | narration | sfx | media | settings | thumbnail | connect` }
         return { ok: true, panel: cmd.panel }
       }
       case 'seek': setCurrentTime(clamp(cmd.t ?? 0, 0, Math.max(totalDuration, cmd.t ?? 0))); return { ok: true }
@@ -1117,6 +1119,7 @@ function App() {
           <button className="hdr-btn" onClick={saveProject} title="Save project">Save</button>
           <button className="hdr-btn" onClick={loadProject} title="Open project">Open</button>
           <button className="hdr-btn" onClick={runRecipe} title="Run your Start Recipe on this timeline">🚀 Recipe</button>
+          <button className="hdr-btn" onClick={() => setShowConnect(true)} title="Connect your AI — one-click setup + troubleshooter">🤖 AI</button>
           <button className="hdr-btn icon" onClick={() => setShowSettings(true)} title="Brand kit & settings"><IconGear /></button>
         </div>
         <div className="orientation-switch">
@@ -1383,6 +1386,7 @@ function App() {
         onCommand={c => setSettings(s => ({ ...s, narration: { command: c } }))}
         onGenerated={narrationGenerated} />
 
+      <ConnectModal open={showConnect} onClose={() => setShowConnect(false)} />
       <ThumbnailModal open={showThumbnail} onClose={() => setShowThumbnail(false)}
         videoPath={firstVideo()?.path || null} videoName={firstVideo()?.name || 'video'} logoPath={settings.brand.logoPath} />
 

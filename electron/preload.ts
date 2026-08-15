@@ -51,4 +51,5 @@ contextBridge.exposeInMainWorld('ipcRenderer', {
   composeThumbnail: (data: { filePath: string; t: number; subtitle?: string; logoPath?: string | null; outPath: string }) => ipcRenderer.invoke('compose-thumbnail', data),
   openSfxFolder: () => ipcRenderer.invoke('open-sfx-folder'),
   voiceClone: (data: { command: string; scriptText: string }) => ipcRenderer.invoke('voice-clone', data),
+  agentStatus: () => ipcRenderer.invoke('agent-status'),
 })

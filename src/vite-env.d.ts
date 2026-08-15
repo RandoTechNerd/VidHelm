@@ -31,5 +31,12 @@ interface Window {
     composeThumbnail: (data: { filePath: string; t: number; subtitle?: string; logoPath?: string | null; outPath: string }) => Promise<{ ok?: boolean; outPath?: string; error?: string }>
     openSfxFolder: () => Promise<void>
     voiceClone: (data: { command: string; scriptText: string }) => Promise<{ files?: string[]; error?: string; log?: string }>
+    agentStatus: () => Promise<{
+      appVersion: string; port: number; portOverridden: boolean
+      bridge: { listening: boolean; error: string }
+      loopback: { ok: boolean; detail: string }
+      mcpFile: { ok: boolean; path: string }
+      node: { ok: boolean; version?: string }
+    }>
   }
 }

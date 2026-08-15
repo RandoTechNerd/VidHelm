@@ -1065,3 +1065,21 @@ textarea.duration-input { resize: vertical; font-family: inherit; }
 .toasts { position: fixed; top: 52px; left: 50%; transform: translateX(-50%); z-index: 200; display: flex; flex-direction: column; gap: 8px; pointer-events: none; }
 .toast { pointer-events: auto; cursor: pointer; background: rgba(15,18,28,0.97); border: 1px solid rgba(255,255,255,0.14); border-left: 3px solid var(--accent-primary, #3b82f6); color: #eef3f9; border-radius: 12px; padding: 12px 18px; font-size: 13.5px; line-height: 1.55; max-width: 460px; white-space: pre-line; box-shadow: 0 12px 40px rgba(0,0,0,0.5); animation: toast-in 0.22s ease; }
 @keyframes toast-in { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: none; } }
+
+/* ============ Connect your AI (setup + troubleshooter) ============ */
+.conn-modal { max-width: 640px; }
+.conn-check { display: flex; gap: 10px; align-items: flex-start; padding: 8px 10px; border-radius: 10px; margin-bottom: 6px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.07); font-size: 13px; }
+.conn-check.ok { border-color: rgba(74,222,128,0.35); }
+.conn-check.bad { border-color: rgba(248,113,113,0.45); }
+.conn-dot { width: 20px; height: 20px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; flex: none; background: rgba(255,255,255,0.1); color: #9aa3af; }
+.conn-check.ok .conn-dot { background: rgba(74,222,128,0.2); color: #4ade80; }
+.conn-check.bad .conn-dot { background: rgba(248,113,113,0.2); color: #f87171; }
+.conn-detail { color: var(--text-secondary, #9aa3af); font-weight: 400; }
+.conn-fix { margin-top: 4px; font-size: 12.5px; color: #fbbf24; line-height: 1.5; }
+.conn-clients { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.conn-snippet { background: #0a0d14; border: 1px solid rgba(255,255,255,0.12); border-radius: 10px; padding: 12px 14px; font-family: 'Consolas', ui-monospace, monospace; font-size: 12px; line-height: 1.55; color: #c8e3c8; overflow-x: auto; white-space: pre; user-select: all; }
+.conn-actions { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.conn-modal details { margin-bottom: 6px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.07); border-radius: 10px; padding: 8px 12px; }
+.conn-modal summary { cursor: pointer; font-size: 13px; font-weight: 600; color: var(--text-primary, #f8fafc); }
+.conn-modal details .hint { margin: 8px 0 2px; }
+.conn-modal code { background: rgba(255,255,255,0.08); border-radius: 4px; padding: 1px 5px; font-size: 12px; }

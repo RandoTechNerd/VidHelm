@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "vidhelm": {
+      "command": "node",
+      "args": ["agent/mcp-server.mjs"]
+    }
+  }
+}

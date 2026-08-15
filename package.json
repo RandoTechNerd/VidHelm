@@ -59,6 +59,11 @@
     ],
     "extraResources": [
       {
+        "from": "agent",
+        "to": "agent",
+        "filter": ["**/*"]
+      },
+      {
         "from": "node_modules/ffmpeg-static/ffmpeg.exe",
         "to": "ffmpeg.exe"
       },
