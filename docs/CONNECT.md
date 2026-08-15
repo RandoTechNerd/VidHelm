@@ -42,6 +42,19 @@ Ready-made snippets live in [`agent/clients/`](../agent/clients/) — replace `C
 
 All of these boil down to the same idea: *run `node <absolute path to mcp-server.mjs>` over stdio.* Any MCP-capable client not listed here will have an equivalent field.
 
+## Local models (Ollama, LM Studio, Jan, Open WebUI, AMD Lemonade)
+
+Everything works fully offline — the bridge, the MCP server, and a local model make a completely local editing copilot. The one requirement: **the model must support tool calling** (Qwen 2.5+, Llama 3.1+, Mistral, and similar do; old or heavily-quantized models often don't).
+
+- **LM Studio** — native MCP: chat sidebar → Program → Install → Edit `mcp.json`, merge the standard `mcpServers` block (the 🤖 AI panel generates it with your real path). LM Studio has per-tool toggles — for small (7B) models enable just `get_state`, `screenshot`, `cut_pauses`, `place_sfx`, `export_video` so the tool list doesn't overwhelm the context.
+- **Jan** — Settings → MCP Servers (enable the experimental toggle), same `mcpServers` shape.
+- **Open WebUI** — speaks OpenAPI tool servers rather than MCP. Bridge it with [mcpo](https://github.com/open-webui/mcpo): `uvx mcpo --port 8001 -- node "<path>\agent\mcp-server.mjs"`, then add `http://localhost:8001` under Settings → Tools.
+- **Ollama** — Ollama serves the model (`http://localhost:11434/v1`) but isn't an agent itself. Pair it with an MCP-capable front-end — LM Studio-style apps, Cline, Continue, or Open WebUI — point the front-end at Ollama for the model, and add VidHelm as an MCP server in that front-end.
+- **AMD Lemonade Server** (Ryzen AI) — same pattern as Ollama: Lemonade exposes an OpenAI-compatible endpoint (`http://localhost:8000/api/v1`); use it as the model backend in Cline/Continue/Open WebUI/GAIA and add VidHelm's MCP server to the front-end. NPU/GPU acceleration comes free from Lemonade; VidHelm doesn't care where the tokens come from.
+- **llama.cpp / vLLM / anything OpenAI-compatible** — same pattern again: front-end holds the MCP config, server holds the model.
+
+Sanity-check the server itself anytime with `npm run selftest` (or `node agent/selftest.mjs`) — 13 protocol checks covering MCP handshake, strict-client probes, and OpenAI function-schema conversion rules.
+
 ## No MCP? Use the HTTP bridge directly
 
 Any agent that can run shell commands can skip MCP entirely:
@@ -74,5 +87,7 @@ All three teach the same things: read state first, use tag points as the shared 
 | Bridge check is red / port conflict | Something else owns port 5959. Set `VH_AGENT_PORT=5960` (any free port) in the environment before launching VidHelm, **and** add `"env": {"VH_AGENT_PORT": "5960"}` to the server entry in your client config. |
 | Firewall prompt on first run | Allow it — the bridge binds 127.0.0.1 only and rejects non-local connections. |
 | Works in dev, not with the installed app | The installed app's server path is different: `<install dir>\resources\agent\mcp-server.mjs`. Re-copy the config from the 🤖 AI panel. |
+| Local model connects but never calls tools | The model doesn't support tool calling, or 21 tools flooded a small context. Use a tool-capable model (Qwen 2.5+, Llama 3.1+, Mistral) and enable a subset of tools if your client has toggles. |
+| Not sure if the server itself is healthy | `npm run selftest` — 13 protocol checks, works with or without the app open (open the app for the live end-to-end check). |
 
 Still stuck? [Open an issue](https://github.com/RandoTechNerd/VidHelm/issues) with a screenshot of the 🤖 AI health check.

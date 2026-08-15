@@ -32,7 +32,7 @@ Everything runs locally. FFmpeg does the rendering, Whisper runs on-device for c
 **🤖 AI copilot built in — bring your AI of choice**
 - VidHelm ships an **MCP server** — your AI assistant drives the running app **while you watch**: read the timeline, drop SFX on your tag points, write titles, seek your window, take screenshots of what you see, and export with a quality report
 - You edit in the GUI, the agent edits through the bridge — same timeline, live, with shared undo. Tag points become the language between you: you mark the beats, it does the busywork
-- **Zero config** for Claude Code, Cursor, and VS Code (configs ship in the repo) · copy-paste setup for Claude Desktop, Windsurf, Cline, Codex CLI, Gemini CLI · plain-HTTP fallback for everything else — see [docs/CONNECT.md](docs/CONNECT.md)
+- **Zero config** for Claude Code, Cursor, and VS Code (configs ship in the repo) · copy-paste setup for Claude Desktop, Windsurf, Cline, Codex CLI, Gemini CLI · **fully-local setups** with LM Studio, Jan, Open WebUI, Ollama, or AMD Lemonade Server · plain-HTTP fallback for everything else — see [docs/CONNECT.md](docs/CONNECT.md)
 - A **portable skillset** teaches any assistant the workflow: `AGENTS.md` (read automatically by most agentic tools), a Claude Code skill in `.claude/skills/`, and a paste-anywhere version in `agent/skills/`
 - Stuck? Click **🤖 AI** in the app header — live connection diagnostics, per-client configs generated with your real install path, and fixes for the usual snags
 

@@ -354,6 +354,10 @@ const CLIENT_DOCS: { id: string; name: string; where: string; kind: 'json' | 'to
   { id: 'cline', name: 'Cline / Roo', where: 'Extension sidebar → MCP Servers → Configure → merge this into the JSON.', kind: 'json' },
   { id: 'codex', name: 'Codex CLI', where: 'Append to  %USERPROFILE%\\.codex\\config.toml.', kind: 'toml' },
   { id: 'gemini', name: 'Gemini CLI', where: 'Merge into  %USERPROFILE%\\.gemini\\settings.json.', kind: 'json' },
+  { id: 'lmstudio', name: 'LM Studio', where: 'Fully local: chat sidebar → Program → Install → Edit mcp.json — merge this in. Pick a model that supports tool use (Qwen, Llama 3.1+, Mistral…) and toggle on just the VidHelm tools you need for small models.', kind: 'json' },
+  { id: 'jan', name: 'Jan', where: 'Fully local: Settings → MCP Servers (enable the experimental toggle) → add server, or merge this into its JSON.', kind: 'json' },
+  { id: 'openwebui', name: 'Open WebUI', where: 'Open WebUI speaks OpenAPI tool servers, not MCP — run the mcpo proxy below, then add http://localhost:8001 under Settings → Tools.', kind: 'http' },
+  { id: 'localmodels', name: 'Ollama / Lemonade', where: 'Ollama, AMD Lemonade Server, llama.cpp & co. serve the model but are not agents themselves — point an MCP-capable front-end (LM Studio, Cline, Continue, Open WebUI) at your local endpoint, then add VidHelm in that front-end:', kind: 'http' },
   { id: 'http', name: 'Anything else', where: 'No MCP? Any agent that can run shell commands can drive the plain HTTP bridge directly:', kind: 'http' },
 ]
 
@@ -385,6 +389,10 @@ export function ConnectModal({ open, onClose }: { open: boolean; onClose: () => 
     'cline': stdJson,
     'codex': `[mcp_servers.vidhelm]\ncommand = "node"\nargs = ["${jsonPath}"]`,
     'gemini': stdJson,
+    'lmstudio': stdJson,
+    'jan': stdJson,
+    'openwebui': `uvx mcpo --port 8001 -- node "${mcpPath}"`,
+    'localmodels': `# 1) In the front-end, set your local model server:\n#      Ollama    http://localhost:11434/v1\n#      Lemonade  http://localhost:8000/api/v1\n# 2) Add VidHelm as an MCP server there (standard shape):\n${stdJson}`,
     'http': `# read the timeline          # drive the editor\ncurl http://127.0.0.1:${port}/state\ncurl -X POST http://127.0.0.1:${port}/command -H "Content-Type: application/json" -d "{\\"action\\":\\"place_sfx\\",\\"name\\":\\"pop\\",\\"t\\":3.2}"`,
   }
   const copy = (label: string, text: string) => {
@@ -447,6 +455,8 @@ export function ConnectModal({ open, onClose }: { open: boolean; onClose: () => 
               <p className="hint">Run the health check above. If the bridge is green, the client is probably launching the server without Node on PATH, or pointing at an old path after an update — re-copy the config.</p></details>
             <details><summary>Port conflict (bridge check is red)</summary>
               <p className="hint">Set <code>VH_AGENT_PORT</code> to a free port before launching VidHelm, and add <code>"env": {'{'}"VH_AGENT_PORT": "5960"{'}'}</code> to the server entry in your client config so both sides agree.</p></details>
+            <details><summary>My local model connects but never uses the tools</summary>
+              <p className="hint">The model itself must support tool calling — Qwen 2.5+, Llama 3.1+, and Mistral do; older or heavily-quantized models often don't. Twenty-one tools can also overwhelm small (7B) models: in clients with per-tool toggles (like LM Studio) enable just <code>get_state</code>, <code>screenshot</code>, <code>cut_pauses</code>, <code>place_sfx</code>, and <code>export_video</code> to start.</p></details>
             <details><summary>My assistant doesn't support MCP at all</summary>
               <p className="hint">If it can run shell commands, it can still steer VidHelm over plain HTTP — pick "Anything else" above and paste those curl examples into its instructions. The repo also ships a portable skill file (<code>agent/skills/vidhelm-skill.md</code>) you can paste into any assistant's custom instructions.</p></details>
           </section>

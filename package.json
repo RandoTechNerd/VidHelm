@@ -10,7 +10,8 @@
     "typecheck": "tsc -b --noEmit",
     "lint": "eslint .",
     "preview": "vite preview",
-    "agent": "node agent/mcp-server.mjs"
+    "agent": "node agent/mcp-server.mjs",
+    "selftest": "node agent/selftest.mjs"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",

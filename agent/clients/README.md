@@ -12,5 +12,9 @@ Copy the file for your AI client, replace `C:\\path\\to\\VidHelm` with your actu
 | `cline.json` | Cline / Roo Code | extension sidebar → MCP Servers → Configure |
 | `codex-cli.toml` | OpenAI Codex CLI | append to `%USERPROFILE%\.codex\config.toml` |
 | `gemini-cli.json` | Gemini CLI | `%USERPROFILE%\.gemini\settings.json` |
+| `lmstudio.json` | LM Studio (local models) | chat sidebar → Program → Install → Edit mcp.json |
+| `jan.json` | Jan (local models) | Settings → MCP Servers (experimental toggle) |
+| — | Open WebUI | via mcpo proxy: `uvx mcpo --port 8001 -- node "<path>\agent\mcp-server.mjs"`, then add `http://localhost:8001` as a tool server |
+| — | Ollama / AMD Lemonade / llama.cpp | model servers, not agents — pair with an MCP front-end (LM Studio, Cline, Continue, Open WebUI); see [docs/CONNECT.md](../../docs/CONNECT.md#local-models-ollama-lm-studio-jan-open-webui-amd-lemonade) |
 
 No MCP support at all? Paste [`agent/skills/vidhelm-skill.md`](../skills/vidhelm-skill.md) into your assistant's instructions — it teaches the plain-HTTP bridge instead.

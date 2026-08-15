@@ -92,6 +92,11 @@ rl.on('line', async (line) => {
   if (method === 'notifications/initialized' || method?.startsWith('notifications/')) return
   if (method === 'ping') return send({ jsonrpc: '2.0', id, result: {} })
   if (method === 'tools/list') return send({ jsonrpc: '2.0', id, result: { tools: TOOLS } })
+  // Empty (not method-not-found) so strict clients that probe these at startup
+  // (LM Studio, Jan, some IDE integrations) don't log errors or bail.
+  if (method === 'resources/list') return send({ jsonrpc: '2.0', id, result: { resources: [] } })
+  if (method === 'resources/templates/list') return send({ jsonrpc: '2.0', id, result: { resourceTemplates: [] } })
+  if (method === 'prompts/list') return send({ jsonrpc: '2.0', id, result: { prompts: [] } })
   if (method === 'tools/call') {
     const { name, arguments: args } = params || {}
     const result = await runTool(name, args)
