@@ -31,6 +31,11 @@ interface Window {
     composeThumbnail: (data: { filePath: string; t: number; subtitle?: string; logoPath?: string | null; outPath: string }) => Promise<{ ok?: boolean; outPath?: string; error?: string }>
     openSfxFolder: () => Promise<void>
     voiceClone: (data: { command: string; scriptText: string }) => Promise<{ files?: string[]; error?: string; log?: string }>
+    pickModel: () => Promise<string | null>
+    save3DRender: (data: { base64: string; name: string }) => Promise<{ path?: string; error?: string }>
+    save3DStill: (data: { dataUrl: string; name: string }) => Promise<{ path?: string; error?: string }>
+    saveObjFile: (data: { text: string; defaultName: string }) => Promise<{ path?: string; error?: string }>
+    voiceCloneSetup: (data: { sampleBase64?: string; samplePath?: string }) => Promise<{ dir?: string; command?: string; error?: string }>
     agentStatus: () => Promise<{
       appVersion: string; port: number; portOverridden: boolean
       bridge: { listening: boolean; error: string }

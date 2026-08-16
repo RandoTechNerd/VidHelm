@@ -77,6 +77,13 @@ Connection gives your AI hands; these give it the know-how:
 
 All three teach the same things: read state first, use tag points as the shared language, run the user's Start Recipe, verify exports with the quality check.
 
+## Optional power-ups
+
+Two pairings that make the AI copilot dramatically more useful — both optional, VidHelm never requires them:
+
+- **Claude in Chrome** (`claude.ai/chrome`) — with browser control, your AI can carry the finished export over the line: **upload to YouTube for you** (title, description, tags, thumbnail, pausing for your OK before publish), and **capture websites or your localhost app** as footage — screenshots and walkthrough recordings that drop straight into the timeline. Ask: *"upload my export to YouTube"* or *"record my site's landing page for the intro."*
+- **Adversal AI** (`adversal.ai`) — a third-party video-analysis MCP: the agent submits a video and gets back Markdown notes, chapters, and extracted stills (async, 100 free min/month, Python 3.13+). Great for auto-chapters and finding highlights in long source footage before cutting. Setup: `pip install adversal-cli`, then `claude mcp add adversal -- adversal-cli`.
+
 ## Troubleshooting
 
 | Symptom | Fix |

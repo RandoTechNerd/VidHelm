@@ -17,7 +17,8 @@ Everything runs locally. FFmpeg does the rendering, Whisper runs on-device for c
 - **Robust pause removal** — trim-aware audio analysis, tail-silence detection, overlap-safe splicing with crossfades
 
 **Editing**
-- Timeline with filmstrip thumbnails, trim/split/ripple, snapping, undo/redo
+- Timeline with filmstrip thumbnails, trim/split/ripple, snapping, undo/redo, zoom-to-fit (see every clip at once; Ctrl+scroll zooms around the cursor)
+- **🧊 3D Studio** — drop in an **STL / 3MF / OBJ** (your prints!), pose it in a live viewer, pick color/finish/backdrop, and render a spinning **turntable clip** or still straight onto the timeline. Converts to OBJ too
 - **Tag points** — press `M` to mark beats (a joke, a reveal, a cut). Tags are visible flags on the ruler; clips snap to them, SFX drop on them, narration lines align to them
 - Text overlays with fades, draggable on the preview
 - Volume automation (draw a gain curve on any clip), per-clip fades, crossfades
@@ -26,7 +27,7 @@ Everything runs locally. FFmpeg does the rendering, Whisper runs on-device for c
 **Audio** (three labeled lanes: `VOICE / MUSIC`, `SFX`, plus each video's own sound)
 - **SFX library** — 13 built-in synthesized effects (whoosh, pop, boing, squish, gloop, poof, sparkle, party horn…). Audition with one click, place at the playhead. Drop your own WAV/MP3s into the custom folder and they appear alongside
 - **Karaoke booth** — paste your script, hit record: the video plays, lines light up in time (evenly, or pinned to your tag points), you read along in **one take**, and the take lands on the voice track
-- **Cloned-voice narration** — plug in any TTS/voice-clone CLI (XTTS recipe included, see [docs/VOICE_CLONE.md](docs/VOICE_CLONE.md)); generated lines are placed at your tag points automatically
+- **Cloned-voice narration** — a built-in **🧬 setup wizard** records a ~20s sample of your voice and installs a free local XTTS-v2 engine for you (or plug in any TTS/voice-clone CLI — see [docs/VOICE_CLONE.md](docs/VOICE_CLONE.md)); generated lines are placed at your tag points automatically
 - Loudness done right: one checkbox masters the mix to YouTube's target with a compressor + `loudnorm`; optional noise reduction
 
 **🤖 AI copilot built in — bring your AI of choice**

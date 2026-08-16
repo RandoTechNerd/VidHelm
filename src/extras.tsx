@@ -446,6 +446,15 @@ export function ConnectModal({ open, onClose }: { open: boolean; onClose: () => 
             </div>
           </section>
           <section>
+            <div className="sec-title"><h3>Optional power-ups</h3></div>
+            <details><summary>🌐 Claude in Chrome — let your AI upload &amp; film the web</summary>
+              <p className="hint">Pair Claude with its Chrome extension and your AI can take the finished export all the way: <b>upload it to YouTube for you</b> (title, description, tags, thumbnail) and pause for your OK before publishing. It can also <b>capture websites or your localhost app</b> — screenshots and walkthrough recordings that drop straight into your timeline as footage. Get it at <code>claude.ai/chrome</code>, then just ask: "upload my export to YouTube" or "record my site's landing page for the intro".</p></details>
+            <details><summary>🎞 Adversal AI — your agent understands the footage (optional)</summary>
+              <p className="hint">Adversal is a third-party video-analysis MCP: your AI sends it a video and gets back Markdown notes, chapters, and extracted stills — perfect for auto-writing chapters, summaries, and finding the best moments in long source footage before cutting in VidHelm. Free tier is 100 minutes/month; needs Python 3.13+. Setup:</p>
+              <pre className="conn-snippet">{'pip install adversal-cli\nclaude mcp add adversal -- adversal-cli'}</pre>
+              <p className="hint">Then ask your AI things like "analyze my raw footage and tag the highlights in VidHelm". Details at <code>adversal.ai</code>. Entirely optional — VidHelm never requires it.</p></details>
+          </section>
+          <section>
             <h3>Still stuck?</h3>
             <details><summary>My AI says "VidHelm is not running"</summary>
               <p className="hint">The bridge only exists while this app is open. Keep VidHelm running, then retry the tool call. (Dev mode: <code>npm run dev</code>.)</p></details>
@@ -470,6 +479,88 @@ export function ConnectModal({ open, onClose }: { open: boolean; onClose: () => 
 }
 
 // ---------------- Cloned-voice narration ----------------
+const VOICE_SAMPLE_TEXT = `Hi, this is my voice sample for VidHelm. I make videos about the things I build, and I like explaining how they work step by step. The quick brown fox jumps over the lazy dog, which covers most of the sounds I'll ever need. When something finally works after ten tries, that's the moment worth recording.`
+
+// One-click voice-clone setup: record a reference sample (or pick a wav), and the app
+// writes a ready-to-run XTTS engine (installer + generator script) and fills in the command.
+function VoiceWizard({ onCommand }: { onCommand: (c: string) => void }) {
+  const [expanded, setExpanded] = useState(false)
+  const [recording, setRecording] = useState(false)
+  const [level, setLevel] = useState(0)
+  const [elapsed, setElapsed] = useState(0)
+  const [sample, setSample] = useState<{ base64?: string; path?: string; label: string } | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [status, setStatus] = useState('')
+  const recRef = useRef<{ rec: MediaRecorder; stream: MediaStream; raf: number; timer: number } | null>(null)
+
+  useEffect(() => () => { if (recRef.current) { cancelAnimationFrame(recRef.current.raf); clearInterval(recRef.current.timer); recRef.current.stream.getTracks().forEach(t => t.stop()) } }, [])
+
+  const record = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: true, autoGainControl: false } })
+      const ac = new AudioContext()
+      const an = ac.createAnalyser(); an.fftSize = 512
+      ac.createMediaStreamSource(stream).connect(an)
+      const buf = new Uint8Array(an.fftSize)
+      const meter = () => { an.getByteTimeDomainData(buf); let m = 0; for (const v of buf) { const x = Math.abs(v - 128); if (x > m) m = x } setLevel(m / 70); if (recRef.current) recRef.current.raf = requestAnimationFrame(meter) }
+      const rec = new MediaRecorder(stream, { audioBitsPerSecond: 192000 })
+      const chunks: Blob[] = []
+      rec.ondataavailable = e => { if (e.data.size) chunks.push(e.data) }
+      rec.onstop = async () => {
+        stream.getTracks().forEach(t => t.stop())
+        const b = new Uint8Array(await new Blob(chunks, { type: 'audio/webm' }).arrayBuffer())
+        let bin = ''
+        for (let i = 0; i < b.length; i += 0x8000) bin += String.fromCharCode(...Array.from(b.subarray(i, i + 0x8000)))
+        setSample({ base64: btoa(bin), label: `recorded sample (${Math.round(elapsedRef.current)}s)` })
+        setStatus('Sample recorded ✓ — now create the engine.')
+      }
+      const t0 = Date.now()
+      const timer = window.setInterval(() => { elapsedRef.current = (Date.now() - t0) / 1000; setElapsed(elapsedRef.current) }, 250)
+      recRef.current = { rec, stream, raf: 0, timer }
+      recRef.current.raf = requestAnimationFrame(meter)
+      rec.start()
+      setRecording(true)
+      setStatus('Reading the sample text aloud — 15 to 30 seconds is perfect.')
+    } catch { setStatus('Microphone blocked — allow access and retry.') }
+  }
+  const elapsedRef = useRef(0)
+  const stop = () => {
+    setRecording(false)
+    if (recRef.current) { cancelAnimationFrame(recRef.current.raf); clearInterval(recRef.current.timer); if (recRef.current.rec.state !== 'inactive') recRef.current.rec.stop(); recRef.current = null }
+  }
+
+  const create = async () => {
+    if (!sample) return
+    setBusy(true); setStatus('Pick a folder in the dialog — the installer opens in its own window (one time, ~2 GB).')
+    const r = await window.ipcRenderer.voiceCloneSetup(sample.base64 ? { sampleBase64: sample.base64 } : { samplePath: sample.path })
+    if (r.command) {
+      onCommand(r.command)
+      setStatus('Voice engine created and the command below is filled in ✓ — once the installer window finishes, write a script and hit Generate narration.')
+    } else setStatus(r.error || 'canceled')
+    setBusy(false)
+  }
+
+  return (
+    <section className="vc-wizard">
+      <div className="sec-title" style={{ cursor: 'pointer' }} onClick={() => setExpanded(e => !e)}>
+        <h3>🧬 No cloned voice yet? Create one {expanded ? '▾' : '▸'}</h3>
+      </div>
+      {expanded && <>
+        <p className="hint" style={{ marginTop: 4 }}>Three steps, all free and local: record ~20 seconds of your voice, pick an install folder, and VidHelm sets up the XTTS-v2 engine (needs <b>Python 3.10+</b> from python.org) and fills in the command for you.</p>
+        <div className="vc-sample">{VOICE_SAMPLE_TEXT}</div>
+        <div className="vc-row">
+          <button className={`booth-rec ${recording ? 'on' : ''}`} onClick={() => recording ? stop() : record()}>{recording ? `■ Stop (${elapsed.toFixed(0)}s)` : '● Record sample'}</button>
+          {recording && <div className="booth-meter"><i style={{ width: `${Math.min(100, level * 100)}%` }} /></div>}
+          <span className="hint" style={{ margin: 0 }}>or</span>
+          <button onClick={async () => { const p = await window.ipcRenderer.pickAudio(); if (p) { setSample({ path: p, label: p.split(/[\\/]/).pop() || 'sample' }); setStatus('Sample chosen ✓ — now create the engine.') } }}>Use a WAV/MP3 I have…</button>
+          {sample && <button className="primary" disabled={busy} onClick={create}>{busy ? 'Setting up…' : `⚙ Create voice engine (${sample.label})`}</button>}
+        </div>
+        {status && <p className="hint" style={{ marginTop: 6 }}>{status}</p>}
+      </>}
+    </section>
+  )
+}
+
 export function NarrationModal({ open, onClose, command, onCommand, onGenerated }: {
   open: boolean; onClose: () => void
   command: string; onCommand: (c: string) => void
@@ -501,6 +592,7 @@ export function NarrationModal({ open, onClose, command, onCommand, onGenerated 
       <div className="modal" onClick={e => e.stopPropagation()}>
         <div className="modal-head"><h2>Narrate with a cloned voice</h2><button className="modal-close" onClick={onClose}>✕</button></div>
         <div className="modal-body">
+          <VoiceWizard onCommand={onCommand} />
           <section>
             <h3>Script — one line per scene</h3>
             <textarea className="booth-script" rows={6} placeholder={'In 1959, a scientist looked down a microscope…\nEverybody has 46. He counted 45.'} value={script} onChange={e => setScript(e.target.value)} />

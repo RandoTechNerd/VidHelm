@@ -479,6 +479,110 @@ ipcMain.handle('pick-logo', async () => {
   return dest
 })
 
+// ---------------- 3D Studio (STL / 3MF / OBJ turntables) ----------------
+const renders3dDir = () => { const d = path.join(app.getPath('userData'), 'renders3d'); if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true }); return d }
+
+ipcMain.handle('pick-model', async () => {
+  if (!win) return null
+  const { filePaths } = await dialog.showOpenDialog(win, {
+    title: 'Open 3D model', properties: ['openFile'],
+    filters: [{ name: '3D models', extensions: ['stl', '3mf', 'obj'] }],
+  })
+  return filePaths?.[0] || null
+})
+
+// MediaRecorder gives us a VFR webm off the WebGL canvas — re-encode to a clean CFR h264 mp4
+ipcMain.handle('save-3d-render', async (_event, { base64, name }: { base64: string; name: string }) => {
+  try {
+    const dir = renders3dDir()
+    const webm = path.join(dir, `_cap_${Date.now()}.webm`)
+    fs.writeFileSync(webm, Buffer.from(base64, 'base64'))
+    const out = path.join(dir, `${name.replace(/[^\w-]+/g, '_')}_spin_${Date.now()}.mp4`)
+    await new Promise<void>((resolve, reject) => {
+      ffmpeg(webm)
+        .outputOptions(['-c:v libx264', '-crf 18', '-preset medium', '-pix_fmt yuv420p', '-r 30', '-movflags +faststart', '-an'])
+        .videoFilter('scale=trunc(iw/2)*2:trunc(ih/2)*2')
+        .save(out).on('end', () => resolve()).on('error', reject)
+    })
+    fs.unlinkSync(webm)
+    return { path: out }
+  } catch (e) { return { error: String(e) } }
+})
+
+ipcMain.handle('save-3d-still', async (_event, { dataUrl, name }: { dataUrl: string; name: string }) => {
+  try {
+    const out = path.join(renders3dDir(), `${name.replace(/[^\w-]+/g, '_')}_still_${Date.now()}.png`)
+    fs.writeFileSync(out, Buffer.from(dataUrl.split(',')[1], 'base64'))
+    return { path: out }
+  } catch (e) { return { error: String(e) } }
+})
+
+ipcMain.handle('save-obj-file', async (_event, { text, defaultName }: { text: string; defaultName: string }) => {
+  if (!win) return { error: 'no window' }
+  const { filePath } = await dialog.showSaveDialog(win, { title: 'Save as OBJ', defaultPath: defaultName, filters: [{ name: 'OBJ model', extensions: ['obj'] }] })
+  if (!filePath) return {}
+  try { fs.writeFileSync(filePath, text, 'utf8'); return { path: filePath } } catch (e) { return { error: String(e) } }
+})
+
+// ---------------- One-click voice-clone setup ----------------
+// Writes a ready-to-run XTTS-v2 voice engine (reference wav + generator script + installer)
+// into a folder the user picks, launches the installer, and returns the narration command.
+const CLONE_PY = `import sys, os
+os.environ.setdefault("COQUI_TOS_AGREED", "1")
+from TTS.api import TTS
+ref, script, outdir = sys.argv[1], sys.argv[2], sys.argv[3]
+os.makedirs(outdir, exist_ok=True)
+lines = [l.strip() for l in open(script, encoding="utf-8") if l.strip()]
+tts = TTS("tts_models/multilingual/multi-dataset/xtts_v2")
+for i, line in enumerate(lines, 1):
+    print(f"[{i}/{len(lines)}] {line[:60]}", flush=True)
+    tts.tts_to_file(text=line, speaker_wav=ref, language="en",
+                    file_path=os.path.join(outdir, f"scene_{i}.wav"), temperature=0.62)
+print("done", flush=True)
+`
+const SETUP_BAT = `@echo off
+title VidHelm voice engine setup
+cd /d "%~dp0"
+echo == VidHelm voice clone setup — one time, downloads the XTTS-v2 model (~2 GB) ==
+where python >nul 2>nul || (echo Python 3.10+ is required. Install it from python.org, tick "Add to PATH", then run this file again. & pause & exit /b 1)
+if not exist venv python -m venv venv
+call venv\\Scripts\\activate.bat
+python -m pip install --upgrade pip
+pip install coqui-tts
+echo.
+echo Setup complete! Go back to VidHelm and hit "Generate narration".
+echo (The voice model itself downloads automatically on the first generation.)
+pause
+`
+ipcMain.handle('voice-clone-setup', async (_event, { sampleBase64, samplePath }: { sampleBase64?: string; samplePath?: string }) => {
+  if (!win) return { error: 'no window' }
+  const { filePaths } = await dialog.showOpenDialog(win, {
+    title: 'Choose an empty folder for your voice engine (needs ~4 GB free)',
+    properties: ['openDirectory', 'createDirectory'],
+  })
+  const dir = filePaths?.[0]
+  if (!dir) return {}
+  try {
+    // reference sample → clean wav (what XTTS wants)
+    const ref = path.join(dir, 'reference.wav')
+    let src = samplePath
+    if (sampleBase64) {
+      src = path.join(app.getPath('temp'), `vh_voice_sample_${Date.now()}.webm`)
+      fs.writeFileSync(src, Buffer.from(sampleBase64, 'base64'))
+    }
+    if (!src) return { error: 'no voice sample' }
+    await new Promise<void>((resolve, reject) => {
+      ffmpeg(src!).outputOptions(['-ar 22050', '-ac 1', '-c:a pcm_s16le']).save(ref).on('end', () => resolve()).on('error', reject)
+    })
+    fs.writeFileSync(path.join(dir, 'clone_voice.py'), CLONE_PY, 'utf8')
+    const bat = path.join(dir, 'setup_voice_clone.bat')
+    fs.writeFileSync(bat, SETUP_BAT, 'utf8')
+    shell.openPath(bat)   // opens a console window so the user can watch the install
+    const py = path.join(dir, 'venv', 'Scripts', 'python.exe')
+    return { dir, command: `"${py}" "${path.join(dir, 'clone_voice.py')}" "${ref}" {script} {outdir}` }
+  } catch (e) { return { error: String(e) } }
+})
+
 // Escape a path or string for use inside an ffmpeg filtergraph option
 const escFilter = (s: string) => s.replace(/\\/g, '/').replace(/:/g, '\\:').replace(/'/g, "\\'")
 // Build a piecewise-linear volume expression (eval=frame) from automation points.

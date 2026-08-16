@@ -64,7 +64,9 @@ header {
   -webkit-app-region: drag;
 }
 
-.logo-section, .header-info {
+/* The whole header is the window's grab bar — only the actual controls opt out,
+   so every gap, the wordmark, and the info pill all move the window. */
+header button, header select, header input, header label {
   -webkit-app-region: no-drag;
 }
 
@@ -1083,3 +1085,22 @@ textarea.duration-input { resize: vertical; font-family: inherit; }
 .conn-modal summary { cursor: pointer; font-size: 13px; font-weight: 600; color: var(--text-primary, #f8fafc); }
 .conn-modal details .hint { margin: 8px 0 2px; }
 .conn-modal code { background: rgba(255,255,255,0.08); border-radius: 4px; padding: 1px 5px; font-size: 12px; }
+
+/* ============ 3D Studio ============ */
+.m3d-modal { max-width: 760px; }
+.m3d-stage { position: relative; width: 100%; aspect-ratio: 16/9; background: #05070d; border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; overflow: hidden; }
+.m3d-canvas { width: 100% !important; height: 100% !important; display: block; }
+.m3d-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--text-dim, #6b7280); font-size: 15px; font-weight: 600; pointer-events: none; }
+.m3d-controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; font-size: 12.5px; color: var(--text-muted, #9aa3af); }
+.m3d-controls label { display: flex; align-items: center; gap: 6px; }
+.m3d-controls input[type="color"] { width: 30px; height: 22px; padding: 0; border: 1px solid rgba(255,255,255,0.15); border-radius: 6px; background: none; cursor: pointer; }
+.m3d-controls button, .m3d-foot button { background: var(--bg-surface-elevated, #1a1d27); color: var(--text-main, #f8fafc); border: 1px solid rgba(255,255,255,0.14); border-radius: 8px; padding: 6px 12px; font-size: 12.5px; cursor: pointer; }
+.m3d-foot { gap: 10px; display: flex; align-items: center; }
+.m3d-foot label { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-muted, #9aa3af); }
+
+/* ============ Voice clone wizard ============ */
+.vc-wizard { background: rgba(59,130,246,0.06); border: 1px solid rgba(59,130,246,0.25); border-radius: 10px; padding: 10px 12px; }
+.vc-wizard .booth-meter { max-width: 160px; }
+.vc-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
+.vc-sample { font-size: 12.5px; color: #dfe9f5; background: rgba(255,255,255,0.05); border-radius: 8px; padding: 8px 10px; line-height: 1.5; font-style: italic; }
+.zoom-fit { margin-left: 4px; font-weight: 700; }

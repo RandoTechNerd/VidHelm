@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import './App.css'
 import { SfxPanel, MarkerPanel, KaraokeBooth, NarrationModal, RecipeSection, ThumbnailModal, ConnectModal, DEFAULT_RECIPE, recipeActive, newMarker, type Marker, type SfxItem, type RecipeSettings } from './extras'
+import { Model3DModal } from './model3d'
 
 interface MediaFile {
   id: string
@@ -222,6 +223,8 @@ function App() {
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS)
   const [showSettings, setShowSettings] = useState(false)
   const [showConnect, setShowConnect] = useState(false)
+  const [showModel3D, setShowModel3D] = useState(false)
+  const [model3DPath, setModel3DPath] = useState<string | null>(null)
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; mediaId: string } | null>(null)
   const [qcReport, setQcReport] = useState<any>(null)
   const [qcRunning, setQcRunning] = useState(false)
@@ -478,6 +481,7 @@ function App() {
     for (const file of files) {
       try {
         const path = window.ipcRenderer.getPathForFile(file)
+        if (/\.(stl|3mf|obj)$/i.test(file.name)) { setModel3DPath(path); setShowModel3D(true); continue }
         const metadata = await window.ipcRenderer.getMetadata(path)
         let type: 'video' | 'audio' | 'image' = 'audio'
         if (file.type.startsWith('video')) type = 'video'
@@ -746,7 +750,8 @@ function App() {
         else if (cmd.panel === 'settings') setShowSettings(cmd.open !== false)
         else if (cmd.panel === 'thumbnail') setShowThumbnail(cmd.open !== false)
         else if (cmd.panel === 'connect') setShowConnect(cmd.open !== false)
-        else return { error: `unknown panel: ${cmd.panel}. Use booth | narration | sfx | media | settings | thumbnail | connect` }
+        else if (cmd.panel === 'model3d') { if (cmd.path) setModel3DPath(cmd.path); setShowModel3D(cmd.open !== false) }
+        else return { error: `unknown panel: ${cmd.panel}. Use booth | narration | sfx | media | settings | thumbnail | connect | model3d (optional path)` }
         return { ok: true, panel: cmd.panel }
       }
       case 'seek': setCurrentTime(clamp(cmd.t ?? 0, 0, Math.max(totalDuration, cmd.t ?? 0))); return { ok: true }
@@ -1119,6 +1124,7 @@ function App() {
           <button className="hdr-btn" onClick={saveProject} title="Save project">Save</button>
           <button className="hdr-btn" onClick={loadProject} title="Open project">Open</button>
           <button className="hdr-btn" onClick={runRecipe} title="Run your Start Recipe on this timeline">🚀 Recipe</button>
+          <button className="hdr-btn" onClick={() => { setModel3DPath(null); setShowModel3D(true) }} title="3D Studio — turn an STL / 3MF / OBJ into a spinning turntable clip">🧊 3D</button>
           <button className="hdr-btn" onClick={() => setShowConnect(true)} title="Connect your AI — one-click setup + troubleshooter">🤖 AI</button>
           <button className="hdr-btn icon" onClick={() => setShowSettings(true)} title="Brand kit & settings"><IconGear /></button>
         </div>
@@ -1158,7 +1164,7 @@ function App() {
             <div className="section-header tabs">
               <button className={`tab ${sidebarTab === 'media' ? 'active' : ''}`} onClick={() => setSidebarTab('media')}>Media Bin</button>
               <button className={`tab ${sidebarTab === 'sfx' ? 'active' : ''}`} onClick={() => setSidebarTab('sfx')} title="Sound effects — audition and drop on the SFX track">SFX</button>
-              {sidebarTab === 'media' && <label className="add-btn" title="Add image, video or audio"><IconPlus /><input type="file" accept="video/*,audio/*,image/*" multiple onChange={handleFileUpload} hidden /></label>}
+              {sidebarTab === 'media' && <label className="add-btn" title="Add image, video, audio — or a 3D model (STL / 3MF / OBJ)"><IconPlus /><input type="file" accept="video/*,audio/*,image/*,.stl,.3mf,.obj" multiple onChange={handleFileUpload} hidden /></label>}
             </div>
             {sidebarTab === 'sfx' && <SfxPanel onPlace={placeSfx} />}
             {sidebarTab === 'media' && <div className="media-list" onDrop={async (e) => { e.preventDefault(); await importFiles(Array.from(e.dataTransfer.files)) }} onDragOver={(e) => e.preventDefault()}>
@@ -1234,13 +1240,26 @@ function App() {
             </button>
             <button className="tool-btn" onClick={cutDeadSpace} disabled={silenceBusy !== null || totalDuration <= 0} title="Detect & remove long silent pauses (great for faceless videos)"><IconScissors /> {silenceBusy || 'Cut Pauses'}</button>
             <div className="spacer" />
-            <div className="zoom"><button onClick={() => setPxPerSec(p => clamp(p / 1.4, 8, 200))}>−</button><span>Zoom</span><button onClick={() => setPxPerSec(p => clamp(p * 1.4, 8, 200))}>+</button></div>
+            <div className="zoom">
+              <button onClick={() => setPxPerSec(p => clamp(p / 1.4, 2, 200))}>−</button><span>Zoom</span><button onClick={() => setPxPerSec(p => clamp(p * 1.4, 2, 200))}>+</button>
+              <button className="zoom-fit" title="Zoom to fit — see every clip at once (Ctrl+scroll on the timeline also zooms)" disabled={totalDuration <= 0}
+                onClick={() => { const w = timelineRef.current?.clientWidth || 800; setPxPerSec(clamp((w - 60) / Math.max(totalDuration, 0.5), 2, 200)); if (timelineRef.current) timelineRef.current.scrollLeft = 0 }}>Fit</button>
+            </div>
           </div>
 
           <div className="resize-handle" onMouseDown={startResizeTimeline} title="Drag to resize timeline" />
 
           <div className="timeline-panel" style={{ height: timelineH }}>
-            <div className="timeline" ref={timelineRef} onClick={onTimelineClick} onDrop={onTimelineDrop} onDragOver={(e) => e.preventDefault()}>
+            <div className="timeline" ref={timelineRef} onClick={onTimelineClick} onDrop={onTimelineDrop} onDragOver={(e) => e.preventDefault()}
+              onWheel={e => {
+                if (!e.ctrlKey) return
+                // Ctrl+scroll zooms around the cursor so the point under the mouse stays put
+                const el = timelineRef.current!
+                const tAtCursor = (e.clientX - el.getBoundingClientRect().left + el.scrollLeft) / pxPerSec
+                const next = clamp(e.deltaY < 0 ? pxPerSec * 1.18 : pxPerSec / 1.18, 2, 200)
+                setPxPerSec(next)
+                requestAnimationFrame(() => { el.scrollLeft = Math.max(0, tAtCursor * next - (e.clientX - el.getBoundingClientRect().left)) })
+              }}>
               <div className="time-ruler">{rulerTicks}</div>
               {markers.map(m => (
                 <div key={m.id} className="marker-flag" style={{ left: m.t * pxPerSec, background: m.color }} title={m.label || 'tag point'}
@@ -1387,6 +1406,17 @@ function App() {
         onGenerated={narrationGenerated} />
 
       <ConnectModal open={showConnect} onClose={() => setShowConnect(false)} />
+      <Model3DModal open={showModel3D} onClose={() => setShowModel3D(false)} initialPath={model3DPath}
+        onRendered={async (path, kind, name) => {
+          const meta = await window.ipcRenderer.getMetadata(path).catch(() => null)
+          const media: MediaFile = {
+            id: rid(), name, path, type: kind,
+            duration: kind === 'image' ? 5 : (meta?.duration || 6),
+            hasVideo: true, hasAudio: false,
+          }
+          setMediaBin(prev => [...prev, media])
+          addToTimeline(media)
+        }} />
       <ThumbnailModal open={showThumbnail} onClose={() => setShowThumbnail(false)}
         videoPath={firstVideo()?.path || null} videoName={firstVideo()?.name || 'video'} logoPath={settings.brand.logoPath} />
 

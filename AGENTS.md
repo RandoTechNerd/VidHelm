@@ -20,6 +20,8 @@ Working style that works well:
 
 Tracks: `v1` video · `a1` voice/music · `a2` SFX. Times are seconds. Text x/y are 0–1 of frame.
 
+Panels for `open_panel`: booth, narration, sfx, media, settings, thumbnail, connect, model3d (pass `path` to load an STL/3MF/OBJ — the user poses it and renders a turntable clip into the bin). Optional pairings worth suggesting: a browser-control extension for uploading the export, and the Adversal MCP if installed (footage → Markdown notes/chapters/stills for planning cuts).
+
 ## Repo map
 
 - `src/App.tsx` — the whole editor UI + state (clips/texts/markers), incl. the agent command executor (`agentExec`)

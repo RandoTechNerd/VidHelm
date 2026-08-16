@@ -29,6 +29,11 @@ export function installIpcMock() {
     openSfxFolder: async () => {},
     openExternal: async (url: string) => { window.open(url, "_blank") },
     voiceClone: async () => ({ error: 'Narration needs the desktop app (npm run dev)' }),
+    pickModel: async () => null,
+    save3DRender: async () => ({ error: '3D rendering needs the desktop app (npm run dev)' }),
+    save3DStill: async () => ({ error: '3D rendering needs the desktop app (npm run dev)' }),
+    saveObjFile: async () => ({ error: 'Saving needs the desktop app' }),
+    voiceCloneSetup: async () => ({ error: 'Voice setup needs the desktop app (npm run dev)' }),
     agentStatus: async () => ({
       appVersion: 'web', port: 5959, portOverridden: false,
       bridge: { listening: false, error: 'The agent bridge needs the desktop app (npm run dev)' },

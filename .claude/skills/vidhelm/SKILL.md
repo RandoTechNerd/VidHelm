@@ -36,6 +36,12 @@ You are co-editing with a human: they see every change live in the GUI and can m
 - `open_panel narration` — cloned-voice generation via their configured CLI (see docs/VOICE_CLONE.md); generated lines auto-place at tags.
 - Keep narration lines as flowing sentences, not ultra-short fragments (short lines make TTS models babble).
 
+## 3D models and extras
+
+- A dropped/asked-for STL, 3MF, or OBJ goes through the **3D Studio**: `open_panel {panel: "model3d", path}` loads it for the user to pose; they render a turntable clip or still that lands in the media bin automatically. Great for product/print showcase shots.
+- If the Adversal MCP is available in this session, use it to analyze long source footage (chapters, highlights, stills) before planning cuts.
+- With browser control available, offer to upload the finished export to YouTube (always pause for explicit user confirmation before publishing) or to capture website/localhost footage for the timeline.
+
 ## Gotchas
 
 - Times are seconds; text x/y are 0–1 of the frame.

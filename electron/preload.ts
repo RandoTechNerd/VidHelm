@@ -52,4 +52,9 @@ contextBridge.exposeInMainWorld('ipcRenderer', {
   openSfxFolder: () => ipcRenderer.invoke('open-sfx-folder'),
   voiceClone: (data: { command: string; scriptText: string }) => ipcRenderer.invoke('voice-clone', data),
   agentStatus: () => ipcRenderer.invoke('agent-status'),
+  pickModel: () => ipcRenderer.invoke('pick-model'),
+  save3DRender: (data: { base64: string; name: string }) => ipcRenderer.invoke('save-3d-render', data),
+  save3DStill: (data: { dataUrl: string; name: string }) => ipcRenderer.invoke('save-3d-still', data),
+  saveObjFile: (data: { text: string; defaultName: string }) => ipcRenderer.invoke('save-obj-file', data),
+  voiceCloneSetup: (data: { sampleBase64?: string; samplePath?: string }) => ipcRenderer.invoke('voice-clone-setup', data),
 })
