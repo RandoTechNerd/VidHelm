@@ -68,6 +68,7 @@ contextBridge.exposeInMainWorld('ipcRenderer', {
   createProject: (data: { root: string; name: string }) => ipcRenderer.invoke('create-project', data),
   saveProjectTo: (data: { dir: string; data: any }) => ipcRenderer.invoke('save-project-to', data),
   revealFolder: (dir: string) => ipcRenderer.invoke('reveal-folder', dir),
+  analysisPath: (name: string) => ipcRenderer.invoke('analysis-path', name),
   windowDragStart: () => ipcRenderer.send('window-drag-start'),
   windowDragEnd: () => ipcRenderer.send('window-drag-end'),
   windowToggleMaximize: () => ipcRenderer.send('window-toggle-maximize'),

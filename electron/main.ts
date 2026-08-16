@@ -510,6 +510,14 @@ ipcMain.handle('create-project', async (_event, { root, name }: { root: string; 
 
 ipcMain.handle('reveal-folder', async (_event, dir: string) => { if (dir && fs.existsSync(dir)) shell.openPath(dir) })
 
+// Where flattened renders for video-analysis services go. Kept out of the project folder so
+// they do not get picked up as project media on the next scan.
+ipcMain.handle('analysis-path', async (_event, name: string) => {
+  const dir = path.join(app.getPath('userData'), 'analysis')
+  fs.mkdirSync(dir, { recursive: true })
+  return path.join(dir, `${(name || 'timeline').replace(/[^\w-]+/g, '_')}_${Date.now()}.mp4`)
+})
+
 // Save straight into the project folder, no dialog once a project is open
 ipcMain.handle('save-project-to', async (_event, { dir, data }: { dir: string; data: any }) => {
   try {
@@ -921,7 +929,7 @@ const agentServer = http.createServer(async (req, res) => {
       let cmd: any
       try { cmd = JSON.parse(Buffer.concat(chunks).toString() || '{}') } catch { res.writeHead(400); return res.end(JSON.stringify({ error: 'bad json' })) }
       if (!cmd.action) { res.writeHead(400); return res.end(JSON.stringify({ error: 'missing action' })) }
-      const LONG = ['export', 'cut_pauses', 'run_recipe', 'sample_frames', 'compose_thumbnail', 'render_3d']
+      const LONG = ['export', 'cut_pauses', 'run_recipe', 'sample_frames', 'compose_thumbnail', 'render_3d', 'prepare_analysis']
       const timeout = cmd.action === 'export' ? 30 * 60 * 1000 : LONG.includes(cmd.action) ? 5 * 60 * 1000 : 15000
       return res.end(JSON.stringify(await askRenderer(cmd, timeout)))
     }
@@ -1255,9 +1263,11 @@ ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outp
       .audioFrequency(48000)
       .audioChannels(2)
       .outputOptions([
-        // x264 tuned for YouTube: High profile, fixed 2s closed GOP, BT.709 SDR color
-        '-preset', settings?.quality === 'high' ? 'medium' : 'fast',
-        '-crf', settings?.quality === 'high' ? '17' : '20',
+        // x264 tuned for YouTube: High profile, fixed 2s closed GOP, BT.709 SDR color.
+        // 'analysis' is the exception: a throwaway render for a video-analysis service, where
+        // speed and upload size matter and picture quality does not.
+        '-preset', settings?.quality === 'high' ? 'medium' : settings?.quality === 'analysis' ? 'veryfast' : 'fast',
+        '-crf', settings?.quality === 'high' ? '17' : settings?.quality === 'analysis' ? '30' : '20',
         '-profile:v', 'high',
         '-pix_fmt', 'yuv420p',
         '-r', String(FPS),

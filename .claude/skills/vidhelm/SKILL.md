@@ -42,7 +42,16 @@ You are co-editing with a human: they see every change live in the GUI and can m
 - A dropped/asked-for STL, 3MF, OBJ or GLB goes through the **3D Studio**: `open_panel {panel: "model3d", path}` loads it (an HTML viewer page works too, the model inside gets extracted), then `render_3d` produces the clip.
 - `render_3d {seconds}` → spinning turntable into the bin. `render_3d {still: true, transparent: true}` → a **PNG with real alpha dropped at the playhead**, so it composites on top of the footage underneath: that is how you put a model over a video.
 - Turntable *video* can't be transparent (no available codec carries alpha). For a spin over footage, tell the user to pick the **Video frame** backdrop in the studio, which bakes the frame under the playhead behind the model.
-- If the Adversal MCP is available in this session, use it to analyze long source footage (chapters, highlights, stills) before planning cuts.
+## Sending footage to a video-analysis service (Adversal and similar)
+
+Those services take a file and return notes; they never see VidHelm. You are the link. `prepare_analysis` gets the material into a shape they accept and tells you what still needs looking at:
+
+1. `prepare_analysis {scope: "timeline"}` flattens the project to a small mp4 whose timestamps match the timeline exactly (`toTimeline.add` is 0). Use `scope: "clip"` instead to skip the render and get the original file plus in/out points, in which case a returned timestamp T is timeline time `T + toTimeline.add`.
+2. It also returns `gaps`: the stretches with no tag point within `gapPad` seconds. On a repeat pass, analyse only those, so material the human has already marked is left alone. `covered` and `coveredSeconds` show the other side of the same picture.
+3. Send the file (with `start_time`/`end_time` from a gap when you are topping up) to the analysis tool, wait for it to finish, then read its notes.
+4. Bring the results back: `add_tag` at each interesting moment, `set_booth_script` with a tightened narration draft, chapter titles for the description, and `compose_thumbnail` for a still.
+
+Derive final chapter timestamps from `get_state` after the edit is cut, not from the notes: the notes describe the file you sent, and later cuts move everything.
 - With browser control available, offer to upload the finished export to YouTube (always pause for explicit user confirmation before publishing) or to capture website/localhost footage for the timeline.
 
 ## Gotchas

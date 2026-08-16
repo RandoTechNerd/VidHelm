@@ -935,6 +935,72 @@ function App() {
         if (cmd.fps) setFps(cmd.fps)
         return { ok: true }
       }
+      case 'prepare_analysis': {
+        // Hands a video-analysis service (Adversal and friends) something to chew on, and
+        // reports which stretches of the timeline are not marked yet so a second pass only
+        // looks at what is new. Timestamps that come back are mapped with toTimeline below.
+        const pad = typeof cmd.gapPad === 'number' ? Math.max(1, cmd.gapPad) : 10
+        const minGap = typeof cmd.minGap === 'number' ? Math.max(1, cmd.minGap) : 5
+        const total = Math.max(totalDuration, 0)
+
+        // stretches already accounted for by a tag point, merged into runs
+        const covered: { start: number; end: number }[] = []
+        for (const m of [...markers].sort((a, b) => a.t - b.t)) {
+          const span = { start: Math.max(0, m.t - pad), end: Math.min(total, m.t + pad) }
+          const last = covered[covered.length - 1]
+          if (last && span.start <= last.end) last.end = Math.max(last.end, span.end)
+          else covered.push(span)
+        }
+        const gaps: { start: number; end: number }[] = []
+        let cursor = 0
+        for (const c of covered) {
+          if (c.start - cursor >= minGap) gaps.push({ start: +cursor.toFixed(2), end: +c.start.toFixed(2) })
+          cursor = Math.max(cursor, c.end)
+        }
+        if (total - cursor >= minGap) gaps.push({ start: +cursor.toFixed(2), end: +total.toFixed(2) })
+        const tagList = [...markers].sort((a, b) => a.t - b.t).map(m => ({ t: +m.t.toFixed(2), label: m.label || '' }))
+        const coveredSeconds = +covered.reduce((n, c) => n + (c.end - c.start), 0).toFixed(1)
+
+        const scope = cmd.scope === 'clip' ? 'clip' : 'timeline'
+        if (scope === 'clip') {
+          const clip = cmd.clipId
+            ? clips.find(c => c.id === cmd.clipId)
+            : clips.filter(c => c.trackId === 'v1').sort((a, b) => a.start - b.start)[0]
+          const media = clip && mediaBin.find(m => m.id === clip.mediaId)
+          if (!clip || !media) return { error: 'no video clip to analyse (pass clipId, or put a clip on the video track)' }
+          // no re-render: point the analyser at the original file and the in/out points
+          return {
+            ok: true, scope, file: media.path,
+            fileStart: +clip.sourceStart.toFixed(2), fileEnd: +(clip.sourceStart + clip.duration).toFixed(2),
+            toTimeline: { add: +(clip.start - clip.sourceStart).toFixed(2) },
+            duration: +clip.duration.toFixed(2), tags: tagList, coveredSeconds, covered, gaps,
+            hint: 'Send file with those in/out points. A timestamp T from the analyser is timeline time T + toTimeline.add, so add tags there.',
+          }
+        }
+
+        if (clips.length === 0) return { error: 'timeline is empty' }
+        // Flatten the timeline so returned timestamps line up 1:1 with what the human sees.
+        // Rendered small on purpose: analysis does not need 1080p, and the upload is quicker.
+        const out: string = cmd.outputPath || await window.ipcRenderer.analysisPath(currentProject?.name || 'timeline')
+        setIsPlaying(false)
+        setExportProgress(0); setEta(null); exportStartRef.current = Date.now()
+        try {
+          await window.ipcRenderer.exportVideo({
+            clips: clips.map(c => { const m = mediaBin.find(x => x.id === c.mediaId); return { ...c, path: m?.path, hasVideo: m?.hasVideo, hasAudio: m?.hasAudio } }),
+            texts, brand: { ...settings.brand, enabled: false }, audio: settings.audio, outputPath: out,
+            settings: { width: 1280, height: 720, fps: 30, quality: 'analysis', masterVolume },
+          })
+        } catch (e) { setExportProgress(null); setEta(null); return { error: 'could not render the timeline for analysis: ' + String(e) } }
+        setExportProgress(100); setEta(null)
+        setTimeout(() => setExportProgress(null), 3000)
+        return {
+          ok: true, scope, file: out, duration: +total.toFixed(2),
+          toTimeline: { add: 0 }, tags: tagList, coveredSeconds, covered, gaps,
+          hint: gaps.length
+            ? 'Analyse only the gaps listed (they are the stretches with no tag point nearby), then add tags inside them. Timestamps map straight to the timeline.'
+            : 'Every stretch already has a tag nearby, so there is nothing new to analyse unless you lower gapPad.',
+        }
+      }
       case 'export': {
         if (!cmd.outputPath) return { error: 'outputPath required' }
         if (clips.length === 0 && texts.length === 0) return { error: 'timeline is empty' }

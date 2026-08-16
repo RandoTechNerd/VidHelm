@@ -48,6 +48,7 @@ export function installIpcMock() {
     createProject: async () => ({ error: 'Project folders need the desktop app (npm run dev)' }),
     saveProjectTo: async () => ({ error: 'Project folders need the desktop app (npm run dev)' }),
     revealFolder: async () => {},
+    analysisPath: async () => 'mock://analysis.mp4',
     windowDragStart: () => {}, windowDragEnd: () => {}, windowToggleMaximize: () => {},
     agentStatus: async () => ({
       appVersion: 'web', port: 5959, portOverridden: false,

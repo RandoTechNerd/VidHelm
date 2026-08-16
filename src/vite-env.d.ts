@@ -47,6 +47,7 @@ interface Window {
     createProject: (data: { root: string; name: string }) => Promise<{ path?: string; name?: string; error?: string }>
     saveProjectTo: (data: { dir: string; data: any }) => Promise<{ path?: string; error?: string }>
     revealFolder: (dir: string) => Promise<void>
+    analysisPath: (name: string) => Promise<string>
     windowDragStart: () => void
     windowDragEnd: () => void
     windowToggleMaximize: () => void
