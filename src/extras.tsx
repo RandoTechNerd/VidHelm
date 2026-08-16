@@ -1,6 +1,7 @@
 // VidHelm add-on panels: SFX library, timeline markers, karaoke booth, cloned-voice narration.
 // All components are props-driven; App.tsx owns the state.
 import { useState, useRef, useEffect } from 'react'
+import { InfoNote } from './help'
 
 export interface Marker { id: string; t: number; label: string; color: string }
 export interface SfxItem { name: string; path: string; duration: number; builtin: boolean }
@@ -97,7 +98,12 @@ export function MarkerPanel({ markers, currentTime, onChange, onSeek }: {
   return (
     <div className="marker-panel">
       <button className="marker-add" onClick={() => onChange([...markers, newMarker(currentTime)])}>+ Tag at {fmtT(currentTime)} <kbd>M</kbd></button>
-      {sorted.length === 0 && <p className="hint">Tag points mark beats in your video — a joke landing, a reveal, a cut point. Press <b>M</b> while playing to drop one. Use them to line up SFX, captions and narration.</p>}
+      {sorted.length === 0 && (
+        <InfoNote label="What are tag points?">
+          They mark the beats of your video — a joke landing, a reveal, a cut point. Press <b>M</b> while it plays to drop one.<br /><br />
+          Everything lines up to them afterwards: sound effects, captions, narration lines — and your AI reads them too, so you can say “put a whoosh on every tag”.
+        </InfoNote>
+      )}
       <div className="marker-list">
         {sorted.map(m => (
           <div key={m.id} className="marker-row">

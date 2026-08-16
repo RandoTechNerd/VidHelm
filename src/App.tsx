@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import './App.css'
 import { SfxPanel, MarkerPanel, KaraokeBooth, NarrationModal, RecipeSection, ThumbnailModal, ConnectModal, DEFAULT_RECIPE, recipeActive, newMarker, type Marker, type SfxItem, type RecipeSettings } from './extras'
 import { Model3DModal, type Model3DApi } from './model3d'
+import { HelpModal, InfoNote, type HelpPanel } from './help'
 
 interface MediaFile {
   id: string
@@ -291,6 +292,9 @@ function App() {
   const [showModel3D, setShowModel3D] = useState(false)
   const [model3DPath, setModel3DPath] = useState<string | null>(null)
   const [boothScript, setBoothScript] = useState('')
+  const [showHelp, setShowHelp] = useState(false)
+  const [appVersion, setAppVersion] = useState('')
+  useEffect(() => { window.ipcRenderer.agentStatus?.().then(s => setAppVersion(s?.appVersion || '')).catch(() => {}) }, [])
   const [scrubbing, setScrubbing] = useState(false)
   const scrubRaf = useRef(0)
   const model3dApi = useRef<Model3DApi | null>(null)
@@ -859,7 +863,8 @@ function App() {
         else if (cmd.panel === 'thumbnail') setShowThumbnail(cmd.open !== false)
         else if (cmd.panel === 'connect') setShowConnect(cmd.open !== false)
         else if (cmd.panel === 'model3d') { if (cmd.path) setModel3DPath(cmd.path); setShowModel3D(cmd.open !== false) }
-        else return { error: `unknown panel: ${cmd.panel}. Use booth | narration | sfx | media | settings | thumbnail | connect | model3d (optional path)` }
+        else if (cmd.panel === 'help') setShowHelp(cmd.open !== false)
+        else return { error: `unknown panel: ${cmd.panel}. Use booth | narration | sfx | media | settings | thumbnail | connect | model3d (optional path) | help` }
         return { ok: true, panel: cmd.panel }
       }
       case 'render_3d': {
@@ -1306,6 +1311,7 @@ function App() {
           <button className="hdr-btn" onClick={runRecipe} title="Run your Start Recipe on this timeline">🚀 Recipe</button>
           <button className="hdr-btn" onClick={() => { setModel3DPath(null); setShowModel3D(true) }} title="3D Studio — turn an STL / 3MF / OBJ into a spinning turntable clip">🧊 3D</button>
           <button className="hdr-btn" onClick={() => setShowConnect(true)} title="Connect your AI — one-click setup + troubleshooter">🤖 AI</button>
+          <button className="hdr-btn icon" onClick={() => setShowHelp(true)} title="Take the tour, and see credits and licences">?</button>
           <button className="hdr-btn icon" onClick={() => setShowSettings(true)} title="Brand kit & settings"><IconGear /></button>
         </div>
         <div className="orientation-switch">
@@ -1348,7 +1354,14 @@ function App() {
             </div>
             {sidebarTab === 'sfx' && <SfxPanel onPlace={placeSfx} genCommand={settings.sfxGen.command} onGenCommand={c => setSettings(s => ({ ...s, sfxGen: { command: c } }))} />}
             {sidebarTab === 'media' && <div className="media-list" onDrop={async (e) => { e.preventDefault(); await importFiles(Array.from(e.dataTransfer.files)) }} onDragOver={(e) => e.preventDefault()}>
-              {mediaBin.length === 0 && <div className="empty-hint">Click <IconPlus /> or drag files here. Double-click an item — or drop files on the timeline — to add them.<br /><br />Video, audio and images of just about any format, plus 3D models (STL · 3MF · OBJ · GLB) which open in the 3D Studio.</div>}
+              {mediaBin.length === 0 && <div className="empty-hint">
+                Click <IconPlus /> or drag files here.
+                <InfoNote label="What can I add?">
+                  Double-click an item — or drop files straight onto the timeline — to use it.<br /><br />
+                  Video, audio and images in just about any format, plus 3D models (STL · 3MF · OBJ · GLB), which open in the 3D Studio instead of the timeline.<br /><br />
+                  New here? The <b>?</b> button up top walks you through a first video.
+                </InfoNote>
+              </div>}
               {mediaBin.map(m => (
                 <div key={m.id} className="media-item" onDoubleClick={() => addToTimeline(m)} onContextMenu={(e) => { e.preventDefault(); setCtxMenu({ x: e.clientX, y: e.clientY, mediaId: m.id }) }} title="Double-click to add • right-click for options">
                   <div className="media-icon">
@@ -1589,6 +1602,16 @@ function App() {
         onGenerated={narrationGenerated} />
 
       <ConnectModal open={showConnect} onClose={() => setShowConnect(false)} />
+      <HelpModal open={showHelp} onClose={() => setShowHelp(false)} version={appVersion}
+        onOpenPanel={(p: HelpPanel) => {
+          if (p === 'media' || p === 'sfx') setSidebarTab(p)
+          else if (p === 'booth') setShowBooth(true)
+          else if (p === 'narration') setShowNarration(true)
+          else if (p === 'thumbnail') setShowThumbnail(true)
+          else if (p === 'settings') setShowSettings(true)
+          else if (p === 'connect') setShowConnect(true)
+          else if (p === 'model3d') { setModel3DPath(null); setShowModel3D(true) }
+        }} />
       <Model3DModal open={showModel3D} onClose={() => setShowModel3D(false)} initialPath={model3DPath} apiRef={model3dApi}
         getFrame={async () => {
           // the frame under the playhead, so a turntable can be rendered over real footage

@@ -6,7 +6,7 @@
 
 VidHelm is an Electron + React editor built around one workflow: drop in footage, **tag the beats**, add **sound effects** and **narration** (your mic, a karaoke-style read-along, or a cloned voice), and export a **YouTube-ready** MP4 — correct resolution, loudness and encoding, every time.
 
-Everything runs locally. FFmpeg does the rendering, Whisper runs on-device for captions, and the SFX library is synthesized on your machine — no accounts, no uploads, no license worries.
+Your footage never leaves your machine: FFmpeg does the rendering, Whisper runs on-device for captions, and the SFX library is synthesized locally — no accounts, no uploads, no stock-library fees. (The interface does fetch its font from Google Fonts, and Whisper's model downloads once on first use.)
 
 ![VidHelm](docs/screenshot.png)
 
@@ -107,8 +107,14 @@ Full walkthrough with details: [docs/WORKFLOW.md](docs/WORKFLOW.md)
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | How the app is built — for contributors |
 | [docs/VOICE_CLONE.md](docs/VOICE_CLONE.md) | Set up free local voice cloning (XTTS-v2) and wire it to the Narrate button |
 
+## Thanks
+
+Special thanks to **[inventinside](https://github.com/inventinside)** — now a contributor — whose feedback drove a good stretch of what VidHelm can do. A lot of the recent capabilities exist because the ideas kept coming. If you've got one, [open an issue](https://github.com/RandoTechNerd/VidHelm/issues); that's how most of this list got written.
+
 ## License
 
-MIT — see [LICENSE](LICENSE).
+VidHelm's own code is MIT — see [LICENSE](LICENSE).
+
+It also ships other people's work, and that comes with its own terms. The most important one: the bundled **FFmpeg and FFprobe binaries are GPL-3.0-or-later**, not MIT — VidHelm runs them as separate programs and stays MIT itself, but if you redistribute VidHelm you carry those obligations along with it. The full picture, including every npm package that ships inside the app, is in **[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)** (and inside the app under **?** → Credits & licences).
 
 Built by [RandoTechNerd](https://www.youtube.com/@randotechnerd). If VidHelm saves you time, [a coffee keeps the updates coming](https://buymeacoffee.com/randotechnerd). ☕
