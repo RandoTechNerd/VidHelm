@@ -6,8 +6,13 @@ export type HelpPanel = 'media' | 'sfx' | 'booth' | 'narration' | 'thumbnail' | 
 
 const TOUR: { title: string; body: string; go?: { label: string; panel: HelpPanel } }[] = [
   {
-    title: 'Welcome. You take the helm',
-    body: 'VidHelm is a normal video editor you can drive by hand, and it is at its best with an AI co-captain sitting alongside you, doing the busywork while you make the calls. That part comes at the end of this tour, for now, here is the hand-driven version.',
+    title: 'Read this first: VidHelm is not a standalone editor yet',
+    body: 'VidHelm is built to be flown with an AI co-captain. On its own it can cut, tag, narrate and export just fine, but the parts that make it worth using (writing your titles, placing effects on every beat, running your whole workflow from one sentence) need an assistant connected. Think of the buttons here as the controls and your AI as the crew. Step 8 shows you how to connect one, and it takes about a minute.',
+    go: { label: 'Connect one now', panel: 'connect' },
+  },
+  {
+    title: 'What that means in practice',
+    body: 'Everything in this tour works by hand today, so you are never stuck. But if you try VidHelm without an assistant and wonder why it feels like a lean editor rather than a fast one, that is why. Standalone polish is coming; the AI side is where it shines right now.',
   },
   {
     title: '1 · Bring in your footage',
@@ -47,8 +52,8 @@ const TOUR: { title: string; body: string; go?: { label: string; panel: HelpPane
     body: 'Pick your format on the right and hit Export Video. Watch & Verify then checks the finished file the way a platform would, resolution, loudness, true peak, black frames, so you know it is upload-ready before you upload it.',
   },
   {
-    title: '8 · Let your AI drive (the fun part)',
-    body: 'Connect an assistant and it works the same timeline you do: reading your tag points, dropping effects, writing titles, exporting. You stay in the chair, it does the busywork.',
+    title: '8 · Now connect your co-captain (do not skip this)',
+    body: 'This is the step that turns VidHelm from a lean editor into a fast one. Connect an assistant and it works the same timeline you do: reading your tag points, dropping effects on every beat, writing your titles, running your whole Start Recipe from one sentence, and exporting with a quality report. The 🤖 AI button checks your setup and hands you the exact one-line command. About a minute, and free if you already have an assistant.',
     go: { label: 'Connect your AI', panel: 'connect' },
   },
 ]
@@ -121,6 +126,7 @@ export function HelpModal({ open, onClose, onOpenPanel, version }: {
                   VidHelm is built by <b>RandoTechNerd</b>. Special thanks to <b>inventinside</b>, now a contributor on GitHub, whose feedback drove a good chunk of what this app can do, the ideas kept coming and the app kept growing because of them.
                 </p>
                 <p className="hint">Found something rough, or want it to do something it doesn’t? Open an issue on GitHub, that is exactly how the list above got written.</p>
+                <p className="hint" style={{ color: '#fbbf24' }}>Buying a coffee? Put <b>"VidHelm"</b> in the comment so it lands against the right project (there are a few on that page), and add the feature you want next while you are there.</p>
               </section>
 
               <section>

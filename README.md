@@ -2,6 +2,8 @@
 
 **A lean desktop video editor for makers. You take the helm; your AI crews the busywork.**
 
+> **Built to be flown with an AI co-captain.** VidHelm cuts, tags, narrates and exports by hand today, but it is not a standalone editor yet: the parts that make it fast (titles written for you, effects placed on every beat, your whole workflow run from one sentence) need an assistant connected. Setup is one command and takes about a minute, see [docs/CONNECT.md](docs/CONNECT.md).
+
 [vidhelm.com](https://vidhelm.com) · [YouTube](https://www.youtube.com/@randotechnerd) · [Instagram](https://www.instagram.com/randotechnerd/) · [Buy me a coffee ☕](https://buymeacoffee.com/randotechnerd) · [randotechnerd@gmail.com](mailto:randotechnerd@gmail.com)
 
 VidHelm is an Electron + React editor built around one workflow: drop in footage, **tag the beats**, add **sound effects** and **narration** (your mic, a karaoke-style read-along, or a cloned voice), and export a **YouTube-ready** MP4 with the right resolution, loudness and encoding every time.
@@ -121,4 +123,4 @@ VidHelm's own code is MIT, see [LICENSE](LICENSE).
 
 It also ships other people's work, and that comes with its own terms. The most important one: the bundled **FFmpeg and FFprobe binaries are GPL-3.0-or-later**, not MIT - VidHelm runs them as separate programs and stays MIT itself, but if you redistribute VidHelm you carry those obligations along with it. The full picture, including every npm package that ships inside the app, is in **[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)** (and inside the app under **?** → Credits & licences).
 
-Built by [RandoTechNerd](https://www.youtube.com/@randotechnerd). If VidHelm saves you time, [a coffee keeps the updates coming](https://buymeacoffee.com/randotechnerd). ☕
+Built by [RandoTechNerd](https://www.youtube.com/@randotechnerd). If VidHelm saves you time, [a coffee keeps the updates coming](https://buymeacoffee.com/randotechnerd). ☕ Please put **"VidHelm"** in the comment so it lands against the right project, and add any feature you want next while you are there.

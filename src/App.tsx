@@ -163,7 +163,7 @@ const IconCaptions = () => <svg width="14" height="14" viewBox="0 0 24 24" fill=
 const IconInfo = () => <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-5M12 8h.01"/></svg>
 
 // Everything that used to sit as a row of bare icons in the header, now behind the (i)
-const LINKS: { label: string; sub: string; url: string; icon: React.ReactNode }[] = [
+const LINKS: { label: string; sub: string; url: string; icon: React.ReactNode; note?: string }[] = [
   { label: 'vidhelm.com', sub: 'downloads and news', url: 'https://vidhelm.com',
     icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg> },
   { label: 'GitHub', sub: 'star the repo, report a bug', url: 'https://github.com/RandoTechNerd/VidHelm',
@@ -173,7 +173,8 @@ const LINKS: { label: string; sub: string; url: string; icon: React.ReactNode }[
   { label: 'Instagram', sub: '@randotechnerd', url: 'https://www.instagram.com/randotechnerd/',
     icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="2" y="2" width="20" height="20" rx="5"/><circle cx="12" cy="12" r="4"/><circle cx="17.5" cy="6.5" r="1" fill="currentColor" stroke="none"/></svg> },
   { label: 'Buy me a coffee', sub: 'keeps the updates coming', url: 'https://buymeacoffee.com/randotechnerd',
-    icon: <span style={{ fontSize: 15 }}>☕</span> },
+    icon: <span style={{ fontSize: 15 }}>☕</span>,
+    note: 'Please put "VidHelm" in the comment, there are a few projects on that page, plus any feature you want next. Requests that arrive with a coffee tend to jump the queue.' },
   { label: 'Email', sub: 'randotechnerd@gmail.com', url: 'mailto:randotechnerd@gmail.com',
     icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-10 6L2 7"/></svg> },
 ]
@@ -1449,7 +1450,10 @@ function App() {
                 {LINKS.map(l => (
                   <button key={l.url} onClick={() => { window.ipcRenderer.openExternal(l.url); setShowLinks(false) }}>
                     <span className="links-ico">{l.icon}</span>
-                    <span className="links-txt"><b>{l.label}</b><i>{l.sub}</i></span>
+                    <span className="links-txt">
+                      <b>{l.label}</b><i>{l.sub}</i>
+                      {l.note && <em className="links-note">{l.note}</em>}
+                    </span>
                   </button>
                 ))}
                 <div className="links-foot">VidHelm {appVersion} · built by RandoTechNerd</div>
