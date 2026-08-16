@@ -9,7 +9,7 @@ interface Window {
     log: (...args: any[]) => void
     getPathForFile: (file: File) => string
     selectSavePath: (defaultName: string) => Promise<string | null>
-    getMetadata: (filePath: string) => Promise<any>
+    getMetadata: (filePath: string) => Promise<{ duration: number; hasVideo: boolean; hasAudio: boolean; ok?: boolean; error?: string; format?: string; videoCodec?: string }>
     saveRecording: (base64: string) => Promise<string>
     saveProject: (data: any) => Promise<string | null>
     loadProject: () => Promise<any | null>
@@ -32,7 +32,8 @@ interface Window {
     openSfxFolder: () => Promise<void>
     voiceClone: (data: { command: string; scriptText: string }) => Promise<{ files?: string[]; error?: string; log?: string }>
     pickModel: () => Promise<string | null>
-    save3DRender: (data: { base64: string; name: string }) => Promise<{ path?: string; error?: string }>
+    extractModel: (filePath: string) => Promise<{ path?: string; how?: string; error?: string }>
+    save3DRender: (data: { base64: string; name: string; alpha?: boolean }) => Promise<{ path?: string; error?: string }>
     save3DStill: (data: { dataUrl: string; name: string }) => Promise<{ path?: string; error?: string }>
     saveObjFile: (data: { text: string; defaultName: string }) => Promise<{ path?: string; error?: string }>
     voiceCloneSetup: (data: { sampleBase64?: string; samplePath?: string }) => Promise<{ dir?: string; command?: string; error?: string }>

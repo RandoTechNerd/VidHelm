@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import './App.css'
 import { SfxPanel, MarkerPanel, KaraokeBooth, NarrationModal, RecipeSection, ThumbnailModal, ConnectModal, DEFAULT_RECIPE, recipeActive, newMarker, type Marker, type SfxItem, type RecipeSettings } from './extras'
-import { Model3DModal } from './model3d'
+import { Model3DModal, type Model3DApi } from './model3d'
 
 interface MediaFile {
   id: string
@@ -49,8 +49,68 @@ const DEFAULT_SETTINGS: AppSettings = {
   recipe: { text: DEFAULT_RECIPE, introAudioPath: null },
 }
 
+// Every agent command carries an id. StrictMode's double mount — and, in dev, hot reloads
+// that leave the previous module's listener registered — meant one command could be executed
+// several times (two tags from a single add_tag). The guard hangs off window so it is shared
+// by every module instance that survives a reload, not just the current one.
+const handledAgentCmds: Set<number> = ((window as any).__vhHandledCmds ??= new Set<number>())
+
 // Everything in the header except these moves the window (see electron/dragMath.ts)
 const HDR_CONTROLS = 'button, a, input, select, label, [role="button"]'
+
+// What the app accepts. FFmpeg decodes far more than the browser does, so these lists are
+// only a first guess — ffprobe has the final say (see importFiles), which means an unusual
+// but valid file still imports, and a mislabelled one is refused with a reason.
+const VIDEO_EXT = new Set(['mp4', 'm4v', 'mov', 'mkv', 'webm', 'avi', 'wmv', 'flv', 'f4v', 'mpg', 'mpeg', 'mpe', 'm2v', 'ts', 'm2ts', 'mts', 'vob', '3gp', '3g2', 'ogv', 'mxf', 'asf', 'divx', 'rm', 'rmvb', 'y4m'])
+const AUDIO_EXT = new Set(['mp3', 'wav', 'wave', 'aac', 'm4a', 'm4b', 'flac', 'ogg', 'oga', 'opus', 'wma', 'aif', 'aiff', 'aifc', 'caf', 'ac3', 'eac3', 'dts', 'amr', 'mka', 'mp2', 'au', 'ape', 'wv', 'ra', 'weba'])
+const IMAGE_EXT = new Set(['png', 'jpg', 'jpeg', 'jfif', 'webp', 'gif', 'bmp', 'tif', 'tiff', 'avif', 'heic', 'heif', 'ico', 'ppm', 'pgm', 'tga', 'dds', 'exr'])
+const MODEL_EXT = new Set(['stl', '3mf', 'obj', 'glb', 'gltf'])
+const PAGE_EXT = new Set(['html', 'htm'])
+const ACCEPT_ATTR = [...VIDEO_EXT, ...AUDIO_EXT, ...IMAGE_EXT, ...MODEL_EXT, ...PAGE_EXT].map(e => '.' + e).join(',')
+const extOf = (name: string) => (name.split('.').pop() || '').toLowerCase()
+
+// Friendlier explanations for things people drop by mistake
+const WRONG_TYPE: Record<string, string> = {
+  svg: 'SVG vectors can’t be rendered by the export engine — save it as a PNG first.',
+  pdf: 'PDFs aren’t media — export the page as a PNG or MP4 first.',
+  psd: 'Photoshop files aren’t supported — export a flattened PNG or JPG.',
+  ai: 'Illustrator files aren’t supported — export a PNG.',
+  zip: 'That’s an archive — unzip it and drop the media inside.',
+  rar: 'That’s an archive — unpack it and drop the media inside.',
+  '7z': 'That’s an archive — unpack it and drop the media inside.',
+  txt: 'That’s a text file, not media.',
+  docx: 'That’s a document, not media.',
+  pptx: 'That’s a slide deck — export it as images or a video first.',
+  xlsx: 'That’s a spreadsheet, not media.',
+  exe: 'That’s a program, not media.',
+  gcode: 'G-code is print instructions, not a model — drop the STL/3MF instead.',
+  step: 'STEP CAD files aren’t supported yet — export an STL, 3MF or OBJ.',
+  stp: 'STEP CAD files aren’t supported yet — export an STL, 3MF or OBJ.',
+  f3d: 'Fusion files aren’t supported — export an STL, 3MF or OBJ.',
+  blend: 'Blender files aren’t supported — export a GLB, OBJ or STL.',
+  srt: 'Subtitle files aren’t imported — use the Captions button instead.',
+}
+
+// ffprobe is the authority on what can be decoded, with one catch: it cheerfully reads a
+// text file as "ansi video" (the tty demuxer) and subtitles as streams. Those are filtered
+// out here so a stray .txt can't land on the timeline as a 0.04s clip.
+type Probe = { duration: number; hasVideo: boolean; hasAudio: boolean; ok?: boolean; error?: string; format?: string; videoCodec?: string }
+const JUNK_FORMAT = /(^|,)(tty|ansi|image2pipe|srt|ass|ssa|webvtt|lrc|microdvd|subviewer|jacosub|mpsub|pjs|realtext|sami|vplayer)(,|$)/
+const classifyMedia = (name: string, meta: Probe | null): { type: 'video' | 'audio' | 'image' } | { reject: string } => {
+  const ext = extOf(name)
+  if (WRONG_TYPE[ext]) return { reject: WRONG_TYPE[ext] }
+  const knownImage = IMAGE_EXT.has(ext)
+  const knownAV = VIDEO_EXT.has(ext) || AUDIO_EXT.has(ext)
+  if (!meta) return { reject: 'could not be read' }
+  if (meta.ok === false || JUNK_FORMAT.test(meta.format || '') || meta.videoCodec === 'ansi') {
+    if (knownImage) return { type: 'image' }   // a few image types ffprobe can't parse still display fine
+    return { reject: knownAV ? 'couldn’t be read (damaged, or an unsupported codec)' : 'not a video, audio, image or 3D file' }
+  }
+  if (!meta.hasVideo && !meta.hasAudio) return { reject: 'there’s no video or audio inside it' }
+  const isStill = knownImage || /image2|_pipe/.test(meta.format || '')
+  if (!isStill && !knownAV && !meta.hasAudio && (meta.duration || 0) < 0.1) return { reject: 'not a video, audio, image or 3D file' }
+  return { type: isStill ? 'image' : meta.hasVideo ? 'video' : 'audio' }
+}
 
 const CAPTION_LANGS: [string, string][] = [['en', 'English (fast)'], ['auto', 'Auto-detect'], ['es', 'Spanish'], ['fr', 'French'], ['de', 'German'], ['pt', 'Portuguese'], ['hi', 'Hindi'], ['ja', 'Japanese'], ['zh', 'Chinese'], ['ko', 'Korean'], ['it', 'Italian']]
 
@@ -231,6 +291,9 @@ function App() {
   const [showModel3D, setShowModel3D] = useState(false)
   const [model3DPath, setModel3DPath] = useState<string | null>(null)
   const [boothScript, setBoothScript] = useState('')
+  const [scrubbing, setScrubbing] = useState(false)
+  const scrubRaf = useRef(0)
+  const model3dApi = useRef<Model3DApi | null>(null)
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; mediaId: string } | null>(null)
   const [qcReport, setQcReport] = useState<any>(null)
   const [qcRunning, setQcRunning] = useState(false)
@@ -492,23 +555,40 @@ function App() {
   // ---- media import ----
   const importFiles = useCallback(async (files: File[]): Promise<MediaFile[]> => {
     const added: MediaFile[] = []
+    const skipped: string[] = []
     for (const file of files) {
+      const ext = extOf(file.name)
       try {
         const path = window.ipcRenderer.getPathForFile(file)
-        if (/\.(stl|3mf|obj)$/i.test(file.name)) { setModel3DPath(path); setShowModel3D(true); continue }
-        const metadata = await window.ipcRenderer.getMetadata(path)
-        let type: 'video' | 'audio' | 'image' = 'audio'
-        if (file.type.startsWith('video')) type = 'video'
-        else if (file.type.startsWith('image')) type = 'image'
+
+        // 3D models open in the studio instead of landing on the timeline
+        if (MODEL_EXT.has(ext)) { setModel3DPath(path); setShowModel3D(true); continue }
+        if (PAGE_EXT.has(ext)) {
+          const r = await window.ipcRenderer.extractModel(path)
+          if (r.path) { setModel3DPath(r.path); setShowModel3D(true); notify(`Found a 3D model in ${file.name} (${r.how}) — opening the 3D Studio.`) }
+          else skipped.push(`${file.name} — ${r.error || 'no 3D model inside that page'}`)
+          continue
+        }
+
+        // ffprobe decides: it reads far more formats than any extension list knows about
+        const meta = await window.ipcRenderer.getMetadata(path).catch(() => null)
+        const verdict = classifyMedia(file.name, meta)
+        if ('reject' in verdict) { skipped.push(`${file.name} — ${verdict.reject}`); continue }
+        const { type } = verdict
+        const m = meta as Probe   // a non-reject verdict means the probe succeeded
         added.push({
           id: rid(), name: file.name, path, type,
-          duration: type === 'image' ? 5 : (metadata.duration || 5),
-          hasVideo: metadata.hasVideo || type === 'image',
-          hasAudio: metadata.hasAudio,
+          duration: type === 'image' ? 5 : (m.duration || 5),
+          hasVideo: m.hasVideo || type === 'image',
+          hasAudio: m.hasAudio,
         })
-      } catch (err) { console.error(err) }
+      } catch (err) {
+        console.error(err)
+        skipped.push(`${file.name} — ${WRONG_TYPE[ext] || 'could not be imported'}`)
+      }
     }
     if (added.length) setMediaBin(prev => [...prev, ...added])
+    if (skipped.length) notify(`Skipped ${skipped.length} file${skipped.length > 1 ? 's' : ''}:\n\n${skipped.slice(0, 5).map(s => '• ' + s).join('\n')}${skipped.length > 5 ? `\n• …and ${skipped.length - 5} more` : ''}`, 11000)
     return added
   }, [])
 
@@ -657,10 +737,24 @@ function App() {
           startRecipe: { instructions: settings.recipe.text, active: Object.entries(recipeActive(settings.recipe.text)).filter(([, v]) => v).map(([k]) => k), introAudioPath: settings.recipe.introAudioPath, note: "The user's standing workflow (like start G-code). # lines are OFF. Lines like 'titles 5' are for YOU to do in chat." },
         }
       case 'add_media': {
-        const meta = await window.ipcRenderer.getMetadata(cmd.path)
-        if (!meta || meta.error) return { error: `cannot read ${cmd.path}: ${meta?.error || 'no metadata'}` }
-        const type: MediaFile['type'] = /\.(png|jpe?g|webp|gif|bmp)$/i.test(cmd.path) ? 'image' : meta.hasVideo ? 'video' : 'audio'
-        const media: MediaFile = { id: rid(), name: cmd.path.split(/[\\/]/).pop() || 'media', path: cmd.path, type, duration: type === 'image' ? (cmd.duration || 5) : (meta.duration || 5), hasVideo: meta.hasVideo || type === 'image', hasAudio: meta.hasAudio }
+        const ext = extOf(cmd.path || '')
+        // 3D models (and HTML pages carrying one) open in the studio rather than the timeline
+        if (MODEL_EXT.has(ext) || PAGE_EXT.has(ext)) {
+          let p: string = cmd.path
+          if (PAGE_EXT.has(ext)) {
+            const r = await window.ipcRenderer.extractModel(cmd.path)
+            if (!r.path) return { error: r.error || 'no 3D model found inside that page' }
+            p = r.path
+          }
+          setModel3DPath(p); setShowModel3D(true)
+          return { ok: true, opened: '3D Studio', path: p, note: 'the human poses it there and renders a turntable clip into the bin' }
+        }
+        const meta = await window.ipcRenderer.getMetadata(cmd.path).catch(() => null)
+        const verdict = classifyMedia(cmd.path, meta)
+        if ('reject' in verdict) return { error: `cannot use ${cmd.path}: ${verdict.reject}` }
+        const type: MediaFile['type'] = verdict.type
+        const m = meta as Probe   // a non-reject verdict means the probe succeeded
+        const media: MediaFile = { id: rid(), name: cmd.path.split(/[\\/]/).pop() || 'media', path: cmd.path, type, duration: type === 'image' ? (cmd.duration || 5) : (m.duration || 5), hasVideo: m.hasVideo || type === 'image', hasAudio: m.hasAudio }
         setMediaBin(prev => [...prev, media])
         if (cmd.place !== false) {
           const isAudio = media.type === 'audio'
@@ -768,6 +862,16 @@ function App() {
         else return { error: `unknown panel: ${cmd.panel}. Use booth | narration | sfx | media | settings | thumbnail | connect | model3d (optional path)` }
         return { ok: true, panel: cmd.panel }
       }
+      case 'render_3d': {
+        const api = model3dApi.current
+        if (!showModel3D || !api?.loaded()) return { error: 'no model open — call open_panel { panel: "model3d", path } first' }
+        const r = cmd.still ? await api.still({ transparent: cmd.transparent }) : await api.record({ seconds: cmd.seconds, transparent: cmd.transparent })
+        if (r.error) return { error: r.error }
+        return {
+          ok: true, path: r.path, kind: cmd.still ? 'still' : 'turntable',
+          placement: cmd.transparent ? `transparent overlay placed at ${currentTime.toFixed(2)}s on the video track — it composites over the clip beneath it` : 'appended to the video track',
+        }
+      }
       case 'booth_script': {
         if (typeof cmd.script !== 'string' || !cmd.script.trim()) return { error: 'script (string) required — one line per beat' }
         setBoothScript(cmd.script.trim())
@@ -802,6 +906,11 @@ function App() {
   }
   useEffect(() => {
     const h = async (_e: any, cmd: any) => {
+      if (typeof cmd?.id === 'number') {
+        if (handledAgentCmds.has(cmd.id)) return           // already ran for this id
+        handledAgentCmds.add(cmd.id)
+        if (handledAgentCmds.size > 500) for (const id of [...handledAgentCmds].slice(0, 250)) handledAgentCmds.delete(id)
+      }
       let result: any
       try { result = await agentExec.current(cmd) } catch (e) { result = { error: String(e) } }
       window.ipcRenderer.send('agent-response', { id: cmd.id, result })
@@ -1111,10 +1220,37 @@ function App() {
   }
 
   const onTimelineClick = (e: React.MouseEvent) => {
-    if (draggingRef.current) return
+    if (draggingRef.current || scrubbing) return
     setCurrentTime(timeAtClientX(e.clientX))
     setSelectedId(null)
   }
+
+  // ---- scrubbing ----
+  // Press the ruler (or grab the playhead) and drag. Pointer capture keeps the drag alive
+  // even when the cursor leaves the ruler, and rAF coalescing keeps seeking smooth.
+  const seekTo = (clientX: number) => setCurrentTime(clamp(timeAtClientX(clientX), 0, Math.max(totalDuration, 0)))
+  const startScrub = (e: React.PointerEvent) => {
+    if (e.button !== 0) return
+    e.preventDefault()                       // no text selection while dragging
+    try { (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId) } catch { /* older pointer impls */ }
+    setIsPlaying(false)
+    setScrubbing(true)
+    seekTo(e.clientX)
+  }
+  const moveScrub = (e: React.PointerEvent) => {
+    if (!scrubbing) return
+    const x = e.clientX
+    cancelAnimationFrame(scrubRaf.current)
+    scrubRaf.current = requestAnimationFrame(() => seekTo(x))
+  }
+  const endScrub = (e: React.PointerEvent) => {
+    if (!scrubbing) return
+    try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId) } catch { /* already released */ }
+    cancelAnimationFrame(scrubRaf.current)
+    seekTo(e.clientX)
+    setScrubbing(false)
+  }
+  const scrubHandlers = { onPointerDown: startScrub, onPointerMove: moveScrub, onPointerUp: endScrub, onPointerCancel: endScrub }
 
   const patchClip = (patch: Partial<TimelineClip>) => setClips(prev => prev.map(c => c.id === selectedId ? { ...c, ...patch } : c))
   const patchText = (patch: Partial<TextClip>) => setTexts(prev => prev.map(t => t.id === selectedId ? { ...t, ...patch } : t))
@@ -1202,11 +1338,11 @@ function App() {
             <div className="section-header tabs">
               <button className={`tab ${sidebarTab === 'media' ? 'active' : ''}`} onClick={() => setSidebarTab('media')}>Media Bin</button>
               <button className={`tab ${sidebarTab === 'sfx' ? 'active' : ''}`} onClick={() => setSidebarTab('sfx')} title="Sound effects — audition and drop on the SFX track">SFX</button>
-              {sidebarTab === 'media' && <label className="add-btn" title="Add image, video, audio — or a 3D model (STL / 3MF / OBJ)"><IconPlus /><input type="file" accept="video/*,audio/*,image/*,.stl,.3mf,.obj" multiple onChange={handleFileUpload} hidden /></label>}
+              {sidebarTab === 'media' && <label className="add-btn" title="Add video, audio or images — or a 3D model (STL / 3MF / OBJ / GLB)"><IconPlus /><input type="file" accept={ACCEPT_ATTR} multiple onChange={handleFileUpload} hidden /></label>}
             </div>
             {sidebarTab === 'sfx' && <SfxPanel onPlace={placeSfx} genCommand={settings.sfxGen.command} onGenCommand={c => setSettings(s => ({ ...s, sfxGen: { command: c } }))} />}
             {sidebarTab === 'media' && <div className="media-list" onDrop={async (e) => { e.preventDefault(); await importFiles(Array.from(e.dataTransfer.files)) }} onDragOver={(e) => e.preventDefault()}>
-              {mediaBin.length === 0 && <div className="empty-hint">Click <IconPlus /> or drag files here. Double-click an item — or drop files on the timeline — to add them.</div>}
+              {mediaBin.length === 0 && <div className="empty-hint">Click <IconPlus /> or drag files here. Double-click an item — or drop files on the timeline — to add them.<br /><br />Video, audio and images of just about any format, plus 3D models (STL · 3MF · OBJ · GLB) which open in the 3D Studio.</div>}
               {mediaBin.map(m => (
                 <div key={m.id} className="media-item" onDoubleClick={() => addToTimeline(m)} onContextMenu={(e) => { e.preventDefault(); setCtxMenu({ x: e.clientX, y: e.clientY, mediaId: m.id }) }} title="Double-click to add • right-click for options">
                   <div className="media-icon">
@@ -1288,7 +1424,7 @@ function App() {
           <div className="resize-handle" onMouseDown={startResizeTimeline} title="Drag to resize timeline" />
 
           <div className="timeline-panel" style={{ height: timelineH }}>
-            <div className="timeline" ref={timelineRef} onClick={onTimelineClick} onDrop={onTimelineDrop} onDragOver={(e) => e.preventDefault()}
+            <div className={`timeline ${scrubbing ? 'scrubbing' : ''}`} ref={timelineRef} onClick={onTimelineClick} onDrop={onTimelineDrop} onDragOver={(e) => e.preventDefault()}
               onWheel={e => {
                 if (!e.ctrlKey) return
                 // Ctrl+scroll zooms around the cursor so the point under the mouse stays put
@@ -1298,7 +1434,7 @@ function App() {
                 setPxPerSec(next)
                 requestAnimationFrame(() => { el.scrollLeft = Math.max(0, tAtCursor * next - (e.clientX - el.getBoundingClientRect().left)) })
               }}>
-              <div className="time-ruler">{rulerTicks}</div>
+              <div className="time-ruler" title="Drag to scrub" {...scrubHandlers}>{rulerTicks}</div>
               {markers.map(m => (
                 <div key={m.id} className="marker-flag" style={{ left: m.t * pxPerSec, background: m.color }} title={m.label || 'tag point'}
                   onClick={e => { e.stopPropagation(); setCurrentTime(m.t) }}
@@ -1313,7 +1449,9 @@ function App() {
                   {m.label && <span className="marker-flag-label">{m.label}</span>}
                 </div>
               ))}
-              <div className="scrubber" style={{ left: currentTime * pxPerSec }} />
+              <div className="scrubber" style={{ left: currentTime * pxPerSec }}>
+                <div className="scrubber-grab" title="Drag to scrub" {...scrubHandlers} />
+              </div>
               <div className="tracks">
                 <button className="track-label" onClick={() => setCollapsed(c => ({ ...c, text: !c.text }))}><IconChevron open={!collapsed.text} /> TEXT</button>
                 {!collapsed.text && (
@@ -1445,8 +1583,17 @@ function App() {
         onGenerated={narrationGenerated} />
 
       <ConnectModal open={showConnect} onClose={() => setShowConnect(false)} />
-      <Model3DModal open={showModel3D} onClose={() => setShowModel3D(false)} initialPath={model3DPath}
-        onRendered={async (path, kind, name) => {
+      <Model3DModal open={showModel3D} onClose={() => setShowModel3D(false)} initialPath={model3DPath} apiRef={model3dApi}
+        getFrame={async () => {
+          // the frame under the playhead, so a turntable can be rendered over real footage
+          const hit = clips.filter(c => c.trackId === 'v1' && currentTime >= c.start && currentTime < c.start + c.duration)
+            .map(c => ({ c, m: mediaBin.find(m => m.id === c.mediaId) })).find(x => x.m?.type === 'video')
+          if (!hit?.m) return null
+          const srcT = hit.c.sourceStart + (currentTime - hit.c.start)
+          const r = await window.ipcRenderer.sampleFrames({ filePath: hit.m.path, count: 1, sourceStart: srcT, duration: 0.05 }).catch(() => null)
+          return r?.frames?.[0]?.path || null
+        }}
+        onRendered={async (path, kind, name, overlay) => {
           const meta = await window.ipcRenderer.getMetadata(path).catch(() => null)
           const media: MediaFile = {
             id: rid(), name, path, type: kind,
@@ -1454,7 +1601,12 @@ function App() {
             hasVideo: true, hasAudio: false,
           }
           setMediaBin(prev => [...prev, media])
-          addToTimeline(media)
+          if (overlay) {
+            // transparent renders go in at the playhead so they land on top of the footage
+            // already there — clips composite in the order they were added
+            setClips(prev => [...prev, { id: rid(), mediaId: media.id, type: media.type, trackId: 'v1', start: currentTime, duration: media.duration, sourceStart: 0, volume: 1, fadeIn: 0, fadeOut: 0 }])
+            notify(`${name} added as a transparent overlay at ${fmt(currentTime)} — it sits on top of the clip underneath. Drag it anywhere on the video track.`, 9000)
+          } else addToTimeline(media)
         }} />
       <ThumbnailModal open={showThumbnail} onClose={() => setShowThumbnail(false)}
         videoPath={firstVideo()?.path || null} videoName={firstVideo()?.name || 'video'} logoPath={settings.brand.logoPath} />

@@ -1,7 +1,7 @@
 {
   "name": "vidhelm",
   "private": true,
-  "version": "1.3.1",
+  "version": "1.4.0",
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "vite",
@@ -78,11 +78,19 @@
       }
     ],
     "win": {
-      "target": "nsis"
+      "target": "nsis",
+      "icon": "build/icon.ico"
     },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "installerHeaderIcon": "build/icon.ico",
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "VidHelm",
+      "uninstallDisplayName": "VidHelm"
     }
   },
   "homepage": "https://vidhelm.com"

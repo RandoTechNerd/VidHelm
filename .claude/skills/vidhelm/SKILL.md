@@ -39,7 +39,9 @@ You are co-editing with a human: they see every change live in the GUI and can m
 
 ## 3D models and extras
 
-- A dropped/asked-for STL, 3MF, or OBJ goes through the **3D Studio**: `open_panel {panel: "model3d", path}` loads it for the user to pose; they render a turntable clip or still that lands in the media bin automatically. Great for product/print showcase shots.
+- A dropped/asked-for STL, 3MF, OBJ or GLB goes through the **3D Studio**: `open_panel {panel: "model3d", path}` loads it (an HTML viewer page works too — the model inside gets extracted), then `render_3d` produces the clip.
+- `render_3d {seconds}` → spinning turntable into the bin. `render_3d {still: true, transparent: true}` → a **PNG with real alpha dropped at the playhead**, so it composites on top of the footage underneath: that is how you put a model over a video.
+- Turntable *video* can't be transparent (no available codec carries alpha). For a spin over footage, tell the user to pick the **Video frame** backdrop in the studio, which bakes the frame under the playhead behind the model.
 - If the Adversal MCP is available in this session, use it to analyze long source footage (chapters, highlights, stills) before planning cuts.
 - With browser control available, offer to upload the finished export to YouTube (always pause for explicit user confirmation before publishing) or to capture website/localhost footage for the timeline.
 

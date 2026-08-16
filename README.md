@@ -18,7 +18,8 @@ Everything runs locally. FFmpeg does the rendering, Whisper runs on-device for c
 
 **Editing**
 - Timeline with filmstrip thumbnails, trim/split/ripple, snapping, undo/redo, zoom-to-fit (see every clip at once; Ctrl+scroll zooms around the cursor)
-- **🧊 3D Studio** — drop in an **STL / 3MF / OBJ** (your prints!), pose it in a live viewer, pick color/finish/backdrop, and render a spinning **turntable clip** or still straight onto the timeline. Converts to OBJ too
+- **🧊 3D Studio** — drop in an **STL / 3MF / OBJ / GLB** (your prints!) — even an HTML viewer page with a model inside — pose it in a live viewer, pick color/finish/backdrop, and render a spinning **turntable clip** or still straight onto the timeline. Choose a **transparent** backdrop and a still becomes a real alpha overlay that composites over your footage, or pick **Video frame** to render the spin over the frame under your playhead. Converts to OBJ too
+- **Imports just about anything** — video, audio and image formats are decided by FFmpeg rather than a fixed list, so unusual files still work; anything unusable is refused with a plain-English reason instead of landing on the timeline as a broken clip
 - **Tag points** — press `M` to mark beats (a joke, a reveal, a cut). Tags are visible flags on the ruler; clips snap to them, SFX drop on them, narration lines align to them
 - Text overlays with fades, draggable on the preview
 - Volume automation (draw a gain curve on any clip), per-clip fades, crossfades

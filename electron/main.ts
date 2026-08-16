@@ -1,11 +1,16 @@
 import { app, BrowserWindow, ipcMain, dialog, shell, screen } from 'electron'
 import { restoreDragOffset, plainDragOffset, shouldSnapMaximize } from './dragMath'
+import { findModelInHtml } from './modelSniff'
 import path from 'node:path'
 import fs from 'node:fs'
 import { spawn } from 'node:child_process'
 import ffmpeg from 'fluent-ffmpeg'
 
 if (!process.env.VH_GPU) app.disableHardwareAcceleration()   // VH_GPU=1 keeps the GPU on (needed for video-layer screenshots)
+
+// Must match build.appId so Windows ties the running window to the installed shortcut —
+// without it the taskbar shows a generic Electron icon and pinning behaves oddly.
+if (process.platform === 'win32') app.setAppUserModelId('com.randotechnerd.vidhelm')
 
 const getBinaryPath = () => {
   if (app.isPackaged) {
@@ -34,8 +39,8 @@ function createWindow() {
   win = new BrowserWindow({
     width: 1280,
     height: 800,
-    title: 'VidHelm Studio',
-    icon: path.join(process.env.VITE_PUBLIC, 'favicon.svg'),
+    title: 'VidHelm',
+    icon: path.join(process.env.VITE_PUBLIC, 'icon.png'),   // SVG is not a valid window/taskbar icon on Windows
     titleBarStyle: 'hidden',
     titleBarOverlay: {
       color: '#0f0f11',
@@ -401,15 +406,21 @@ ipcMain.handle('get-metadata', async (event, filePath: string) => {
     if (!filePath) return reject(new Error('No file path provided'))
     ffmpeg.ffprobe(filePath, (err, metadata) => {
       if (err) {
-        console.error('ffprobe error:', err)
-        resolve({ duration: 5, hasVideo: false, hasAudio: false }) // graceful fallback for some images
+        // `ok: false` lets the importer tell the user *why* a file was skipped instead of
+        // silently adding a 5-second placeholder. Callers that only read duration/hasVideo
+        // still get the old fallback shape.
+        resolve({ duration: 5, hasVideo: false, hasAudio: false, ok: false, error: String((err as Error)?.message || err).split('\n')[0] })
       } else {
         const hasVideo = metadata.streams.some((s: any) => s.codec_type === 'video')
         const hasAudio = metadata.streams.some((s: any) => s.codec_type === 'audio')
         resolve({
           duration: metadata.format.duration || 5,
           hasVideo,
-          hasAudio
+          hasAudio,
+          ok: hasVideo || hasAudio,
+          // still images probe as image2/png_pipe/mjpeg_pipe — used to tell photos from video
+          format: metadata.format.format_name || '',
+          videoCodec: metadata.streams.find((s: any) => s.codec_type === 'video')?.codec_name || '',
         })
       }
     })
@@ -547,25 +558,55 @@ ipcMain.handle('pick-model', async () => {
   if (!win) return null
   const { filePaths } = await dialog.showOpenDialog(win, {
     title: 'Open 3D model', properties: ['openFile'],
-    filters: [{ name: '3D models', extensions: ['stl', '3mf', 'obj'] }],
+    filters: [{ name: '3D models', extensions: ['stl', '3mf', 'obj', 'glb', 'gltf', 'html', 'htm'] }],
   })
   return filePaths?.[0] || null
 })
 
-// MediaRecorder gives us a VFR webm off the WebGL canvas — re-encode to a clean CFR h264 mp4
-ipcMain.handle('save-3d-render', async (_event, { base64, name }: { base64: string; name: string }) => {
+// Pull a 3D model out of an HTML page (viewer exports, model-viewer pages, single-file
+// three.js scenes). The searching lives in modelSniff.ts; this handles files and disk.
+ipcMain.handle('extract-model', async (_event, filePath: string) => {
+  try {
+    if (fs.statSync(filePath).size > 300 * 1024 * 1024) return { error: 'that page is too large to scan' }
+    const html = fs.readFileSync(filePath, 'latin1')   // byte-faithful, and base64/OBJ are ASCII
+    const hit = findModelInHtml(html, ref => {
+      const p = path.resolve(path.dirname(filePath), ref)
+      return fs.existsSync(p) && fs.statSync(p).isFile() ? p : null
+    })
+    if (!hit) return { error: 'no 3D model found inside that page' }
+    if (hit.kind === 'file') return { path: hit.path, how: hit.how }
+    const outDir = path.join(app.getPath('userData'), 'model_extracts')
+    if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true })
+    const stem = path.basename(filePath).replace(/\.[^.]+$/, '').replace(/[^\w-]+/g, '_')
+    const out = path.join(outDir, `${stem}_${Date.now()}.${hit.ext}`)
+    fs.writeFileSync(out, hit.buf)
+    return { path: out, how: hit.how }
+  } catch (e) { return { error: String(e) } }
+})
+
+// MediaRecorder gives us a VFR webm off the WebGL canvas — re-encode to something clean.
+// Opaque renders become h264 mp4; transparent ones stay VP9 webm, the only common format
+// that keeps an alpha channel (h264 has none). Both decode to yuva420p for the export
+// filtergraph, so a transparent render composites straight over the footage below it.
+ipcMain.handle('save-3d-render', async (_event, { base64, name, alpha }: { base64: string; name: string; alpha?: boolean }) => {
   try {
     const dir = renders3dDir()
-    const webm = path.join(dir, `_cap_${Date.now()}.webm`)
-    fs.writeFileSync(webm, Buffer.from(base64, 'base64'))
-    const out = path.join(dir, `${name.replace(/[^\w-]+/g, '_')}_spin_${Date.now()}.mp4`)
+    const cap = path.join(dir, `_cap_${Date.now()}.webm`)
+    fs.writeFileSync(cap, Buffer.from(base64, 'base64'))
+    const stem = `${name.replace(/[^\w-]+/g, '_')}_spin_${Date.now()}`
+    const out = path.join(dir, alpha ? `${stem}_overlay.webm` : `${stem}.mp4`)
     await new Promise<void>((resolve, reject) => {
-      ffmpeg(webm)
+      const cmd = ffmpeg(cap)
+      // Transparent: stream-copy Chromium's VP8/VP9. Its alpha lives in a WebM side channel
+      // that this ffmpeg build cannot re-encode (it writes the tag but drops the channel),
+      // so copying is the only way to keep it — and both the preview and the export
+      // filtergraph decode it happily. Timestamps are rebuilt because MediaRecorder is VFR.
+      if (alpha) cmd.outputOptions(['-c copy', '-fflags +genpts'])
+      else cmd.videoFilter('scale=trunc(iw/2)*2:trunc(ih/2)*2')
         .outputOptions(['-c:v libx264', '-crf 18', '-preset medium', '-pix_fmt yuv420p', '-r 30', '-movflags +faststart', '-an'])
-        .videoFilter('scale=trunc(iw/2)*2:trunc(ih/2)*2')
-        .save(out).on('end', () => resolve()).on('error', reject)
+      cmd.save(out).on('end', () => resolve()).on('error', reject)
     })
-    fs.unlinkSync(webm)
+    fs.unlinkSync(cap)
     return { path: out }
   } catch (e) { return { error: String(e) } }
 })
@@ -785,7 +826,7 @@ const agentServer = http.createServer(async (req, res) => {
       let cmd: any
       try { cmd = JSON.parse(Buffer.concat(chunks).toString() || '{}') } catch { res.writeHead(400); return res.end(JSON.stringify({ error: 'bad json' })) }
       if (!cmd.action) { res.writeHead(400); return res.end(JSON.stringify({ error: 'missing action' })) }
-      const LONG = ['export', 'cut_pauses', 'run_recipe', 'sample_frames', 'compose_thumbnail']
+      const LONG = ['export', 'cut_pauses', 'run_recipe', 'sample_frames', 'compose_thumbnail', 'render_3d']
       const timeout = cmd.action === 'export' ? 30 * 60 * 1000 : LONG.includes(cmd.action) ? 5 * 60 * 1000 : 15000
       return res.end(JSON.stringify(await askRenderer(cmd, timeout)))
     }

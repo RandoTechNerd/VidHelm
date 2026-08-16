@@ -1109,3 +1109,32 @@ textarea.duration-input { resize: vertical; font-family: inherit; }
 .booth-head:active { cursor: grabbing; }
 .booth-head b, .booth-status { pointer-events: none; }
 .booth-grip { color: var(--text-dim, #64748b); font-size: 15px; letter-spacing: -1px; }
+
+/* ============ Scrubbing ============ */
+/* Dragging the playhead used to select the ruler numbers instead of scrubbing */
+.timeline, .time-ruler, .tick, .tick span, .clip, .marker-flag {
+  user-select: none;
+  -webkit-user-select: none;
+}
+.time-ruler { cursor: ew-resize; }
+.scrubber { pointer-events: none; width: 2px; margin-left: -1px; transition: box-shadow 0.12s; }
+/* generous invisible grab zone around the playhead diamond */
+.scrubber-grab {
+  position: absolute; top: -6px; left: -11px; width: 24px; height: 24px;
+  pointer-events: auto; cursor: grab; touch-action: none;
+}
+.scrubber::before { transition: transform 0.12s, box-shadow 0.12s; }
+.scrubber-grab:hover ~ *, .scrubber:has(.scrubber-grab:hover)::before { transform: rotate(45deg) scale(1.18); }
+.timeline.scrubbing .scrubber { box-shadow: 0 0 10px rgba(59,130,246,0.55); }
+.timeline.scrubbing .scrubber::before { transform: rotate(45deg) scale(1.25); box-shadow: 0 0 0 6px rgba(59,130,246,0.22); }
+.timeline.scrubbing .scrubber-grab { cursor: grabbing; }
+.timeline.scrubbing { cursor: ew-resize; }
+/* checkerboard shows what is actually transparent in the 3D Studio */
+.m3d-stage.alpha {
+  background-color: #1a1d27;
+  background-image: linear-gradient(45deg, #23262f 25%, transparent 25%), linear-gradient(-45deg, #23262f 25%, transparent 25%),
+                    linear-gradient(45deg, transparent 75%, #23262f 75%), linear-gradient(-45deg, transparent 75%, #23262f 75%);
+  background-size: 22px 22px;
+  background-position: 0 0, 0 11px, 11px -11px, -11px 0;
+}
+.m3d-controls .recipe-chip { padding: 4px 10px; font-size: 12px; }
