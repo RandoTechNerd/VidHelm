@@ -28,6 +28,71 @@ export function SfxPanel({ onPlace, genCommand, onGenCommand }: {
   const [genBusy, setGenBusy] = useState(false)
   const [genStatus, setGenStatus] = useState('')
   const audioRef = useRef<HTMLAudioElement | null>(null)
+  // recording your own effect straight into the library
+  const [recording, setRecording] = useState(false)
+  const [recLevel, setRecLevel] = useState(0)
+  const [recSecs, setRecSecs] = useState(0)
+  const [pending, setPending] = useState<{ base64: string } | null>(null)
+  const [recName, setRecName] = useState('')
+  const recRef = useRef<{ rec: MediaRecorder; stream: MediaStream; raf: number; timer: number } | null>(null)
+
+  useEffect(() => () => {
+    const r = recRef.current
+    if (r) { cancelAnimationFrame(r.raf); clearInterval(r.timer); r.stream.getTracks().forEach(t => t.stop()) }
+  }, [])
+
+  const startRec = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } })
+      const ac = new AudioContext()
+      const an = ac.createAnalyser(); an.fftSize = 512
+      ac.createMediaStreamSource(stream).connect(an)
+      const buf = new Uint8Array(an.fftSize)
+      const meter = () => {
+        an.getByteTimeDomainData(buf)
+        let m = 0
+        for (const v of buf) { const d = Math.abs(v - 128); if (d > m) m = d }
+        setRecLevel(m / 70)
+        if (recRef.current) recRef.current.raf = requestAnimationFrame(meter)
+      }
+      const rec = new MediaRecorder(stream, { audioBitsPerSecond: 192000 })
+      const chunks: Blob[] = []
+      rec.ondataavailable = e => { if (e.data.size) chunks.push(e.data) }
+      rec.onstop = async () => {
+        stream.getTracks().forEach(t => t.stop())
+        const bytes = new Uint8Array(await new Blob(chunks, { type: 'audio/webm' }).arrayBuffer())
+        let bin = ''
+        for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...Array.from(bytes.subarray(i, i + 0x8000)))
+        setPending({ base64: btoa(bin) })
+        setRecName('')
+        setGenStatus('Give it a name and save it.')
+      }
+      const t0 = Date.now()
+      const timer = window.setInterval(() => setRecSecs((Date.now() - t0) / 1000), 100)
+      recRef.current = { rec, stream, raf: 0, timer }
+      recRef.current.raf = requestAnimationFrame(meter)
+      rec.start()
+      setRecording(true); setRecSecs(0); setGenStatus('Recording, make your noise.')
+    } catch { setGenStatus('Microphone blocked, allow access and try again.') }
+  }
+
+  const stopRec = () => {
+    const r = recRef.current
+    if (!r) return
+    cancelAnimationFrame(r.raf); clearInterval(r.timer)
+    if (r.rec.state !== 'inactive') r.rec.stop()
+    recRef.current = null
+    setRecording(false); setRecLevel(0)
+  }
+
+  const savePending = async () => {
+    if (!pending) return
+    setGenBusy(true); setGenStatus('Saving…')
+    const r = await window.ipcRenderer.saveSfxRecording({ base64: pending.base64, name: recName.trim() || 'my sound' })
+    if (r.path) { setGenStatus(`Saved "${r.name}" to your library ✓`); setPending(null); setRecName(''); load() }
+    else setGenStatus(r.error || 'could not save that recording')
+    setGenBusy(false)
+  }
 
   const generate = async () => {
     if (!genPrompt.trim() || !genCommand.trim()) return
@@ -80,8 +145,29 @@ export function SfxPanel({ onPlace, genCommand, onGenCommand }: {
           {genStatus && <span className="hint" style={{ margin: 0 }}>{genStatus}</span>}
         </div>
       </div>}
+      {(recording || pending) && (
+        <div className="sfx-rec">
+          {recording ? (
+            <div className="vc-row" style={{ marginTop: 0 }}>
+              <button className="booth-rec on" onClick={stopRec}>■ Stop ({recSecs.toFixed(1)}s)</button>
+              <div className="booth-meter"><i style={{ width: `${Math.min(100, recLevel * 100)}%` }} /></div>
+            </div>
+          ) : (
+            <div className="vc-row" style={{ marginTop: 0 }}>
+              <input className="duration-input" style={{ flex: 1, minWidth: 0 }} autoFocus placeholder="name it, e.g. desk thump"
+                value={recName} onChange={e => setRecName(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') savePending() }} />
+              <button className="primary" disabled={genBusy} onClick={savePending}>Save</button>
+              <button disabled={genBusy} onClick={() => { setPending(null); setGenStatus('') }}>Discard</button>
+            </div>
+          )}
+          {genStatus && <span className="hint" style={{ margin: '6px 0 0' }}>{genStatus}</span>}
+        </div>
+      )}
       <div className="sfx-foot">
-        <button onClick={() => window.ipcRenderer.openSfxFolder()}>Add your own…</button>
+        <button className={recording ? 'rec-on' : ''} title="Record your own sound effect with the microphone"
+          onClick={() => recording ? stopRec() : startRec()} disabled={!!pending}>{recording ? '■ Stop' : '🎤 Record'}</button>
+        <button onClick={async () => { const r = await window.ipcRenderer.openSfxFolder(); if (r?.error) setGenStatus(`Could not open the folder: ${r.error}`) }}
+          title="Open the folder VidHelm scans for your own sounds">📂 Folder</button>
         <button onClick={() => setGenOpen(o => !o)} title="Generate a sound effect from a text description (bring your own local model, e.g. audio.cpp)">✨ AI</button>
         <button onClick={load} title="Rescan the custom folder">↻</button>
       </div>

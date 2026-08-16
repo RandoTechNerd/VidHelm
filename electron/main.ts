@@ -1037,8 +1037,55 @@ ipcMain.handle('sfx-library', async () => {
 
 ipcMain.handle('open-sfx-folder', async () => {
   const custom = path.join(sfxDir(), 'custom')
-  fs.mkdirSync(custom, { recursive: true })
-  shell.openPath(custom)
+  try {
+    fs.mkdirSync(custom, { recursive: true })
+    // a note in the folder beats an empty window with no explanation
+    const readme = path.join(custom, 'READ ME.txt')
+    if (!fs.existsSync(readme)) {
+      fs.writeFileSync(readme, 'Drop .wav, .mp3, .ogg, .m4a or .flac files in here and they appear in VidHelm\'s SFX tab (hit the refresh arrow, or reopen the app).\r\n\r\nYou can also record your own straight into this folder with the microphone button in that tab.\r\n', 'utf8')
+    }
+    // openPath returns an error string rather than throwing, so surface it
+    const err = await shell.openPath(custom)
+    return err ? { error: err, path: custom } : { ok: true, path: custom }
+  } catch (e) { return { error: String(e), path: custom } }
+})
+
+// Save a recorded sound into the custom SFX folder: trim the silence either side and
+// bring the level up, so a phone-quality "boing" is usable the moment it lands.
+ipcMain.handle('save-sfx-recording', async (_event, { base64, name }: { base64: string; name: string }) => {
+  try {
+    const custom = path.join(sfxDir(), 'custom')
+    fs.mkdirSync(custom, { recursive: true })
+    const tmp = path.join(app.getPath('temp'), `vh_sfx_${Date.now()}.webm`)
+    fs.writeFileSync(tmp, Buffer.from(base64, 'base64'))
+    const safe = (name || 'my sound').replace(/[<>:"/\\|?*]/g, '').trim().slice(0, 48) || 'my sound'
+    let out = path.join(custom, `${safe}.wav`), n = 2
+    while (fs.existsSync(out)) out = path.join(custom, `${safe} ${n++}.wav`)
+
+    // 1. trim the dead air either side of the noise you actually made
+    const trimmed = path.join(app.getPath('temp'), `vh_sfx_trim_${Date.now()}.wav`)
+    const hush = 'silenceremove=start_periods=1:start_threshold=-45dB:start_silence=0.05'
+    await new Promise<void>((resolve, reject) => {
+      ffmpeg(tmp).audioFilters([hush, 'areverse', hush, 'areverse'])
+        .outputOptions(['-ar 48000', '-ac 2', '-c:a pcm_s16le'])
+        .save(trimmed).on('end', () => resolve()).on('error', reject)
+    })
+
+    // 2. lift it to a usable level. A one-shot recorded at arm's length is often -20 dB or
+    // quieter, and dynamic normalisers barely touch a short decaying sound, so measure the
+    // real peak and apply a flat gain to land just under full scale.
+    const measured = await runFF(['-hide_banner', '-i', trimmed, '-af', 'volumedetect', '-f', 'null', '-'])
+    const peak = parseFloat(measured.match(/max_volume:\s*(-?\d+(?:\.\d+)?)\s*dB/)?.[1] ?? '-1')
+    const gain = Math.max(-6, Math.min(30, -1 - (isFinite(peak) ? peak : -1)))   // never boost noise more than 30 dB
+    await new Promise<void>((resolve, reject) => {
+      ffmpeg(trimmed).audioFilters([`volume=${gain.toFixed(2)}dB`, 'alimiter=limit=0.94:level=disabled'])
+        .outputOptions(['-ar 48000', '-ac 2', '-c:a pcm_s16le'])
+        .save(out).on('end', () => resolve()).on('error', reject)
+    })
+    for (const f of [tmp, trimmed]) { try { fs.unlinkSync(f) } catch { /* temp files, fine either way */ } }
+    const duration = await new Promise<number>(res => ffmpeg.ffprobe(out, (err, d) => res(err ? 1 : (d.format.duration || 1))))
+    return { path: out, name: path.basename(out).replace(/\.[^.]+$/, ''), duration }
+  } catch (e) { return { error: String(e) } }
 })
 
 // ---------------- Voice clone (external tool adapter) ----------------

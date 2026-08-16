@@ -29,7 +29,8 @@ interface Window {
     openExternal: (url: string) => Promise<void>
     sampleFrames: (data: { filePath: string; count?: number; sourceStart?: number; duration?: number }) => Promise<{ frames?: { t: number; path: string }[]; error?: string }>
     composeThumbnail: (data: { filePath: string; t: number; subtitle?: string; logoPath?: string | null; outPath: string }) => Promise<{ ok?: boolean; outPath?: string; error?: string }>
-    openSfxFolder: () => Promise<void>
+    openSfxFolder: () => Promise<{ ok?: boolean; path?: string; error?: string }>
+    saveSfxRecording: (data: { base64: string; name: string }) => Promise<{ path?: string; name?: string; duration?: number; error?: string }>
     voiceClone: (data: { command: string; scriptText: string }) => Promise<{ files?: string[]; error?: string; log?: string }>
     pickModel: () => Promise<string | null>
     extractModel: (filePath: string) => Promise<{ path?: string; how?: string; error?: string }>

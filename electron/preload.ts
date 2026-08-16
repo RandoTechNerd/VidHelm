@@ -50,6 +50,7 @@ contextBridge.exposeInMainWorld('ipcRenderer', {
   sampleFrames: (data: { filePath: string; count?: number; sourceStart?: number; duration?: number }) => ipcRenderer.invoke('sample-frames', data),
   composeThumbnail: (data: { filePath: string; t: number; subtitle?: string; logoPath?: string | null; outPath: string }) => ipcRenderer.invoke('compose-thumbnail', data),
   openSfxFolder: () => ipcRenderer.invoke('open-sfx-folder'),
+  saveSfxRecording: (data: { base64: string; name: string }) => ipcRenderer.invoke('save-sfx-recording', data),
   voiceClone: (data: { command: string; scriptText: string }) => ipcRenderer.invoke('voice-clone', data),
   agentStatus: () => ipcRenderer.invoke('agent-status'),
   pickModel: () => ipcRenderer.invoke('pick-model'),

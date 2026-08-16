@@ -1185,3 +1185,5 @@ textarea.duration-input { resize: vertical; font-family: inherit; }
 .proj-bar button { background: var(--bg-surface-elevated, #24242a); color: var(--text-muted, #94a3b8); border: 1px solid var(--border-subtle, rgba(255,255,255,0.1)); border-radius: 8px; width: 30px; height: 30px; cursor: pointer; font-size: 13px; flex: none; }
 .proj-bar button:hover:not(:disabled) { color: var(--text-main, #f8fafc); border-color: var(--accent-primary, #3b82f6); }
 .proj-bar button:disabled { opacity: 0.35; cursor: default; }
+.sfx-rec { padding: 8px 12px; border-top: 1px solid rgba(255,255,255,0.08); }
+.sfx-foot button.rec-on { color: #fff; background: #e11d48; border-color: transparent; }
