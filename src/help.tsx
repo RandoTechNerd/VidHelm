@@ -156,7 +156,7 @@ export function HelpModal({ open, onClose, onOpenPanel, version }: {
 
               <section>
                 <h3>VidHelm itself</h3>
-                <p className="hint">MIT licensed, use it, change it, ship it. Full text and the third-party notices live in the repository.</p>
+                <p className="hint">MIT licensed, use it, change it, ship it. The full text, the third-party notices and FFmpeg's GPL licence also ship with the app, in the <code>licences</code> folder next to the program.</p>
                 <div className="conn-actions">
                   <button onClick={() => window.ipcRenderer.openExternal('https://github.com/RandoTechNerd/VidHelm/blob/main/LICENSE')}>VidHelm licence ↗</button>
                   <button onClick={() => window.ipcRenderer.openExternal('https://github.com/RandoTechNerd/VidHelm/blob/main/THIRD-PARTY-NOTICES.md')}>Third-party notices ↗</button>

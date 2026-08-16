@@ -121,6 +121,6 @@ Special thanks to **[inventinside](https://github.com/inventinside)**: now a con
 
 VidHelm's own code is MIT, see [LICENSE](LICENSE).
 
-It also ships other people's work, and that comes with its own terms. The most important one: the bundled **FFmpeg and FFprobe binaries are GPL-3.0-or-later**, not MIT - VidHelm runs them as separate programs and stays MIT itself, but if you redistribute VidHelm you carry those obligations along with it. The full picture, including every npm package that ships inside the app, is in **[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)** (and inside the app under **?** → Credits & licences).
+It also ships other people's work, and that comes with its own terms. The most important one: the bundled **FFmpeg and FFprobe binaries are GPL-3.0-or-later**, not MIT - VidHelm runs them as separate programs and stays MIT itself, but if you redistribute VidHelm you carry those obligations along with it. The full picture, including every npm package that ships inside the app, is in **[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)** (and inside the app under **?** → Credits & licences). Installed copies ship those texts too, in the `licences` folder beside the program.
 
 Built by [RandoTechNerd](https://www.youtube.com/@randotechnerd). If VidHelm saves you time, [a coffee keeps the updates coming](https://buymeacoffee.com/randotechnerd). ☕ Please put **"VidHelm"** in the comment so it lands against the right project, and add any feature you want next while you are there.
