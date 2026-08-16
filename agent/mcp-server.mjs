@@ -24,6 +24,23 @@ const call = (method, path, body) => new Promise((resolve) => {
   req.end()
 })
 
+// Sent to the client on connect. Users who installed the app have no repo (so no CLAUDE.md
+// or AGENTS.md) — this is how a fresh assistant learns the working style anyway.
+const INSTRUCTIONS = `VidHelm is a desktop video editor the human is watching while you drive it. Your edits appear in their window instantly, and they can move things between your calls.
+
+How to work:
+1. Call get_state first, and again after they have touched anything — never assume the timeline.
+2. Make a few edits, then screenshot to see what they see. Report what happened in plain language; they cannot see your tool calls.
+3. Tag points are the shared language: they press M at beats that matter. Hang SFX, text and narration on tag times from get_state rather than hardcoded numbers.
+4. get_state.startRecipe is their standing workflow ("#" = a disabled line). "Run my workflow" means call run_recipe for the app-native steps, then do the lines meant for you: pitch title options in chat, propose a thumbnail subtitle, then compose_thumbnail.
+5. export_video blocks until rendered and returns a quality check (loudness, peaks, black frames) — relay that verdict.
+6. Tracks: v1 video, a1 voice/music, a2 sound effects. Times are seconds; text x/y are 0-1 of the frame.
+7. Ask before destructive edits (deleting their clips, exporting over an existing file). Prefer adding to rearranging.
+
+Handy: cut_pauses strips dead air; set_booth_script writes a read-along script into the karaoke booth for a clean one-take re-record; open_panel model3d {path} loads an STL/3MF/OBJ/GLB and render_3d turns it into a spinning clip (transparent + still gives an alpha PNG that overlays footage).
+
+If a tool says VidHelm is not running, the app is closed — ask them to open it. If they cannot connect at all, tell them to click the robot "AI" button in VidHelm's header for live diagnostics.`
+
 const num = { type: 'number' }, str = { type: 'string' }, bool = { type: 'boolean' }
 const TOOLS = [
   { name: 'get_state', description: 'Full editor state: format, duration, playhead, media bin, clips (all tracks), texts, and tag points. Call this first and after batches of edits.', inputSchema: { type: 'object', properties: {} } },
@@ -91,7 +108,7 @@ rl.on('line', async (line) => {
   try { req = JSON.parse(line) } catch { return }
   const { id, method, params } = req
   if (method === 'initialize') {
-    return send({ jsonrpc: '2.0', id, result: { protocolVersion: params?.protocolVersion || '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'vidhelm', version: '1.4.0' } } })
+    return send({ jsonrpc: '2.0', id, result: { protocolVersion: params?.protocolVersion || '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'vidhelm', version: '1.4.0' }, instructions: INSTRUCTIONS } })
   }
   if (method === 'notifications/initialized' || method?.startsWith('notifications/')) return
   if (method === 'ping') return send({ jsonrpc: '2.0', id, result: {} })

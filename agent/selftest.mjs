@@ -40,6 +40,8 @@ try {
   const init = await recv()
   ok(init.id === 1 && init.result?.serverInfo?.name === 'vidhelm', 'initialize handshake')
   ok(init.result?.protocolVersion === '2025-06-18', 'protocol version echo (new clients)')
+  ok(typeof init.result?.instructions === 'string' && init.result.instructions.length > 200,
+    'initialize carries usage instructions (installed-app users have no CLAUDE.md)')
   send({ jsonrpc: '2.0', method: 'notifications/initialized' })
 
   // 2) tools/list — schema validity for MCP clients AND OpenAI-function conversion

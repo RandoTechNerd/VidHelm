@@ -106,6 +106,19 @@ function createWindow() {
   }
 }
 
+// Only one VidHelm at a time: a second copy would fail to claim the agent-bridge port and
+// silently have no AI connection, so hand focus back to the window that is already open.
+if (!app.requestSingleInstanceLock()) {
+  app.quit()
+} else {
+  app.on('second-instance', () => {
+    if (!win) return
+    if (win.isMinimized()) win.restore()
+    win.show()
+    win.focus()
+  })
+}
+
 app.whenReady().then(createWindow)
 
 app.on('window-all-closed', () => {
@@ -834,7 +847,15 @@ const agentServer = http.createServer(async (req, res) => {
   } catch (e) { res.writeHead(500); res.end(JSON.stringify({ error: String(e) })) }
 })
 let bridgeState = { listening: false, error: '' }
-agentServer.on('error', (e) => { bridgeState = { listening: false, error: String(e) }; console.warn('agent bridge disabled:', String(e)) })
+agentServer.on('error', (e: NodeJS.ErrnoException) => {
+  bridgeState = {
+    listening: false,
+    error: e?.code === 'EADDRINUSE'
+      ? `port ${AGENT_PORT} is already taken — another copy of VidHelm (or another app) is using it`
+      : String(e),
+  }
+  console.warn('agent bridge disabled:', bridgeState.error)
+})
 app.whenReady().then(() => agentServer.listen(AGENT_PORT, '127.0.0.1', () => { bridgeState = { listening: true, error: '' }; console.log(`agent bridge on http://127.0.0.1:${AGENT_PORT}`) }))
 
 // Where the MCP server file lives on disk (packaged builds ship it in resources/agent/).
@@ -1078,11 +1099,15 @@ ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outp
       let chain = '[amixed]'
       if (audio.noiseReduction) { filterComplex.push(`${chain}highpass=f=80,afftdn=nf=-25[aclean]`); chain = '[aclean]' }
       filterComplex.push(`${chain}volume=${master}[amaster]`)
-      // "Loud for YouTube" master: compress dynamics for higher perceived loudness, then land at -13 LUFS / -1 dBTP
-      // (the loud end of YouTube's window, tighter LRA=7 = denser/punchier). Falls back to a safety limiter when optimize is off.
+      // "Loud for YouTube" master: compress dynamics for higher perceived loudness, then land at -13 LUFS
+      // (the loud end of YouTube's window; tighter LRA=7 = denser/punchier). loudnorm runs single-pass here,
+      // and its internal true-peak limiter only approximates the ceiling — it measured -0.9 dBTP against the
+      // -1 dBTP target, i.e. the export failed our own quality check. Asking loudnorm for -1.5 and following
+      // it with a hard ceiling leaves enough room for inter-sample peaks to still land under -1 dBTP.
+      // level=disabled matters: without it alimiter re-normalises the level and undoes loudnorm.
       filterComplex.push(audio.optimize
-        ? `[amaster]acompressor=threshold=-18dB:ratio=3:attack=20:release=250:makeup=3,loudnorm=I=-13:LRA=7:TP=-1.0[aout]`
-        : `[amaster]alimiter=limit=0.97[aout]`)
+        ? `[amaster]acompressor=threshold=-18dB:ratio=3:attack=20:release=250:makeup=3,loudnorm=I=-13:LRA=7:TP=-1.5,alimiter=limit=0.85:level=disabled[aout]`
+        : `[amaster]alimiter=limit=0.891:level=disabled[aout]`)
     } else {
       filterComplex.push(`[1:a]volume=${master}[aout]`)
     }

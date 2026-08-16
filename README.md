@@ -45,7 +45,25 @@ Everything runs locally. FFmpeg does the rendering, Whisper runs on-device for c
 - Landscape · Portrait · Square presets up to 4K, 24/30/60 fps
 - **Watch & Verify** — every export is auto-checked (loudness, true peak, black frames, sampled stills) before you upload
 
-## Quickstart
+## Your first ten minutes
+
+**1. Install.** Grab the installer from [Releases](https://github.com/RandoTechNerd/VidHelm/releases/latest) and run it. Nothing else to install — FFmpeg is bundled. (Windows may warn about an unknown publisher; the installer isn't signed with a paid certificate yet.)
+
+**2. Make something.** Drag a video onto the timeline. Play it, tap `M` at moments that matter, and press **Cut Pauses** to strip dead air. Open the **SFX** tab and drop a whoosh on a tag point.
+
+**3. Export.** Hit **Export Video**, pick a location, and let **Watch & Verify** confirm it's upload-ready (resolution, loudness, true peak, black frames).
+
+**4. Add your AI (optional, and the fun part).** Click **🤖 AI** in the header. It health-checks everything and gives you the exact setup line for your assistant — for Claude Code that's one command:
+
+```bash
+claude mcp add vidhelm -- node "C:\Program Files\VidHelm\resources\agent\mcp-server.mjs"
+```
+
+Restart your assistant, keep VidHelm open, and ask it something like *"look at my timeline and put a whoosh on every tag point"* or *"run my workflow"*. It sees the same timeline you do. If anything is red in that panel, it tells you how to fix it — full guide in [docs/CONNECT.md](docs/CONNECT.md).
+
+**5. Publish.** Pair your assistant with browser control and it can upload the finished file to YouTube for you, filling in the title, description, tags and thumbnail, and pausing before it publishes.
+
+## Building from source
 
 ```bash
 git clone https://github.com/RandoTechNerd/VidHelm

@@ -895,7 +895,13 @@ function App() {
           texts, brand: settings.brand, audio: settings.audio, outputPath: cmd.outputPath,
           settings: { width: w, height: h, fps, quality: exportQuality, masterVolume },
         }
-        try { await window.ipcRenderer.exportVideo(payload) } catch (e) { return { error: 'export failed: ' + String(e) } }
+        // Drive the same progress state the button uses: the human watches it render, and
+        // the button re-enables afterwards (it stayed stuck and disabled before).
+        setExportProgress(0); setEta(null); exportStartRef.current = Date.now()
+        try { await window.ipcRenderer.exportVideo(payload) }
+        catch (e) { setExportProgress(null); setEta(null); return { error: 'export failed: ' + String(e) } }
+        setExportProgress(100); setEta(null)
+        setTimeout(() => setExportProgress(null), 3000)
         setLastExport(cmd.outputPath)
         const qc = cmd.qualityCheck === false ? null : await window.ipcRenderer.qualityCheck(cmd.outputPath).catch(() => null)
         return { ok: true, outputPath: cmd.outputPath, qualityCheck: qc ? { verdict: qc.verdict, checks: qc.checks?.map((c: any) => `${c.status}: ${c.label} — ${c.detail}`) } : undefined }
