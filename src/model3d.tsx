@@ -17,8 +17,12 @@ const FINISHES = {
   metal: { roughness: 0.35, metalness: 0.9 },
 } as const
 type Finish = keyof typeof FINISHES
+type ModelRotation = { x: number; y: number; z: number }
 
 const W = 1600, H = 900   // internal render buffer (downscaled by CSS in the modal)
+const CAPTURE_FPS = 30
+const FRAME_MS = 1000 / CAPTURE_FPS
+const DEG = Math.PI / 180
 const fileUrl = (p: string) => 'file:///' + p.replace(/\\/g, '/').split('/').map((s, i) => i === 0 ? s : encodeURIComponent(s)).join('/')
 const isWebPreview = () => !!(window as unknown as { __vhWeb?: boolean }).__vhWeb
 // Key colours for the green-screen backdrop. Magenta is the fallback for green models,
@@ -48,7 +52,7 @@ export function Model3DModal({ open, onClose, initialPath, onRendered, apiRef, g
   const hostRef = useRef<HTMLDivElement | null>(null)
   const threeRef = useRef<{
     renderer: THREE.WebGLRenderer; scene: THREE.Scene; camera: THREE.PerspectiveCamera
-    controls: OrbitControls; pivot: THREE.Group; raf: number
+    controls: OrbitControls; pivot: THREE.Group; modelRoot: THREE.Group; raf: number
   } | null>(null)
   const [modelName, setModelName] = useState('')
   const [hasOwnMaterials, setHasOwnMaterials] = useState(false)
@@ -62,12 +66,16 @@ export function Model3DModal({ open, onClose, initialPath, onRendered, apiRef, g
   const [framePath, setFramePath] = useState<string | null>(null)
   const transparent = backdrop === 'transparent'
   const [zUp, setZUp] = useState(false)
+  const [rotation, setRotation] = useState<ModelRotation>({ x: 0, y: 0, z: 0 })
   const [spin, setSpin] = useState(true)
   const [seconds, setSeconds] = useState(6)
   const [recording, setRecording] = useState(false)
   const [busy, setBusy] = useState(false)
   const [status, setStatus] = useState('Drop an STL, 3MF, OBJ, GLB or a 3D web page here, or click Open model.')
-  const recState = useRef<{ start: number; baseRot: number; rec: MediaRecorder; secs: number } | null>(null)
+  const recState = useRef<{
+    start: number; baseRot: number; rec: MediaRecorder; secs: number
+    manual: boolean; timer: number | null
+  } | null>(null)
   const spinRef = useRef(spin); spinRef.current = spin
   const zUpRef = useRef(zUp); zUpRef.current = zUp
 
@@ -87,6 +95,8 @@ export function Model3DModal({ open, onClose, initialPath, onRendered, apiRef, g
     const key = new THREE.DirectionalLight(0xffffff, 2.2); key.position.set(4, 6, 3); scene.add(key)
     const rim = new THREE.DirectionalLight(0x9db8ff, 0.9); rim.position.set(-5, 3, -4); scene.add(rim)
     const pivot = new THREE.Group()
+    const modelRoot = new THREE.Group()
+    pivot.add(modelRoot)
     scene.add(pivot)
     const clock = new THREE.Clock()
     const tick = () => {
@@ -94,16 +104,22 @@ export function Model3DModal({ open, onClose, initialPath, onRendered, apiRef, g
       const st = threeRef.current
       if (!st) return
       if (recState.current) {
-        const { start, baseRot, rec, secs } = recState.current
-        const el = (performance.now() - start) / 1000
-        st.pivot.rotation.y = baseRot + (el / secs) * Math.PI * 2   // exactly one turn
-        if (el >= secs && rec.state === 'recording') rec.stop()
+        if (!recState.current.manual) {
+          const { start, baseRot, rec, secs } = recState.current
+          const el = (performance.now() - start) / 1000
+          st.pivot.rotation.y = baseRot + (el / secs) * Math.PI * 2   // exactly one turn
+          if (el >= secs && rec.state === 'recording') rec.stop()
+        }
       } else if (spinRef.current) st.pivot.rotation.y += dt * 0.5
-      st.controls.update()
-      st.renderer.render(st.scene, st.camera)
+      // Manual capture paints on its own fixed 30 Hz clock. Avoid rendering a
+      // second, competing frame here while that clock owns the canvas.
+      if (!recState.current?.manual) {
+        st.controls.update()
+        st.renderer.render(st.scene, st.camera)
+      }
       st.raf = requestAnimationFrame(tick)
     }
-    threeRef.current = { renderer, scene, camera, controls, pivot, raf: 0 }
+    threeRef.current = { renderer, scene, camera, controls, pivot, modelRoot, raf: 0 }
     threeRef.current.raf = requestAnimationFrame(tick)
     return () => {
       cancelAnimationFrame(threeRef.current?.raf || 0)
@@ -133,15 +149,19 @@ export function Model3DModal({ open, onClose, initialPath, onRendered, apiRef, g
   useEffect(() => {
     const st = threeRef.current
     if (!st) return
-    st.pivot.rotation.x = zUp ? -Math.PI / 2 : 0
-    st.pivot.traverse(o => {
+    st.modelRoot.rotation.set(
+      (zUp ? -Math.PI / 2 : 0) + rotation.x * DEG,
+      rotation.y * DEG,
+      rotation.z * DEG,
+    )
+    st.modelRoot.traverse(o => {
       if (!(o instanceof THREE.Mesh)) return
       if (!hasOwnMaterials || override) {
         const m = o.material as THREE.MeshStandardMaterial
         if (m?.isMaterial && (m as any).color) { m.color.set(color); Object.assign(m, FINISHES[finish]) }
       }
     })
-  }, [color, finish, override, zUp, modelName, hasOwnMaterials])
+  }, [color, finish, override, zUp, rotation, modelName, hasOwnMaterials])
 
   // ---- loading ----
   const loadModel = useCallback(async (path: string) => {
@@ -163,7 +183,7 @@ export function Model3DModal({ open, onClose, initialPath, onRendered, apiRef, g
         ext = (path.split('.').pop() || '').toLowerCase()
       }
       const url = 'file:///' + path.replace(/\\/g, '/').split('/').map((s, i) => i === 0 ? s : encodeURIComponent(s)).join('/')
-      st.pivot.clear()
+      st.modelRoot.clear()
       let obj: THREE.Object3D
       let own = false
       if (ext === 'glb' || ext === 'gltf') {
@@ -188,10 +208,12 @@ export function Model3DModal({ open, onClose, initialPath, onRendered, apiRef, g
       const scale = 2 / Math.max(size.x, size.y, size.z, 0.0001)
       obj.position.sub(center).multiplyScalar(scale)
       obj.scale.setScalar(scale)
-      st.pivot.add(obj)
+      st.modelRoot.add(obj)
       const isZUp = ext === 'stl' || ext === '3mf'   // print formats are Z-up; OBJ is usually Y-up
       setZUp(isZUp)
-      st.pivot.rotation.set(isZUp ? -Math.PI / 2 : 0, 0, 0)
+      setRotation({ x: 0, y: 0, z: 0 })
+      st.pivot.rotation.set(0, 0, 0)
+      st.modelRoot.rotation.set(isZUp ? -Math.PI / 2 : 0, 0, 0)
       setHasOwnMaterials(own)
       setModelName((path.split(/[\\/]/).pop() || 'model').replace(/\.[^.]+$/, ''))
       setStatus(`Loaded ${path.split(/[\\/]/).pop()}, drag to orbit, scroll to zoom.`)
@@ -216,7 +238,15 @@ export function Model3DModal({ open, onClose, initialPath, onRendered, apiRef, g
     const alpha = opts?.transparent ?? transparent
     if (opts?.transparent !== undefined) applyTransparent(opts.transparent)
     const secs = Math.max(1, Math.min(30, opts?.seconds ?? seconds))
-    const stream = st.renderer.domElement.captureStream(30)
+    // A display-driven captureStream(30) only *caps* the stream at 30 fps. It
+    // does not create frames when requestAnimationFrame is slowed or the window
+    // is minimized. Prefer an explicit requestFrame clock so every turntable
+    // contains one rendered view per output frame.
+    const manualStream = st.renderer.domElement.captureStream(0)
+    const manualTrack = manualStream.getVideoTracks()[0] as CanvasCaptureMediaStreamTrack
+    const manual = typeof manualTrack?.requestFrame === 'function'
+    const stream = manual ? manualStream : st.renderer.domElement.captureStream(CAPTURE_FPS)
+    if (!manual) manualStream.getTracks().forEach(track => track.stop())
     // VP8 is the only MediaRecorder codec that carries the canvas alpha channel (VP9 drops
     // it silently), so transparent renders must record as VP8 to stay see-through.
     const order = alpha
@@ -227,6 +257,9 @@ export function Model3DModal({ open, onClose, initialPath, onRendered, apiRef, g
     const chunks: Blob[] = []
     rec.ondataavailable = e => { if (e.data.size) chunks.push(e.data) }
     rec.onstop = async () => {
+      const active = recState.current
+      if (active?.timer !== null && active?.timer !== undefined) window.clearInterval(active.timer)
+      stream.getTracks().forEach(track => track.stop())
       recState.current = null
       setRecording(false)
       setBusy(true); setStatus(alpha ? 'Encoding transparent overlay…' : 'Encoding mp4…')
@@ -248,10 +281,33 @@ export function Model3DModal({ open, onClose, initialPath, onRendered, apiRef, g
       setBusy(false)
       resolve(out)
     }
-    recState.current = { start: performance.now(), baseRot: st.pivot.rotation.y, rec, secs }
+    const baseRot = st.pivot.rotation.y
+    recState.current = { start: performance.now(), baseRot, rec, secs, manual, timer: null }
     setRecording(true)
     setStatus(`Recording ${secs}s turntable…`)
     rec.start()
+    if (manual) {
+      const totalFrames = Math.max(1, Math.round(secs * CAPTURE_FPS))
+      let frame = 0
+      const paintFrame = () => {
+        const active = recState.current
+        if (!active || active.rec !== rec || rec.state !== 'recording') return
+        st.pivot.rotation.y = baseRot + (frame / totalFrames) * Math.PI * 2
+        st.controls.update()
+        st.renderer.render(st.scene, st.camera)
+        manualTrack.requestFrame()
+        frame += 1
+        if (frame >= totalFrames) {
+          if (active.timer !== null) window.clearInterval(active.timer)
+          active.timer = null
+          // Keep the final requested frame on the stream for one frame period
+          // before stopping, so MediaRecorder gives it a full 30 fps duration.
+          window.setTimeout(() => { if (rec.state === 'recording') rec.stop() }, FRAME_MS)
+        }
+      }
+      paintFrame()
+      if (frame < totalFrames && recState.current) recState.current.timer = window.setInterval(paintFrame, FRAME_MS)
+    }
   })
 
   const snapshot = async (opts?: { transparent?: boolean }): Promise<{ path?: string; error?: string }> => {
@@ -362,6 +418,20 @@ export function Model3DModal({ open, onClose, initialPath, onRendered, apiRef, g
                 <label className="switch" title="STL/3MF prints are Z-up; untick if the model lies on its side"><input type="checkbox" checked={zUp} onChange={e => setZUp(e.target.checked)} /> Z-up</label>
                 <label className="switch"><input type="checkbox" checked={spin} onChange={e => setSpin(e.target.checked)} /> idle spin</label>
                 {hasOwnMaterials && <label className="switch" title="3MF/OBJ files carry their own colors, tick to recolor"><input type="checkbox" checked={override} onChange={e => setOverride(e.target.checked)} /> recolor</label>}
+              </div>
+            </div>
+
+            <div className="m3d-group">
+              <span className="m3d-label">Object rotation</span>
+              <div className="m3d-row m3d-rotation">
+                {(['x', 'y', 'z'] as const).map(axis => (
+                  <label key={axis} title={`Rotate the object around its ${axis.toUpperCase()} axis`}>
+                    {axis.toUpperCase()}
+                    <input type="number" min="-180" max="180" step="5" value={rotation[axis]}
+                      onChange={e => setRotation(r => ({ ...r, [axis]: Math.max(-180, Math.min(180, Number(e.target.value) || 0)) }))} />°
+                  </label>
+                ))}
+                <button onClick={() => setRotation({ x: 0, y: 0, z: 0 })}>Reset</button>
               </div>
             </div>
           </div>

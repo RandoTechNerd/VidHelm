@@ -55,7 +55,12 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,
       contextIsolation: true,
-      webSecurity: false, 
+      webSecurity: false,
+      // The 3D Studio records its WebGL canvas through requestAnimationFrame +
+      // captureStream(30). Electron otherwise throttles those frames whenever
+      // VidHelm is backgrounded, producing a nominal 30 fps file with only a
+      // handful of unique frames per second.
+      backgroundThrottling: false,
     },
   })
 
