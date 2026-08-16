@@ -160,6 +160,24 @@ const IconUndo = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="non
 const IconRedo = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 7v6h-6"/><path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3L21 13"/></svg>
 const IconChevron = ({ open }: { open: boolean }) => <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" style={{ transform: open ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 0.15s' }}><path d="m9 18 6-6-6-6"/></svg>
 const IconCaptions = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M7 13h2M7 10h2M13 10h4M13 13h4"/></svg>
+const IconInfo = () => <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-5M12 8h.01"/></svg>
+
+// Everything that used to sit as a row of bare icons in the header, now behind the (i)
+const LINKS: { label: string; sub: string; url: string; icon: React.ReactNode }[] = [
+  { label: 'vidhelm.com', sub: 'downloads and news', url: 'https://vidhelm.com',
+    icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg> },
+  { label: 'GitHub', sub: 'star the repo, report a bug', url: 'https://github.com/RandoTechNerd/VidHelm',
+    icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.58.11.79-.25.79-.55v-1.94c-3.2.7-3.87-1.54-3.87-1.54-.52-1.33-1.28-1.68-1.28-1.68-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.19 1.76 1.19 1.03 1.75 2.69 1.25 3.34.95.1-.74.4-1.25.72-1.54-2.55-.29-5.23-1.28-5.23-5.68 0-1.26.45-2.28 1.19-3.09-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.17 1.18a11 11 0 0 1 5.78 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.83 1.19 3.09 0 4.42-2.69 5.39-5.25 5.67.41.35.77 1.05.77 2.12v3.15c0 .3.21.66.8.55A11.5 11.5 0 0 0 23.5 12C23.5 5.65 18.35.5 12 .5z"/></svg> },
+  { label: 'YouTube', sub: '@randotechnerd', url: 'https://www.youtube.com/@randotechnerd',
+    icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M23.5 6.2a3 3 0 0 0-2.1-2.1C19.5 3.5 12 3.5 12 3.5s-7.5 0-9.4.6A3 3 0 0 0 .5 6.2 31.3 31.3 0 0 0 0 12a31.3 31.3 0 0 0 .5 5.8 3 3 0 0 0 2.1 2.1c1.9.6 9.4.6 9.4.6s7.5 0 9.4-.6a3 3 0 0 0 2.1-2.1A31.3 31.3 0 0 0 24 12a31.3 31.3 0 0 0-.5-5.8zM9.5 15.5v-7L15.8 12l-6.3 3.5z"/></svg> },
+  { label: 'Instagram', sub: '@randotechnerd', url: 'https://www.instagram.com/randotechnerd/',
+    icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="2" y="2" width="20" height="20" rx="5"/><circle cx="12" cy="12" r="4"/><circle cx="17.5" cy="6.5" r="1" fill="currentColor" stroke="none"/></svg> },
+  { label: 'Buy me a coffee', sub: 'keeps the updates coming', url: 'https://buymeacoffee.com/randotechnerd',
+    icon: <span style={{ fontSize: 15 }}>☕</span> },
+  { label: 'Email', sub: 'randotechnerd@gmail.com', url: 'mailto:randotechnerd@gmail.com',
+    icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-10 6L2 7"/></svg> },
+]
+
 const IconGear = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg>
 
 // Inline volume-automation editor: draggable line of gain points over a clip's duration.
@@ -295,6 +313,7 @@ function App() {
   const [model3DPath, setModel3DPath] = useState<string | null>(null)
   const [boothScript, setBoothScript] = useState('')
   const [showHelp, setShowHelp] = useState(false)
+  const [showLinks, setShowLinks] = useState(false)
   const [projects, setProjects] = useState<{ name: string; path: string; media: number; saved: boolean; modified: number }[]>([])
   const [currentProject, setCurrentProject] = useState<{ dir: string; name: string } | null>(null)
   const [appVersion, setAppVersion] = useState('')
@@ -533,6 +552,14 @@ function App() {
     window.addEventListener('blur', end)
     return () => { window.removeEventListener('mouseup', end); window.removeEventListener('blur', end) }
   }, [])
+
+  // Dismiss the links popover on any click elsewhere (its own clicks stop propagation)
+  useEffect(() => {
+    if (!showLinks) return
+    const close = () => setShowLinks(false)
+    window.addEventListener('click', close)
+    return () => window.removeEventListener('click', close)
+  }, [showLinks])
 
   // Close the right-click context menu on any outside click
   useEffect(() => {
@@ -1401,8 +1428,6 @@ function App() {
           <button className="hdr-btn" onClick={runRecipe} title="Run your Start Recipe on this timeline">🚀 Recipe</button>
           <button className="hdr-btn" onClick={() => { setModel3DPath(null); setShowModel3D(true) }} title="3D Studio, turn an STL / 3MF / OBJ into a spinning turntable clip">🧊 3D</button>
           <button className="hdr-btn" onClick={() => setShowConnect(true)} title="Connect your AI, one-click setup + troubleshooter">🤖 AI</button>
-          <button className="hdr-btn icon" onClick={() => setShowHelp(true)} title="Take the tour, and see credits and licences">?</button>
-          <button className="hdr-btn icon" onClick={() => setShowSettings(true)} title="Brand kit & settings"><IconGear /></button>
         </div>
         <div className="orientation-switch">
           {(Object.keys(ORIENTATIONS) as OrientationKey[]).map(key => (
@@ -1412,24 +1437,24 @@ function App() {
           ))}
         </div>
         <div className="header-info">
-          <span>{clips.length + texts.length} items • {fmt(currentTime)} / {fmt(totalDuration)}</span>
-          <div className="social-row">
-            <button title="vidhelm.com" onClick={() => window.ipcRenderer.openExternal('https://vidhelm.com')}>
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+          <span className="hdr-count">{clips.length + texts.length} items • {fmt(currentTime)} / {fmt(totalDuration)}</span>
+          <div className="hdr-right">
+            <button className="hdr-btn icon" onClick={e => { e.stopPropagation(); setShowLinks(v => !v) }} title="Links and contact">
+              <IconInfo />
             </button>
-            <button title="GitHub, star the repo, report issues" onClick={() => window.ipcRenderer.openExternal('https://github.com/RandoTechNerd/VidHelm')}>
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.58.11.79-.25.79-.55v-1.94c-3.2.7-3.87-1.54-3.87-1.54-.52-1.33-1.28-1.68-1.28-1.68-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.19 1.76 1.19 1.03 1.75 2.69 1.25 3.34.95.1-.74.4-1.25.72-1.54-2.55-.29-5.23-1.28-5.23-5.68 0-1.26.45-2.28 1.19-3.09-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.17 1.18a11 11 0 0 1 5.78 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.83 1.19 3.09 0 4.42-2.69 5.39-5.25 5.67.41.35.77 1.05.77 2.12v3.15c0 .3.21.66.8.55A11.5 11.5 0 0 0 23.5 12C23.5 5.65 18.35.5 12 .5z"/></svg>
-            </button>
-            <button title="YouTube - @randotechnerd" onClick={() => window.ipcRenderer.openExternal('https://www.youtube.com/@randotechnerd')}>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M23.5 6.2a3 3 0 0 0-2.1-2.1C19.5 3.5 12 3.5 12 3.5s-7.5 0-9.4.6A3 3 0 0 0 .5 6.2 31.3 31.3 0 0 0 0 12a31.3 31.3 0 0 0 .5 5.8 3 3 0 0 0 2.1 2.1c1.9.6 9.4.6 9.4.6s7.5 0 9.4-.6a3 3 0 0 0 2.1-2.1A31.3 31.3 0 0 0 24 12a31.3 31.3 0 0 0-.5-5.8zM9.5 15.5v-7L15.8 12l-6.3 3.5z"/></svg>
-            </button>
-            <button title="Instagram - @randotechnerd" onClick={() => window.ipcRenderer.openExternal('https://www.instagram.com/randotechnerd/')}>
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="2" y="2" width="20" height="20" rx="5"/><circle cx="12" cy="12" r="4"/><circle cx="17.5" cy="6.5" r="1" fill="currentColor" stroke="none"/></svg>
-            </button>
-            <button className="bmc" title="Buy me a coffee ☕" onClick={() => window.ipcRenderer.openExternal('https://buymeacoffee.com/randotechnerd')}>☕</button>
-            <button title="Contact, randotechnerd@gmail.com" onClick={() => window.ipcRenderer.openExternal('mailto:randotechnerd@gmail.com')}>
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-10 6L2 7"/></svg>
-            </button>
+            <button className="hdr-btn icon" onClick={() => setShowHelp(true)} title="Take the tour, and see credits and licences">?</button>
+            <button className="hdr-btn icon" onClick={() => setShowSettings(true)} title="Brand kit & settings"><IconGear /></button>
+            {showLinks && (
+              <div className="links-pop" onClick={e => e.stopPropagation()}>
+                {LINKS.map(l => (
+                  <button key={l.url} onClick={() => { window.ipcRenderer.openExternal(l.url); setShowLinks(false) }}>
+                    <span className="links-ico">{l.icon}</span>
+                    <span className="links-txt"><b>{l.label}</b><i>{l.sub}</i></span>
+                  </button>
+                ))}
+                <div className="links-foot">VidHelm {appVersion} · built by RandoTechNerd</div>
+              </div>
+            )}
           </div>
         </div>
       </header>
