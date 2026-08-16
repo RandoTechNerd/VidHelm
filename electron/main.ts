@@ -108,7 +108,8 @@ function createWindow() {
 
 // Only one VidHelm at a time: a second copy would fail to claim the agent-bridge port and
 // silently have no AI connection, so hand focus back to the window that is already open.
-if (!app.requestSingleInstanceLock()) {
+const isPrimaryInstance = app.requestSingleInstanceLock()
+if (!isPrimaryInstance) {
   app.quit()
 } else {
   app.on('second-instance', () => {
@@ -856,7 +857,11 @@ agentServer.on('error', (e: NodeJS.ErrnoException) => {
   }
   console.warn('agent bridge disabled:', bridgeState.error)
 })
-app.whenReady().then(() => agentServer.listen(AGENT_PORT, '127.0.0.1', () => { bridgeState = { listening: true, error: '' }; console.log(`agent bridge on http://127.0.0.1:${AGENT_PORT}`) }))
+// Only the primary instance opens the bridge — a duplicate on its way out must never race
+// the running app for the port.
+if (isPrimaryInstance) {
+  app.whenReady().then(() => agentServer.listen(AGENT_PORT, '127.0.0.1', () => { bridgeState = { listening: true, error: '' }; console.log(`agent bridge on http://127.0.0.1:${AGENT_PORT}`) }))
+}
 
 // Where the MCP server file lives on disk (packaged builds ship it in resources/agent/).
 // The Connect panel hands this absolute path to MCP clients that need one.
