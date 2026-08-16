@@ -54,6 +54,8 @@ Progress streams to the renderer; a **quality check** pass (`quality-check`) the
 
 - **Agent bridge** (`main.ts` + `agent/mcp-server.mjs`): a localhost-only HTTP server (127.0.0.1:5959) forwards agent commands into the renderer over IPC (`agent-command` → executor in App.tsx → `agent-response`), so agent edits go through the same React state (and undo history) as human edits. The MCP server is a dependency-free stdio JSON-RPC proxy over that bridge; `.mcp.json` makes Claude Code pick it up automatically. `GET /screenshot` uses `webContents.capturePage`. Export via agent runs the normal export pipeline with an explicit output path and returns the quality-check summary. See `docs/AGENT.md`.
 
+- **Window dragging** (`main.ts` + `electron/dragMath.ts`): the window has no OS title bar (`titleBarStyle: 'hidden'` + `titleBarOverlay`), so the header is the grab bar. Rather than `-webkit-app-region: drag` — which swallows mouse events and can't restore a maximized window under the cursor — the renderer sends `window-drag-start`/`-end` and the main process moves the window by polling `screen.getCursorScreenPoint()` every 16 ms. Dragging while maximized or full screen restores first and re-anchors the pointer proportionally along the header (`restoreDragOffset`); releasing within 6 px of the top of the work area maximizes (`shouldSnapMaximize`). Double-clicking the header toggles maximize. The geometry lives in `dragMath.ts` with no Electron imports so it can be tested standalone. Header children matching `HDR_CONTROLS` (buttons, inputs, …) never start a drag.
+
 ## Dev modes
 
 - `npm run dev` — Vite + Electron via `vite-plugin-electron`; hot reload on both sides.

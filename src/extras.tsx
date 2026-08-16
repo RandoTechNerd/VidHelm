@@ -133,6 +133,37 @@ export function KaraokeBooth({ open, onClose, markers, totalDuration, currentTim
   const [status, setStatus] = useState('')
   const recRef = useRef<{ rec: MediaRecorder; stream: MediaStream } | null>(null)
   const meterRaf = useRef(0)
+  // the booth floats over the editor — let people drag it out of the way by its header
+  const boothRef = useRef<HTMLDivElement | null>(null)
+  const grabRef = useRef<{ dx: number; dy: number } | null>(null)
+  const [pos, setPos] = useState<{ x: number; y: number } | null>(null)
+
+  const startBoothDrag = (e: React.MouseEvent) => {
+    if (e.button !== 0 || (e.target as HTMLElement).closest('button, input, textarea, select, label')) return
+    const el = boothRef.current
+    if (!el) return
+    const r = el.getBoundingClientRect()
+    grabRef.current = { dx: e.clientX - r.left, dy: e.clientY - r.top }
+    setPos({ x: r.left, y: r.top })   // pin where it already is, then follow the cursor
+    e.preventDefault()
+  }
+  useEffect(() => {
+    if (!open) return
+    const clampN = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), Math.max(lo, hi))
+    const move = (e: MouseEvent) => {
+      const g = grabRef.current
+      if (!g) return
+      const w = boothRef.current?.offsetWidth || 0
+      setPos({
+        x: clampN(e.clientX - g.dx, 24 - w + 140, window.innerWidth - 140),  // always leave a grabbable edge
+        y: clampN(e.clientY - g.dy, 0, window.innerHeight - 44),
+      })
+    }
+    const up = () => { grabRef.current = null }
+    window.addEventListener('mousemove', move)
+    window.addEventListener('mouseup', up)
+    return () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up) }
+  }, [open])
 
   const lines = script.split('\n').map(l => l.trim()).filter(Boolean)
   const sortedMarkers = [...markers].sort((a, b) => a.t - b.t)
@@ -193,8 +224,10 @@ export function KaraokeBooth({ open, onClose, markers, totalDuration, currentTim
 
   if (!open) return null
   return (
-    <div className="booth">
-      <div className="booth-head">
+    <div className="booth" ref={boothRef}
+      style={pos ? { left: pos.x, top: pos.y, bottom: 'auto', transform: 'none' } : undefined}>
+      <div className="booth-head" onMouseDown={startBoothDrag} title="Drag to move the booth">
+        <span className="booth-grip" aria-hidden>⠿</span>
         <b>🎙 Karaoke booth</b>
         <span className="booth-status">{status}</span>
         <div className="booth-meter"><i style={{ width: `${Math.min(100, level * 100)}%` }} /></div>

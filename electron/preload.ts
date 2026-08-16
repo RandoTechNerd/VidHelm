@@ -61,4 +61,7 @@ contextBridge.exposeInMainWorld('ipcRenderer', {
   sfxGenerate: (data: { command: string; prompt: string }) => ipcRenderer.invoke('sfx-generate', data),
   pickFile: (data: { title: string; extensions: string[] }) => ipcRenderer.invoke('pick-file', data),
   pickFolder: (title: string) => ipcRenderer.invoke('pick-folder', title),
+  windowDragStart: () => ipcRenderer.send('window-drag-start'),
+  windowDragEnd: () => ipcRenderer.send('window-drag-end'),
+  windowToggleMaximize: () => ipcRenderer.send('window-toggle-maximize'),
 })

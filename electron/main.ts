@@ -1,4 +1,5 @@
-import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog, shell, screen } from 'electron'
+import { restoreDragOffset, plainDragOffset, shouldSnapMaximize } from './dragMath'
 import path from 'node:path'
 import fs from 'node:fs'
 import { spawn } from 'node:child_process'
@@ -481,6 +482,54 @@ ipcMain.handle('pick-logo', async () => {
 
 // ---------------- 3D Studio (STL / 3MF / OBJ turntables) ----------------
 const renders3dDir = () => { const d = path.join(app.getPath('userData'), 'renders3d'); if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true }); return d }
+
+// ---------------- Header window dragging ----------------
+// The app has no OS title bar, so the header IS the grab bar. Movement is driven here
+// (polling the cursor) rather than with -webkit-app-region, so it behaves like a real
+// title bar: dragging while maximized or full screen restores the window under the
+// cursor, and releasing at the top of the screen maximizes it again.
+let dragTimer: ReturnType<typeof setInterval> | null = null
+let dragOffset = { x: 0, y: 0 }
+const stopWindowDrag = () => { if (dragTimer) { clearInterval(dragTimer); dragTimer = null } }
+
+ipcMain.on('window-drag-start', () => {
+  if (!win) return
+  stopWindowDrag()
+  const cursor = screen.getCursorScreenPoint()
+  const wasFull = win.isFullScreen()
+  if (wasFull) win.setFullScreen(false)
+  if (wasFull || win.isMaximized()) {
+    const before = win.getBounds()
+    if (win.isMaximized()) win.unmaximize()
+    dragOffset = restoreDragOffset(cursor, before, win.getBounds())
+    win.setPosition(Math.round(cursor.x - dragOffset.x), Math.round(cursor.y - dragOffset.y), false)
+  } else {
+    dragOffset = plainDragOffset(cursor, win.getBounds())
+  }
+  const started = Date.now()
+  dragTimer = setInterval(() => {
+    // the 45s cap is a safety net: if a mouseup is ever missed (released off-window),
+    // the window would otherwise follow the cursor forever
+    if (!win || win.isDestroyed() || Date.now() - started > 45_000) return stopWindowDrag()
+    const p = screen.getCursorScreenPoint()
+    win.setPosition(Math.round(p.x - dragOffset.x), Math.round(p.y - dragOffset.y), false)
+  }, 16)
+})
+
+ipcMain.on('window-drag-end', () => {
+  if (!dragTimer) return          // ignore stray mouseups
+  stopWindowDrag()
+  if (!win || win.isDestroyed()) return
+  const p = screen.getCursorScreenPoint()
+  if (shouldSnapMaximize(p.y, screen.getDisplayNearestPoint(p).workArea.y)) win.maximize()
+})
+
+ipcMain.on('window-toggle-maximize', () => {
+  if (!win) return
+  if (win.isFullScreen()) win.setFullScreen(false)
+  else if (win.isMaximized()) win.unmaximize()
+  else win.maximize()
+})
 
 ipcMain.handle('pick-file', async (_event, { title, extensions }: { title: string; extensions: string[] }) => {
   if (!win) return null

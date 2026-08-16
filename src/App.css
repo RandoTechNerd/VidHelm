@@ -61,14 +61,16 @@ header {
   padding: 0 20px;
   padding-right: 140px; /* Room for window controls */
   flex-shrink: 0;
-  -webkit-app-region: drag;
+  /* The whole bar is the window's grab handle. Movement is driven from the main process
+     (electron/main.ts) instead of -webkit-app-region so dragging works from a maximized
+     or full-screen window too — the CSS region can't restore-and-follow. */
+  cursor: default;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
-/* The whole header is the window's grab bar — only the actual controls opt out,
-   so every gap, the wordmark, and the info pill all move the window. */
-header button, header select, header input, header label {
-  -webkit-app-region: no-drag;
-}
+header .logo-section h1, header .header-info { cursor: grab; }
+header .hdr-btn, header .orient-btn, header .social-row button { cursor: pointer; }
 
 .logo-section { display: flex; align-items: center; gap: 12px; }
 
@@ -83,7 +85,6 @@ header button, header select, header input, header label {
 }
 
 .hdr-btn {
-  -webkit-app-region: no-drag;
   background: var(--bg-surface-elevated);
   color: var(--text-muted);
   border: 1px solid var(--border-subtle);
@@ -107,7 +108,6 @@ header button, header select, header input, header label {
 }
 
 .orientation-switch {
-  -webkit-app-region: no-drag;
   display: flex;
   gap: 4px;
   background: var(--bg-surface-elevated);
@@ -1105,3 +1105,7 @@ textarea.duration-input { resize: vertical; font-family: inherit; }
 .vc-sample { font-size: 12.5px; color: #dfe9f5; background: rgba(255,255,255,0.05); border-radius: 8px; padding: 8px 10px; line-height: 1.5; font-style: italic; }
 .zoom-fit { margin-left: 4px; font-weight: 700; }
 .sfx-gen { padding: 8px 12px; border-top: 1px solid rgba(255,255,255,0.08); display: flex; flex-direction: column; gap: 6px; }
+.booth-head { cursor: grab; user-select: none; -webkit-user-select: none; }
+.booth-head:active { cursor: grabbing; }
+.booth-head b, .booth-status { pointer-events: none; }
+.booth-grip { color: var(--text-dim, #64748b); font-size: 15px; letter-spacing: -1px; }

@@ -38,6 +38,7 @@ export function installIpcMock() {
     sfxGenerate: async () => ({ error: 'SFX generation needs the desktop app (npm run dev)' }),
     pickFile: async () => null,
     pickFolder: async () => null,
+    windowDragStart: () => {}, windowDragEnd: () => {}, windowToggleMaximize: () => {},
     agentStatus: async () => ({
       appVersion: 'web', port: 5959, portOverridden: false,
       bridge: { listening: false, error: 'The agent bridge needs the desktop app (npm run dev)' },

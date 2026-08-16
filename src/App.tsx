@@ -49,6 +49,9 @@ const DEFAULT_SETTINGS: AppSettings = {
   recipe: { text: DEFAULT_RECIPE, introAudioPath: null },
 }
 
+// Everything in the header except these moves the window (see electron/dragMath.ts)
+const HDR_CONTROLS = 'button, a, input, select, label, [role="button"]'
+
 const CAPTION_LANGS: [string, string][] = [['en', 'English (fast)'], ['auto', 'Auto-detect'], ['es', 'Spanish'], ['fr', 'French'], ['de', 'German'], ['pt', 'Portuguese'], ['hi', 'Hindi'], ['ja', 'Japanese'], ['zh', 'Chinese'], ['ko', 'Korean'], ['it', 'Italian']]
 
 const CAPTION_Y: Record<'lower' | 'top' | 'center', number> = { lower: 0.86, top: 0.12, center: 0.5 }
@@ -451,6 +454,14 @@ function App() {
     if (!settingsLoaded.current) return
     window.ipcRenderer.setSettings(settings).catch(() => {})
   }, [settings])
+
+  // Releasing the mouse anywhere ends a header window-drag (main ignores strays)
+  useEffect(() => {
+    const end = () => window.ipcRenderer.windowDragEnd?.()
+    window.addEventListener('mouseup', end)
+    window.addEventListener('blur', end)
+    return () => { window.removeEventListener('mouseup', end); window.removeEventListener('blur', end) }
+  }, [])
 
   // Close the right-click context menu on any outside click
   useEffect(() => {
@@ -1142,7 +1153,10 @@ function App() {
 
   return (
     <div className="app-container" onDragOver={(e) => e.preventDefault()}>
-      <header>
+      <header
+        onMouseDown={e => { if (e.button === 0 && !(e.target as HTMLElement).closest(HDR_CONTROLS)) window.ipcRenderer.windowDragStart?.() }}
+        onDoubleClick={e => { if (!(e.target as HTMLElement).closest(HDR_CONTROLS)) window.ipcRenderer.windowToggleMaximize?.() }}
+        title="Drag anywhere on this bar to move the window · double-click to maximize">
         <div className="logo-section">
           <h1>VidHelm</h1>
           <button className="hdr-btn" onClick={saveProject} title="Save project">Save</button>

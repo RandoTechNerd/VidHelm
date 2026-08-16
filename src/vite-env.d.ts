@@ -40,6 +40,9 @@ interface Window {
     sfxGenerate: (data: { command: string; prompt: string }) => Promise<{ path?: string; error?: string; log?: string }>
     pickFile: (data: { title: string; extensions: string[] }) => Promise<string | null>
     pickFolder: (title: string) => Promise<string | null>
+    windowDragStart: () => void
+    windowDragEnd: () => void
+    windowToggleMaximize: () => void
     agentStatus: () => Promise<{
       appVersion: string; port: number; portOverridden: boolean
       bridge: { listening: boolean; error: string }
