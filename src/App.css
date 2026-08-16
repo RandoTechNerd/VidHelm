@@ -1111,8 +1111,18 @@ textarea.duration-input { resize: vertical; font-family: inherit; }
 .m3d-stage { position: relative; width: 100%; aspect-ratio: 16/9; background: #05070d; border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; overflow: hidden; }
 .m3d-canvas { width: 100% !important; height: 100% !important; display: block; }
 .m3d-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--text-dim, #6b7280); font-size: 15px; font-weight: 600; pointer-events: none; }
-.m3d-controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; font-size: 12.5px; color: var(--text-muted, #9aa3af); }
-.m3d-controls label { display: flex; align-items: center; gap: 6px; }
+.m3d-controls { display: flex; flex-wrap: wrap; gap: 14px 20px; align-items: flex-start; font-size: 12.5px; color: var(--text-muted, #9aa3af); }
+.m3d-group { display: flex; flex-direction: column; gap: 5px; }
+.m3d-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-dim, #64748b); }
+.m3d-row { display: flex; align-items: center; gap: 8px; }
+.m3d-row label { display: flex; align-items: center; gap: 5px; white-space: nowrap; }
+.m3d-open { min-width: 132px; }
+/* segmented control keeps the backdrop choices on one line instead of stacking */
+.m3d-seg { display: inline-flex; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.12); border-radius: 8px; overflow: hidden; }
+.m3d-seg button { border: none; border-radius: 0; background: none; color: var(--text-muted, #9aa3af); padding: 6px 11px; font-size: 12px; cursor: pointer; white-space: nowrap; }
+.m3d-seg button + button { border-left: 1px solid rgba(255,255,255,0.1); }
+.m3d-seg button:hover { color: var(--text-main, #f8fafc); background: rgba(255,255,255,0.05); }
+.m3d-seg button.on { background: var(--accent-primary, #3b82f6); color: #fff; font-weight: 600; }
 .m3d-controls input[type="color"] { width: 30px; height: 22px; padding: 0; border: 1px solid rgba(255,255,255,0.15); border-radius: 6px; background: none; cursor: pointer; }
 .m3d-controls button, .m3d-foot button { background: var(--bg-surface-elevated, #1a1d27); color: var(--text-main, #f8fafc); border: 1px solid rgba(255,255,255,0.14); border-radius: 8px; padding: 6px 12px; font-size: 12.5px; cursor: pointer; }
 .m3d-foot { gap: 10px; display: flex; align-items: center; }

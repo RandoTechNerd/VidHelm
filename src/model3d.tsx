@@ -135,6 +135,9 @@ export function Model3DModal({ open, onClose, initialPath, onRendered, apiRef, g
   const loadModel = useCallback(async (path: string) => {
     const st = threeRef.current
     if (!st) return
+    // Swapping the model is always available (colour, finish and backdrop never lock it),
+    // the one exception being mid-capture, where it would splice two models into one clip.
+    if (recState.current) { setStatus('Finish or stop the recording first, then open another model.'); return }
     setStatus('Loading model…')
     try {
       let ext = (path.split('.').pop() || '').toLowerCase()
@@ -160,7 +163,11 @@ export function Model3DModal({ open, onClose, initialPath, onRendered, apiRef, g
       } else if (ext === '3mf') {
         obj = await new ThreeMFLoader().loadAsync(url); own = true
       } else if (ext === 'obj') {
-        obj = await new OBJLoader().loadAsync(url); own = true
+        obj = await new OBJLoader().loadAsync(url)
+        // An OBJ with no material library loads as plain white. Only call it "brings its own
+        // colours" when a usemtl actually named something, otherwise the colour picker would
+        // appear to do nothing until you found the recolor tickbox.
+        obj.traverse(o => { if (o instanceof THREE.Mesh && (o.material as THREE.Material)?.name) own = true })
       } else { setStatus(`Unsupported file: .${ext}, try STL, 3MF, OBJ, GLB/glTF, or an HTML viewer page`); return }
       obj.traverse(o => { if (o instanceof THREE.Mesh && !(o.material as any)?.isMeshStandardMaterial && !own) o.material = new THREE.MeshStandardMaterial({ color }) })
       // center on origin and normalize size so every model fills the frame the same way
@@ -281,24 +288,46 @@ export function Model3DModal({ open, onClose, initialPath, onRendered, apiRef, g
           </div>
           <p className="hint" style={{ margin: '6px 0' }}>{status}</p>
           <div className="m3d-controls">
-            <button onClick={async () => { const p = await window.ipcRenderer.pickModel(); if (p) loadModel(p) }}>Open model…</button>
-            <label>Color <input type="color" value={color} onChange={e => { setColor(e.target.value); if (hasOwnMaterials) setOverride(true) }} /></label>
-            <label>Finish
-              <select value={finish} onChange={e => setFinish(e.target.value as Finish)}>
-                <option value="matte">Matte</option><option value="satin">Satin</option><option value="glossy">Glossy</option><option value="metal">Metal</option>
-              </select>
-            </label>
-            <label>Backdrop
-              <button className={`recipe-chip ${backdrop === 'color' ? 'on' : ''}`} onClick={() => setBackdrop('color')}>Colour</button>
-              <button className={`recipe-chip ${backdrop === 'frame' ? 'on' : ''}`} title="Use the video frame under the playhead, so a spin sits over your footage"
-                onClick={async () => { setBackdrop('frame'); if (getFrame) { setStatus('Grabbing the frame under the playhead…'); const p = await getFrame(); setFramePath(p); setStatus(p ? 'Backdrop set to your timeline frame, the render lands on top of it.' : 'No video under the playhead to grab.') } }}>Video frame</button>
-              <button className={`recipe-chip ${backdrop === 'transparent' ? 'on' : ''}`} title="True transparency, stills become PNGs with alpha that overlay your footage"
-                onClick={() => setBackdrop('transparent')}>Transparent</button>
-              {backdrop === 'color' && <input type="color" value={bg} onChange={e => setBg(e.target.value)} />}
-            </label>
-            {hasOwnMaterials && <label className="switch" title="3MF/OBJ files carry their own colors, tick to recolor"><input type="checkbox" checked={override} onChange={e => setOverride(e.target.checked)} /> recolor</label>}
-            <label className="switch" title="STL/3MF prints are Z-up; untick if the model lies on its side"><input type="checkbox" checked={zUp} onChange={e => setZUp(e.target.checked)} /> Z-up</label>
-            <label className="switch"><input type="checkbox" checked={spin} onChange={e => setSpin(e.target.checked)} /> idle spin</label>
+            <div className="m3d-group">
+              <span className="m3d-label">Model</span>
+              {/* never disabled: swapping the model mid-fiddle is the most common thing to want */}
+              <button className="m3d-open" onClick={async () => { const p = await window.ipcRenderer.pickModel(); if (p) loadModel(p) }}>
+                {modelName ? 'Open another…' : 'Open model…'}
+              </button>
+            </div>
+
+            <div className="m3d-group">
+              <span className="m3d-label">Look</span>
+              <div className="m3d-row">
+                <input type="color" title="Model colour" value={color} onChange={e => { setColor(e.target.value); if (hasOwnMaterials) setOverride(true) }} />
+                <select title="Surface finish" value={finish} onChange={e => setFinish(e.target.value as Finish)}>
+                  <option value="matte">Matte</option><option value="satin">Satin</option><option value="glossy">Glossy</option><option value="metal">Metal</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="m3d-group">
+              <span className="m3d-label">Backdrop</span>
+              <div className="m3d-row">
+                <div className="m3d-seg">
+                  <button className={backdrop === 'color' ? 'on' : ''} onClick={() => setBackdrop('color')}>Colour</button>
+                  <button className={backdrop === 'frame' ? 'on' : ''} title="Use the video frame under the playhead, so a spin sits over your footage"
+                    onClick={async () => { setBackdrop('frame'); if (getFrame) { setStatus('Grabbing the frame under the playhead…'); const p = await getFrame(); setFramePath(p); setStatus(p ? 'Backdrop set to your timeline frame, the render lands on top of it.' : 'No video under the playhead to grab.') } }}>Video frame</button>
+                  <button className={backdrop === 'transparent' ? 'on' : ''} title="True transparency, stills become PNGs with alpha that overlay your footage"
+                    onClick={() => setBackdrop('transparent')}>Transparent</button>
+                </div>
+                {backdrop === 'color' && <input type="color" title="Backdrop colour" value={bg} onChange={e => setBg(e.target.value)} />}
+              </div>
+            </div>
+
+            <div className="m3d-group">
+              <span className="m3d-label">Pose</span>
+              <div className="m3d-row">
+                <label className="switch" title="STL/3MF prints are Z-up; untick if the model lies on its side"><input type="checkbox" checked={zUp} onChange={e => setZUp(e.target.checked)} /> Z-up</label>
+                <label className="switch"><input type="checkbox" checked={spin} onChange={e => setSpin(e.target.checked)} /> idle spin</label>
+                {hasOwnMaterials && <label className="switch" title="3MF/OBJ files carry their own colors, tick to recolor"><input type="checkbox" checked={override} onChange={e => setOverride(e.target.checked)} /> recolor</label>}
+              </div>
+            </div>
           </div>
         </div>
         <div className="modal-foot m3d-foot">
