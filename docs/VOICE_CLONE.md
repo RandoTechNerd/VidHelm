@@ -16,9 +16,40 @@ Rules:
 - Exit normally when done; stdout/stderr stream into the dialog's log.
 - That's the whole interface — any CLI that can read a text file and write WAVs works (XTTS, Piper, Coqui, ElevenLabs wrappers, `say` scripts…).
 
+> **Easiest path:** open 🗣 Narrate → **🧬 No cloned voice yet? Create one** — the wizard records your reference sample and sets up either engine below for you, filling in the command automatically.
+
+## Engine choice at a glance
+
+| | XTTS-v2 (Python) | audio.cpp (no Python) |
+|---|---|---|
+| Install | Python 3.10+ plus a ~2 GB pip install (wizard automates it) | Unzip a prebuilt release + download a GGUF model |
+| Speed | Slower, heavier | ggml-based, fast on CPU, optional CUDA/Vulkan builds |
+| Quality | Excellent, battle-tested cloning | Varies by model family (PocketTTS, Fish, IndexTTS…), improving fast |
+| **Model license** | **CPML — non-commercial use only** (check before using in monetized videos) | Framework is **Apache-2.0**; many model families (Qwen3-TTS, PocketTTS…) are Apache/permissive — check the model card |
+
+## Free local voice cloning with audio.cpp (no Python)
+
+[audio.cpp](https://github.com/0xShug0/audio.cpp) is a ggml-based local audio engine (think whisper.cpp, for TTS/voice-cloning/audio-gen). Setup:
+
+1. Download a prebuilt Windows zip from its Releases page (`audiocpp-windows-cpu-balance.zip` is a good default) and unzip it.
+2. Download a voice-cloning GGUF model package (Hugging Face: `audio-cpp/audio.cpp-gguf` — e.g. a PocketTTS or Fish variant) and unzip it.
+3. In the wizard pick **audio.cpp**, record your sample, point it at `audiocpp_cli.exe`, the model folder, and the model's family name — VidHelm writes `vidhelm_voice.ps1` (which adapts the CLI to the `{script}`/`{outdir}` contract) plus your `vidhelm_reference.wav`, and fills in the command.
+
+The generated command looks like:
+
+```
+powershell -NoProfile -ExecutionPolicy Bypass -File "C:\audiocpp\vidhelm_voice.ps1" {script} {outdir}
+```
+
+audio.cpp also powers the **✨ AI sound-effect generator** (SFX tab): with a `stable_audio` model downloaded, set the generator command once and describe any sound:
+
+```
+"C:\audiocpp\audiocpp_cli.exe" --task gen --family stable_audio --model "C:\models\stable-audio" --text "{prompt}" --out "{out}"
+```
+
 ## Free local voice cloning with XTTS-v2
 
-XTTS-v2 clones a voice from ~10 seconds of reference audio and runs fully offline. Setup (Windows, Python 3.10/3.11):
+XTTS-v2 clones a voice from ~10 seconds of reference audio and runs fully offline. **Note:** the XTTS-v2 model weights are under Coqui's CPML license (non-commercial use) — fine for personal projects; for monetized content prefer an Apache-licensed audio.cpp model. Setup (Windows, Python 3.10/3.11):
 
 ```bash
 python -m venv xtts-venv

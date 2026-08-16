@@ -32,8 +32,9 @@ You are co-editing with a human: they see every change live in the GUI and can m
 
 ## Narration
 
-- `open_panel booth` — the karaoke booth: the user records one read-along take, lines timed to their tags.
-- `open_panel narration` — cloned-voice generation via their configured CLI (see docs/VOICE_CLONE.md); generated lines auto-place at tags.
+- `set_booth_script {script}` — write a read-along script straight into the karaoke booth and open it. The killer workflow: analyze the footage first (its transcript, or Adversal video notes if that MCP is available), draft clean lines one-per-beat, inject them, and the user re-records polished narration in one take.
+- `open_panel booth` — the booth alone; it also has a "Draft from timeline audio" button (on-device Whisper) users can press themselves.
+- `open_panel narration` — cloned-voice generation via their configured CLI; the 🧬 wizard sets up XTTS-v2 (Python) or audio.cpp (no Python, Apache-licensed models) for them.
 - Keep narration lines as flowing sentences, not ultra-short fragments (short lines make TTS models babble).
 
 ## 3D models and extras

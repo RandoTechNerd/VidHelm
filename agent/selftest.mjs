@@ -45,7 +45,7 @@ try {
   // 2) tools/list — schema validity for MCP clients AND OpenAI-function conversion
   send({ jsonrpc: '2.0', id: 2, method: 'tools/list' })
   const tools = (await recv()).result?.tools || []
-  ok(tools.length === 21, `tools/list returns 21 tools (got ${tools.length})`)
+  ok(tools.length === 22, `tools/list returns 22 tools (got ${tools.length})`)
   const nameRe = /^[a-zA-Z0-9_-]{1,64}$/   // OpenAI/Gemini function-name constraint
   ok(tools.every(t => nameRe.test(t.name)), 'tool names valid for OpenAI-compatible clients')
   ok(tools.every(t => t.description && t.description.length < 1024), 'descriptions present and within limits')

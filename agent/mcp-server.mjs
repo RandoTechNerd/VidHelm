@@ -43,6 +43,7 @@ const TOOLS = [
   { name: 'set_format', description: 'Set export format: orientation landscape|portrait|square, resolution 4K|1440p|1080p|720p, fps 24|30|60.', inputSchema: { type: 'object', properties: { orientation: str, resolution: str, fps: num } } },
   { name: 'export_video', description: 'Render the timeline to an mp4 at outputPath (absolute). Blocks until done; returns the automatic quality-check verdict (loudness, peaks, black frames).', inputSchema: { type: 'object', properties: { outputPath: str, qualityCheck: bool }, required: ['outputPath'] } },
   { name: 'open_panel', description: 'Open/close a panel in the app for the user: booth (karaoke recorder), narration (cloned voice), sfx (sound library tab), media (bin tab), settings, thumbnail (frame picker), connect (AI connection setup + troubleshooter), model3d (3D Studio — pass path to load an STL/3MF/OBJ for the user to pose and render as a turntable clip).', inputSchema: { type: 'object', properties: { panel: { ...str, enum: ['booth', 'narration', 'sfx', 'media', 'settings', 'thumbnail', 'connect', 'model3d'] }, open: bool, path: { ...str, description: 'model3d only: absolute path to a .stl/.3mf/.obj to load' } }, required: ['panel'] } },
+  { name: 'set_booth_script', description: "Put a read-along script into the karaoke booth and open it (one line per beat; lines pin to the user's tag points). Use after analyzing footage — e.g. from a transcript, your own writing, or video-analysis notes — so the user can re-record clean narration in one take.", inputSchema: { type: 'object', properties: { script: { ...str, description: 'the lines, newline-separated' }, open: bool }, required: ['script'] } },
   { name: 'cut_pauses', description: 'Detect and remove dead space (silent pauses, or motionless stretches for silent footage) across the whole timeline, splicing seamlessly with short crossfades. Uses the thresholds from Settings. Undoable.', inputSchema: { type: 'object', properties: {} } },
   { name: 'run_recipe', description: "Run the user's Start Recipe (their standing workflow, shown in get_state.startRecipe) — executes the app-native steps (cut-pauses, intro-audio, logo, thumbnail picker) and reports which steps are yours to do (titles, subtitle...).", inputSchema: { type: 'object', properties: {} } },
   { name: 'sample_frames', description: 'Sample N evenly-spaced frames from the first timeline video (or an explicit path) — returns times + jpg paths for choosing a thumbnail moment.', inputSchema: { type: 'object', properties: { count: num, path: str } } },
@@ -69,6 +70,7 @@ async function runTool(name, args = {}) {
     case 'run_recipe': return call('POST', '/command', { action: 'run_recipe' })
     case 'sample_frames': return call('POST', '/command', { action: 'sample_frames', ...args })
     case 'compose_thumbnail': return call('POST', '/command', { action: 'compose_thumbnail', ...args })
+    case 'set_booth_script': return call('POST', '/command', { action: 'booth_script', ...args })
     case 'add_media': case 'add_clip': case 'update_clip': case 'split_clip': case 'delete_item':
     case 'add_text': case 'update_text': case 'add_tag': case 'update_tag': case 'list_sfx':
     case 'place_sfx': case 'set_format':
@@ -87,7 +89,7 @@ rl.on('line', async (line) => {
   try { req = JSON.parse(line) } catch { return }
   const { id, method, params } = req
   if (method === 'initialize') {
-    return send({ jsonrpc: '2.0', id, result: { protocolVersion: params?.protocolVersion || '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'vidhelm', version: '1.2.0' } } })
+    return send({ jsonrpc: '2.0', id, result: { protocolVersion: params?.protocolVersion || '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'vidhelm', version: '1.3.0' } } })
   }
   if (method === 'notifications/initialized' || method?.startsWith('notifications/')) return
   if (method === 'ping') return send({ jsonrpc: '2.0', id, result: {} })

@@ -15,11 +15,27 @@ const fileUrl = (p?: string | null) => p
 const fmtT = (s: number) => `${Math.floor(s / 60)}:${(Math.floor(s % 60)).toString().padStart(2, '0')}.${Math.floor((s % 1) * 10)}`
 
 // ---------------- SFX library panel ----------------
-export function SfxPanel({ onPlace }: { onPlace: (item: SfxItem) => void }) {
+export function SfxPanel({ onPlace, genCommand, onGenCommand }: {
+  onPlace: (item: SfxItem) => void
+  genCommand: string; onGenCommand: (c: string) => void
+}) {
   const [items, setItems] = useState<SfxItem[]>([])
   const [err, setErr] = useState<string | null>(null)
   const [playing, setPlaying] = useState<string | null>(null)
+  const [genOpen, setGenOpen] = useState(false)
+  const [genPrompt, setGenPrompt] = useState('')
+  const [genBusy, setGenBusy] = useState(false)
+  const [genStatus, setGenStatus] = useState('')
   const audioRef = useRef<HTMLAudioElement | null>(null)
+
+  const generate = async () => {
+    if (!genPrompt.trim() || !genCommand.trim()) return
+    setGenBusy(true); setGenStatus('Generating…')
+    const r = await window.ipcRenderer.sfxGenerate({ command: genCommand, prompt: genPrompt.trim() })
+    if (r.path) { setGenStatus('Added to the library ✓'); setGenPrompt(''); load() }
+    else setGenStatus(r.error || 'failed')
+    setGenBusy(false)
+  }
 
   const load = () => window.ipcRenderer.sfxLibrary()
     .then(r => setItems(r.items || []))
@@ -49,8 +65,23 @@ export function SfxPanel({ onPlace }: { onPlace: (item: SfxItem) => void }) {
           </div>
         ))}
       </div>
+      {genOpen && <div className="sfx-gen">
+        <input className="duration-input" style={{ width: '100%' }} placeholder='describe a sound… e.g. "cartoon spring boing, short"' value={genPrompt}
+          onChange={e => setGenPrompt(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') generate() }} />
+        {!genCommand && <>
+          <p className="hint">One-time setup: a text-to-audio command with <b>{'{prompt}'}</b> and <b>{'{out}'}</b>. Free local option: <b>audio.cpp</b> (prebuilt exe + stable_audio model) — see docs/VOICE_CLONE.md.</p>
+          <input className="duration-input" style={{ width: '100%' }} placeholder='e.g. "C:\audiocpp\audiocpp_cli.exe" --task gen --family stable_audio --model "C:\models\stable-audio" --text "{prompt}" --out "{out}"'
+            value={genCommand} onChange={e => onGenCommand(e.target.value)} />
+        </>}
+        <div className="vc-row">
+          <button className="primary" disabled={genBusy || !genPrompt.trim() || !genCommand.trim()} onClick={generate}>{genBusy ? 'Generating…' : 'Generate'}</button>
+          {genCommand && <button title="Change the generator command" onClick={() => onGenCommand('')}>⚙</button>}
+          {genStatus && <span className="hint" style={{ margin: 0 }}>{genStatus}</span>}
+        </div>
+      </div>}
       <div className="sfx-foot">
         <button onClick={() => window.ipcRenderer.openSfxFolder()}>Add your own…</button>
+        <button onClick={() => setGenOpen(o => !o)} title="Generate a sound effect from a text description (bring your own local model — e.g. audio.cpp)">✨ AI</button>
         <button onClick={load} title="Rescan the custom folder">↻</button>
       </div>
     </div>
@@ -85,13 +116,16 @@ export function MarkerPanel({ markers, currentTime, onChange, onSeek }: {
 // ---------------- Karaoke booth ----------------
 // One-take read-along recording over the timeline. Cue lines come from the script box;
 // each line is timed either evenly across the video or pinned to your tag points.
-export function KaraokeBooth({ open, onClose, markers, totalDuration, currentTime, onSeek, onPlay, onRecorded }: {
+export function KaraokeBooth({ open, onClose, markers, totalDuration, currentTime, onSeek, onPlay, onRecorded, script, onScript, onDraft }: {
   open: boolean; onClose: () => void
   markers: Marker[]; totalDuration: number; currentTime: number; isPlaying: boolean
   onSeek: (t: number) => void; onPlay: (p: boolean) => void
   onRecorded: (path: string, startAt: number) => void
+  script: string; onScript: (s: string) => void
+  onDraft: () => Promise<string | null>
 }) {
-  const [script, setScript] = useState('')
+  const setScript = (v: string | ((s: string) => string)) => onScript(typeof v === 'function' ? v(script) : v)
+  const [drafting, setDrafting] = useState(false)
   const [useMarkers, setUseMarkers] = useState(true)
   const [recording, setRecording] = useState(false)
   const [countdown, setCountdown] = useState<number | null>(null)
@@ -171,9 +205,14 @@ export function KaraokeBooth({ open, onClose, markers, totalDuration, currentTim
           <div className="booth-line">{curIdx >= 0 ? lines[curIdx] : lines[0]}</div>
           <div className="booth-next">{curIdx + 1 < lines.length ? `next: ${lines[curIdx + 1]}` : ''}</div>
         </div>
-      ) : (
+      ) : (<>
         <textarea className="booth-script" rows={4} placeholder={'Paste your script — one line per beat.\nLines light up as the video plays; read along in one take.'} value={script} onChange={e => setScript(e.target.value)} />
-      )}
+        <button className="booth-edit" disabled={drafting || totalDuration <= 0}
+          title="Transcribe the timeline audio with on-device Whisper and turn it into read-along lines — perfect for cleanly re-recording a rough take"
+          onClick={async () => { setDrafting(true); setStatus('Listening to your timeline…'); const s = await onDraft(); if (s) { setScript(s); setStatus('Draft ready — tidy the lines, then record.') } else setStatus('No speech found on the timeline.'); setDrafting(false) }}>
+          {drafting ? 'Transcribing…' : '✨ Draft from timeline audio'}
+        </button>
+      </>)}
       {lines.length > 0 && !recording && <button className="booth-edit" onClick={() => setScript(s => s + ' ')}>edit script</button>}
       <div className="booth-controls">
         <button className={`booth-rec ${recording ? 'on' : ''}`} onClick={() => recording ? stop() : start()}>
@@ -529,14 +568,28 @@ function VoiceWizard({ onCommand }: { onCommand: (c: string) => void }) {
     if (recRef.current) { cancelAnimationFrame(recRef.current.raf); clearInterval(recRef.current.timer); if (recRef.current.rec.state !== 'inactive') recRef.current.rec.stop(); recRef.current = null }
   }
 
+  const [engine, setEngine] = useState<'xtts' | 'acpp'>('xtts')
+  const [cliPath, setCliPath] = useState('')
+  const [modelPath, setModelPath] = useState('')
+  const [family, setFamily] = useState('pocket_tts')
+
   const create = async () => {
     if (!sample) return
-    setBusy(true); setStatus('Pick a folder in the dialog — the installer opens in its own window (one time, ~2 GB).')
-    const r = await window.ipcRenderer.voiceCloneSetup(sample.base64 ? { sampleBase64: sample.base64 } : { samplePath: sample.path })
-    if (r.command) {
-      onCommand(r.command)
-      setStatus('Voice engine created and the command below is filled in ✓ — once the installer window finishes, write a script and hit Generate narration.')
-    } else setStatus(r.error || 'canceled')
+    setBusy(true)
+    if (engine === 'xtts') {
+      setStatus('Pick a folder in the dialog — the installer opens in its own window (one time, ~2 GB).')
+      const r = await window.ipcRenderer.voiceCloneSetup(sample.base64 ? { sampleBase64: sample.base64 } : { samplePath: sample.path })
+      if (r.command) {
+        onCommand(r.command)
+        setStatus('Voice engine created and the command below is filled in ✓ — once the installer window finishes, write a script and hit Generate narration.')
+      } else setStatus(r.error || 'canceled')
+    } else {
+      const r = await window.ipcRenderer.voiceCppSetup({ ...(sample.base64 ? { sampleBase64: sample.base64 } : { samplePath: sample.path }), cliPath, modelPath, family })
+      if (r.command) {
+        onCommand(r.command)
+        setStatus('Wrapper + reference written next to audiocpp_cli and the command below is filled in ✓ — write a script and hit Generate narration.')
+      } else setStatus(r.error || 'canceled')
+    }
     setBusy(false)
   }
 
@@ -546,14 +599,27 @@ function VoiceWizard({ onCommand }: { onCommand: (c: string) => void }) {
         <h3>🧬 No cloned voice yet? Create one {expanded ? '▾' : '▸'}</h3>
       </div>
       {expanded && <>
-        <p className="hint" style={{ marginTop: 4 }}>Three steps, all free and local: record ~20 seconds of your voice, pick an install folder, and VidHelm sets up the XTTS-v2 engine (needs <b>Python 3.10+</b> from python.org) and fills in the command for you.</p>
+        <div className="conn-clients" style={{ marginTop: 4 }}>
+          <button className={`recipe-chip ${engine === 'xtts' ? 'on' : ''}`} onClick={() => setEngine('xtts')} title="Fully guided; needs Python 3.10+">XTTS-v2 (guided)</button>
+          <button className={`recipe-chip ${engine === 'acpp' ? 'on' : ''}`} onClick={() => setEngine('acpp')} title="No Python — prebuilt exe + GGUF model">audio.cpp (no Python)</button>
+        </div>
+        {engine === 'xtts'
+          ? <p className="hint" style={{ marginTop: 4 }}>Three steps, all free and local: record ~20 seconds of your voice, pick an install folder, and VidHelm sets up the XTTS-v2 engine (needs <b>Python 3.10+</b> from python.org) and fills in the command for you. Heads up: the XTTS-v2 <i>model</i> is licensed for non-commercial use — for monetized videos consider the audio.cpp engines (Apache-licensed models).</p>
+          : <p className="hint" style={{ marginTop: 4 }}>No Python needed: grab a prebuilt <b>audio.cpp</b> zip (github.com/0xShug0/audio.cpp → Releases → <code>audiocpp-windows-cpu-*.zip</code>), download a voice-cloning GGUF model (Hugging Face: <code>audio-cpp/audio.cpp-gguf</code>), point VidHelm at both, and it writes the wrapper + reference and fills in the command. Model families like PocketTTS and Fish are Apache/permissively licensed — good for monetized videos.</p>}
         <div className="vc-sample">{VOICE_SAMPLE_TEXT}</div>
         <div className="vc-row">
           <button className={`booth-rec ${recording ? 'on' : ''}`} onClick={() => recording ? stop() : record()}>{recording ? `■ Stop (${elapsed.toFixed(0)}s)` : '● Record sample'}</button>
           {recording && <div className="booth-meter"><i style={{ width: `${Math.min(100, level * 100)}%` }} /></div>}
           <span className="hint" style={{ margin: 0 }}>or</span>
           <button onClick={async () => { const p = await window.ipcRenderer.pickAudio(); if (p) { setSample({ path: p, label: p.split(/[\\/]/).pop() || 'sample' }); setStatus('Sample chosen ✓ — now create the engine.') } }}>Use a WAV/MP3 I have…</button>
-          {sample && <button className="primary" disabled={busy} onClick={create}>{busy ? 'Setting up…' : `⚙ Create voice engine (${sample.label})`}</button>}
+        </div>
+        {engine === 'acpp' && <div className="vc-row">
+          <button onClick={async () => { const p = await window.ipcRenderer.pickFile({ title: 'audiocpp_cli.exe', extensions: ['exe'] }); if (p) setCliPath(p) }}>{cliPath ? cliPath.split(/[\\/]/).pop() : 'audiocpp_cli.exe…'}</button>
+          <button onClick={async () => { const p = await window.ipcRenderer.pickFolder('Model folder (unzipped GGUF package)'); if (p) setModelPath(p) }}>{modelPath ? modelPath.split(/[\\/]/).pop() : 'Model folder…'}</button>
+          <label>family <input className="duration-input" style={{ width: 110 }} value={family} onChange={e => setFamily(e.target.value)} /></label>
+        </div>}
+        <div className="vc-row">
+          {sample && <button className="primary" disabled={busy || (engine === 'acpp' && (!cliPath || !modelPath))} onClick={create}>{busy ? 'Setting up…' : `⚙ Create voice engine (${sample.label})`}</button>}
         </div>
         {status && <p className="hint" style={{ marginTop: 6 }}>{status}</p>}
       </>}

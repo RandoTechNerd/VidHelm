@@ -57,4 +57,8 @@ contextBridge.exposeInMainWorld('ipcRenderer', {
   save3DStill: (data: { dataUrl: string; name: string }) => ipcRenderer.invoke('save-3d-still', data),
   saveObjFile: (data: { text: string; defaultName: string }) => ipcRenderer.invoke('save-obj-file', data),
   voiceCloneSetup: (data: { sampleBase64?: string; samplePath?: string }) => ipcRenderer.invoke('voice-clone-setup', data),
+  voiceCppSetup: (data: { sampleBase64?: string; samplePath?: string; cliPath: string; modelPath: string; family: string }) => ipcRenderer.invoke('voice-cpp-setup', data),
+  sfxGenerate: (data: { command: string; prompt: string }) => ipcRenderer.invoke('sfx-generate', data),
+  pickFile: (data: { title: string; extensions: string[] }) => ipcRenderer.invoke('pick-file', data),
+  pickFolder: (title: string) => ipcRenderer.invoke('pick-folder', title),
 })

@@ -36,6 +36,10 @@ interface Window {
     save3DStill: (data: { dataUrl: string; name: string }) => Promise<{ path?: string; error?: string }>
     saveObjFile: (data: { text: string; defaultName: string }) => Promise<{ path?: string; error?: string }>
     voiceCloneSetup: (data: { sampleBase64?: string; samplePath?: string }) => Promise<{ dir?: string; command?: string; error?: string }>
+    voiceCppSetup: (data: { sampleBase64?: string; samplePath?: string; cliPath: string; modelPath: string; family: string }) => Promise<{ dir?: string; command?: string; error?: string }>
+    sfxGenerate: (data: { command: string; prompt: string }) => Promise<{ path?: string; error?: string; log?: string }>
+    pickFile: (data: { title: string; extensions: string[] }) => Promise<string | null>
+    pickFolder: (title: string) => Promise<string | null>
     agentStatus: () => Promise<{
       appVersion: string; port: number; portOverridden: boolean
       bridge: { listening: boolean; error: string }

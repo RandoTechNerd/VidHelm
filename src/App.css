@@ -1104,3 +1104,4 @@ textarea.duration-input { resize: vertical; font-family: inherit; }
 .vc-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
 .vc-sample { font-size: 12.5px; color: #dfe9f5; background: rgba(255,255,255,0.05); border-radius: 8px; padding: 8px 10px; line-height: 1.5; font-style: italic; }
 .zoom-fit { margin-left: 4px; font-weight: 700; }
+.sfx-gen { padding: 8px 12px; border-top: 1px solid rgba(255,255,255,0.08); display: flex; flex-direction: column; gap: 6px; }

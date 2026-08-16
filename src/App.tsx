@@ -34,6 +34,7 @@ interface AppSettings {
   caption: { fontSize: number; color: string; position: 'lower' | 'top' | 'center'; box: boolean; boxOpacity: number; model: 'tiny' | 'base' | 'small'; language: string; mode: 'phrase' | 'word' }
   silence: { minPause: number; thresholdDb: number; pad: number; smooth: boolean; transition: number; detectBy: 'auto' | 'audio' | 'motion'; freezeDb: number }
   narration: { command: string }
+  sfxGen: { command: string }
   recipe: RecipeSettings
 }
 
@@ -44,6 +45,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   caption: { fontSize: 44, color: '#ffffff', position: 'lower', box: true, boxOpacity: 0.5, model: 'tiny', language: 'en', mode: 'phrase' },
   silence: { minPause: 0.8, thresholdDb: -30, pad: 0.12, smooth: true, transition: 0.12, detectBy: 'auto', freezeDb: -50 },
   narration: { command: '' },
+  sfxGen: { command: '' },
   recipe: { text: DEFAULT_RECIPE, introAudioPath: null },
 }
 
@@ -225,6 +227,7 @@ function App() {
   const [showConnect, setShowConnect] = useState(false)
   const [showModel3D, setShowModel3D] = useState(false)
   const [model3DPath, setModel3DPath] = useState<string | null>(null)
+  const [boothScript, setBoothScript] = useState('')
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; mediaId: string } | null>(null)
   const [qcReport, setQcReport] = useState<any>(null)
   const [qcRunning, setQcRunning] = useState(false)
@@ -754,6 +757,12 @@ function App() {
         else return { error: `unknown panel: ${cmd.panel}. Use booth | narration | sfx | media | settings | thumbnail | connect | model3d (optional path)` }
         return { ok: true, panel: cmd.panel }
       }
+      case 'booth_script': {
+        if (typeof cmd.script !== 'string' || !cmd.script.trim()) return { error: 'script (string) required — one line per beat' }
+        setBoothScript(cmd.script.trim())
+        if (cmd.open !== false) setShowBooth(true)
+        return { ok: true, lines: cmd.script.trim().split('\n').filter((l: string) => l.trim()).length }
+      }
       case 'seek': setCurrentTime(clamp(cmd.t ?? 0, 0, Math.max(totalDuration, cmd.t ?? 0))); return { ok: true }
       case 'play': setIsPlaying(cmd.playing !== false); return { ok: true }
       case 'set_format': {
@@ -854,6 +863,21 @@ function App() {
       else notify('No speech detected.')
     } catch (e) { console.error(e); notify('Captioning failed.') }
     setCaptioning(null); setCaptionPct(null)
+  }
+
+  // Transcribe the timeline audio into read-along lines for the karaoke booth (one per phrase).
+  // Used by the booth's "Draft from timeline audio" button and the agent's booth_script flow.
+  const draftBoothScript = async (): Promise<string | null> => {
+    const audioClips = clips.filter(c => c.trackId === 'a1' || mediaBin.find(m => m.id === c.mediaId)?.hasAudio)
+    if (!audioClips.length) return null
+    try {
+      const payload = clips.map(c => { const m = mediaBin.find(x => x.id === c.mediaId); return { path: m?.path, hasAudio: m?.hasAudio, start: c.start, duration: c.duration, volume: c.volume } })
+      const mix = await window.ipcRenderer.renderMixAudio({ clips: payload })
+      if (mix.error || !mix.path) return null
+      const res = await window.ipcRenderer.transcribe(mix.path, { model: settings.caption.model, language: settings.caption.language, word: false })
+      const lines = (res.chunks || []).map(c => (c.text || '').trim()).filter(Boolean)
+      return lines.length ? lines.join('\n') : null
+    } catch (e) { console.error(e); return null }
   }
 
   // Detect dead space (silent pauses OR motionless video) across the timeline and ripple it out.
@@ -1166,7 +1190,7 @@ function App() {
               <button className={`tab ${sidebarTab === 'sfx' ? 'active' : ''}`} onClick={() => setSidebarTab('sfx')} title="Sound effects — audition and drop on the SFX track">SFX</button>
               {sidebarTab === 'media' && <label className="add-btn" title="Add image, video, audio — or a 3D model (STL / 3MF / OBJ)"><IconPlus /><input type="file" accept="video/*,audio/*,image/*,.stl,.3mf,.obj" multiple onChange={handleFileUpload} hidden /></label>}
             </div>
-            {sidebarTab === 'sfx' && <SfxPanel onPlace={placeSfx} />}
+            {sidebarTab === 'sfx' && <SfxPanel onPlace={placeSfx} genCommand={settings.sfxGen.command} onGenCommand={c => setSettings(s => ({ ...s, sfxGen: { command: c } }))} />}
             {sidebarTab === 'media' && <div className="media-list" onDrop={async (e) => { e.preventDefault(); await importFiles(Array.from(e.dataTransfer.files)) }} onDragOver={(e) => e.preventDefault()}>
               {mediaBin.length === 0 && <div className="empty-hint">Click <IconPlus /> or drag files here. Double-click an item — or drop files on the timeline — to add them.</div>}
               {mediaBin.map(m => (
@@ -1399,7 +1423,8 @@ function App() {
 
       <KaraokeBooth open={showBooth} onClose={() => setShowBooth(false)} markers={markers}
         totalDuration={totalDuration} currentTime={currentTime} isPlaying={isPlaying}
-        onSeek={t => setCurrentTime(t)} onPlay={p => setIsPlaying(p)} onRecorded={boothRecorded} />
+        onSeek={t => setCurrentTime(t)} onPlay={p => setIsPlaying(p)} onRecorded={boothRecorded}
+        script={boothScript} onScript={setBoothScript} onDraft={draftBoothScript} />
       <NarrationModal open={showNarration} onClose={() => setShowNarration(false)}
         command={settings.narration.command}
         onCommand={c => setSettings(s => ({ ...s, narration: { command: c } }))}

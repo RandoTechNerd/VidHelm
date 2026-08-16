@@ -4,7 +4,7 @@ VidHelm is a desktop video editor (Electron + React) designed to be driven colla
 
 ## Steering the running app (the good part)
 
-This repo ships an MCP server (`.mcp.json` — auto-discovered here; approve it when prompted). While the app is running (`npm run dev` or the installed app), you have 21 tools to drive it live: `get_state`, `screenshot`, `add_media`, `add_clip`, `update_clip`, `split_clip`, `delete_item`, `add_text`, `update_text`, `add_tag`, `update_tag`, `list_sfx`, `place_sfx`, `transport`, `set_format`, `export_video`, `cut_pauses`, `run_recipe`, `sample_frames`, `compose_thumbnail`, `open_panel`.
+This repo ships an MCP server (`.mcp.json` — auto-discovered here; approve it when prompted). While the app is running (`npm run dev` or the installed app), you have 22 tools to drive it live: `get_state`, `screenshot`, `add_media`, `add_clip`, `update_clip`, `split_clip`, `delete_item`, `add_text`, `update_text`, `add_tag`, `update_tag`, `list_sfx`, `place_sfx`, `set_booth_script`, `transport`, `set_format`, `export_video`, `cut_pauses`, `run_recipe`, `sample_frames`, `compose_thumbnail`, `open_panel`.
 
 Working style that works well:
 1. `get_state` first — it returns the whole timeline (clips per track, texts, tag points, format).

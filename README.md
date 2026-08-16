@@ -26,8 +26,9 @@ Everything runs locally. FFmpeg does the rendering, Whisper runs on-device for c
 
 **Audio** (three labeled lanes: `VOICE / MUSIC`, `SFX`, plus each video's own sound)
 - **SFX library** — 13 built-in synthesized effects (whoosh, pop, boing, squish, gloop, poof, sparkle, party horn…). Audition with one click, place at the playhead. Drop your own WAV/MP3s into the custom folder and they appear alongside
-- **Karaoke booth** — paste your script, hit record: the video plays, lines light up in time (evenly, or pinned to your tag points), you read along in **one take**, and the take lands on the voice track
-- **Cloned-voice narration** — a built-in **🧬 setup wizard** records a ~20s sample of your voice and installs a free local XTTS-v2 engine for you (or plug in any TTS/voice-clone CLI — see [docs/VOICE_CLONE.md](docs/VOICE_CLONE.md)); generated lines are placed at your tag points automatically
+- **✨ AI sound effects** — describe any sound ("cartoon spring boing, short") and generate it locally with a text-to-audio model (one-time command setup; [audio.cpp](https://github.com/0xShug0/audio.cpp) + stable_audio recommended — see [docs/VOICE_CLONE.md](docs/VOICE_CLONE.md))
+- **Karaoke booth** — paste your script (or **✨ draft it from your timeline audio** with on-device Whisper — perfect for cleanly re-recording a rough take), hit record: the video plays, lines light up in time (evenly, or pinned to your tag points), you read along in **one take**, and the take lands on the voice track. Your AI can write the script into the booth too
+- **Cloned-voice narration** — a built-in **🧬 setup wizard** records a ~20s sample of your voice and sets up a free local engine for you: **XTTS-v2** (guided Python install) or **[audio.cpp](https://github.com/0xShug0/audio.cpp)** (prebuilt exe, no Python, Apache-licensed models — safe for monetized videos). Any TTS/voice-clone CLI works too — see [docs/VOICE_CLONE.md](docs/VOICE_CLONE.md); generated lines are placed at your tag points automatically
 - Loudness done right: one checkbox masters the mix to YouTube's target with a compressor + `loudnorm`; optional noise reduction
 
 **🤖 AI copilot built in — bring your AI of choice**

@@ -482,6 +482,18 @@ ipcMain.handle('pick-logo', async () => {
 // ---------------- 3D Studio (STL / 3MF / OBJ turntables) ----------------
 const renders3dDir = () => { const d = path.join(app.getPath('userData'), 'renders3d'); if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true }); return d }
 
+ipcMain.handle('pick-file', async (_event, { title, extensions }: { title: string; extensions: string[] }) => {
+  if (!win) return null
+  const { filePaths } = await dialog.showOpenDialog(win, { title, properties: ['openFile'], filters: [{ name: title, extensions }] })
+  return filePaths?.[0] || null
+})
+
+ipcMain.handle('pick-folder', async (_event, title: string) => {
+  if (!win) return null
+  const { filePaths } = await dialog.showOpenDialog(win, { title, properties: ['openDirectory'] })
+  return filePaths?.[0] || null
+})
+
 ipcMain.handle('pick-model', async () => {
   if (!win) return null
   const { filePaths } = await dialog.showOpenDialog(win, {
@@ -581,6 +593,69 @@ ipcMain.handle('voice-clone-setup', async (_event, { sampleBase64, samplePath }:
     const py = path.join(dir, 'venv', 'Scripts', 'python.exe')
     return { dir, command: `"${py}" "${path.join(dir, 'clone_voice.py')}" "${ref}" {script} {outdir}` }
   } catch (e) { return { error: String(e) } }
+})
+
+// audio.cpp voice engine (Apache-2.0, prebuilt exe, no Python): write reference.wav and a
+// PowerShell wrapper that adapts audiocpp_cli's one-line-at-a-time CLI to VidHelm's
+// {script}/{outdir} narration contract (scene_1.wav, scene_2.wav, ...).
+ipcMain.handle('voice-cpp-setup', async (_event, { sampleBase64, samplePath, cliPath, modelPath, family }: { sampleBase64?: string; samplePath?: string; cliPath: string; modelPath: string; family: string }) => {
+  try {
+    if (!fs.existsSync(cliPath)) return { error: 'audiocpp_cli.exe not found at that path' }
+    const dir = path.dirname(cliPath)
+    const ref = path.join(dir, 'vidhelm_reference.wav')
+    let src = samplePath
+    if (sampleBase64) {
+      src = path.join(app.getPath('temp'), `vh_voice_sample_${Date.now()}.webm`)
+      fs.writeFileSync(src, Buffer.from(sampleBase64, 'base64'))
+    }
+    if (!src) return { error: 'no voice sample' }
+    await new Promise<void>((resolve, reject) => {
+      ffmpeg(src!).outputOptions(['-ar 24000', '-ac 1', '-c:a pcm_s16le']).save(ref).on('end', () => resolve()).on('error', reject)
+    })
+    const fam = (family || 'pocket_tts').replace(/[^\w.-]/g, '')
+    const ps1 = path.join(dir, 'vidhelm_voice.ps1')
+    fs.writeFileSync(ps1, `param([string]$ScriptFile, [string]$OutDir)
+$ErrorActionPreference = "Stop"
+$here = Split-Path -Parent $MyInvocation.MyCommand.Path
+$lines = @(Get-Content -LiteralPath $ScriptFile -Encoding UTF8 | Where-Object { $_.Trim() -ne "" })
+New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
+$i = 0
+foreach ($line in $lines) {
+  $i++
+  Write-Output "[$i/$($lines.Count)] $line"
+  & "${cliPath}" --task tts --family "${fam}" --model "${modelPath}" --text "$line" --voice-ref "$here\\vidhelm_reference.wav" --out "$OutDir\\scene_$i.wav"
+  if ($LASTEXITCODE -ne 0) { Write-Output "audiocpp_cli failed on line $i"; exit $LASTEXITCODE }
+}
+Write-Output "done"
+`, 'utf8')
+    return { dir, command: `powershell -NoProfile -ExecutionPolicy Bypass -File "${ps1}" {script} {outdir}` }
+  } catch (e) { return { error: String(e) } }
+})
+
+// ---------------- AI sound-effect generator ----------------
+// Runs the user's text-to-audio command ({prompt} and {out} placeholders — e.g. audio.cpp's
+// stable_audio gen task) and drops the result into the custom SFX folder so it shows up
+// in the library immediately.
+ipcMain.handle('sfx-generate', async (_event, { command, prompt }: { command: string; prompt: string }) => {
+  if (!command?.includes('{out}')) return { error: 'Command must include {out} (and usually {prompt}).' }
+  const customDir = path.join(app.getPath('userData'), 'sfx', 'custom')
+  if (!fs.existsSync(customDir)) fs.mkdirSync(customDir, { recursive: true })
+  const slug = prompt.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 32) || 'sfx'
+  const out = path.join(customDir, `ai_${slug}.wav`)
+  const cmd = command.replace(/\{prompt\}/g, prompt.replace(/["\n\r]/g, '')).replace(/\{out\}/g, out)
+  return new Promise(resolve => {
+    const child = spawn(cmd, [], { shell: true, windowsHide: true })
+    let log = ''
+    const cap = (d: Buffer) => { log = (log + d.toString()).slice(-4000) }
+    child.stdout?.on('data', cap); child.stderr?.on('data', cap)
+    const timer = setTimeout(() => { try { child.kill() } catch {} ; resolve({ error: 'generator timed out (5 min)', log }) }, 5 * 60 * 1000)
+    child.on('close', code => {
+      clearTimeout(timer)
+      if (code === 0 && fs.existsSync(out)) resolve({ path: out })
+      else resolve({ error: `generator exited with code ${code}${fs.existsSync(out) ? '' : ' (no output file)'}`, log })
+    })
+    child.on('error', e => { clearTimeout(timer); resolve({ error: String(e), log }) })
+  })
 })
 
 // Escape a path or string for use inside an ffmpeg filtergraph option
