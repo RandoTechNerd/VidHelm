@@ -1418,6 +1418,11 @@ function App() {
 
   return (
     <div className="app-container" onDragOver={(e) => e.preventDefault()}>
+      {(window as unknown as { __vhWeb?: boolean }).__vhWeb && (
+        <div className="web-banner">
+          Browser preview: this draws the interface only. Opening files, FFmpeg, exporting and the AI bridge all live in the desktop app, run <code>npm run dev</code> or open the installed VidHelm.
+        </div>
+      )}
       <header
         onMouseDown={e => { if (e.button === 0 && !(e.target as HTMLElement).closest(HDR_CONTROLS)) window.ipcRenderer.windowDragStart?.() }}
         onDoubleClick={e => { if (!(e.target as HTMLElement).closest(HDR_CONTROLS)) window.ipcRenderer.windowToggleMaximize?.() }}

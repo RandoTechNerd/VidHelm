@@ -20,6 +20,8 @@ type Finish = keyof typeof FINISHES
 
 const W = 1600, H = 900   // internal render buffer (downscaled by CSS in the modal)
 const fileUrl = (p: string) => 'file:///' + p.replace(/\\/g, '/').split('/').map((s, i) => i === 0 ? s : encodeURIComponent(s)).join('/')
+const isWebPreview = () => !!(window as unknown as { __vhWeb?: boolean }).__vhWeb
+const WEB_ONLY = 'That needs the desktop app. This is the browser preview, which draws the interface but has no file access or FFmpeg behind it.'
 
 export interface Model3DApi {
   record: (opts?: { seconds?: number; transparent?: boolean }) => Promise<{ path?: string; error?: string }>
@@ -283,15 +285,28 @@ export function Model3DModal({ open, onClose, initialPath, onRendered, apiRef, g
         <div className="modal-body">
           <div className={`m3d-stage ${transparent ? 'alpha' : ''}`} ref={hostRef}
             onDragOver={e => e.preventDefault()}
-            onDrop={e => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (f) loadModel(window.ipcRenderer.getPathForFile(f)) }}>
+            onDrop={e => {
+              e.preventDefault()
+              if (isWebPreview()) { setStatus(WEB_ONLY); return }
+              const f = e.dataTransfer.files[0]
+              if (f) loadModel(window.ipcRenderer.getPathForFile(f))
+            }}>
             {!modelName && <div className="m3d-empty">Drop an STL / 3MF / OBJ / GLB, or an HTML viewer page</div>}
           </div>
-          <p className="hint" style={{ margin: '6px 0' }}>{status}</p>
+          {/* fixed height: status messages vary in length, and letting them reflow pushed
+              the controls up and down as you clicked around */}
+          <p className="hint m3d-status">{status}</p>
           <div className="m3d-controls">
             <div className="m3d-group">
               <span className="m3d-label">Model</span>
               {/* never disabled: swapping the model mid-fiddle is the most common thing to want */}
-              <button className="m3d-open" onClick={async () => { const p = await window.ipcRenderer.pickModel(); if (p) loadModel(p) }}>
+              <button className="m3d-open" onClick={async () => {
+                if (isWebPreview()) { setStatus(WEB_ONLY); return }
+                setStatus('Choose a model in the dialog…')
+                const p = await window.ipcRenderer.pickModel()
+                if (p) loadModel(p)
+                else setStatus(modelName ? `Still showing ${modelName}.` : 'Drop an STL, 3MF, OBJ, GLB or a 3D web page here, or click Open model.')
+              }}>
                 {modelName ? 'Open another…' : 'Open model…'}
               </button>
             </div>
@@ -316,7 +331,11 @@ export function Model3DModal({ open, onClose, initialPath, onRendered, apiRef, g
                   <button className={backdrop === 'transparent' ? 'on' : ''} title="True transparency, stills become PNGs with alpha that overlay your footage"
                     onClick={() => setBackdrop('transparent')}>Transparent</button>
                 </div>
-                {backdrop === 'color' && <input type="color" title="Backdrop colour" value={bg} onChange={e => setBg(e.target.value)} />}
+                {/* always rendered, just inert off-colour: removing it resized the row and
+                    made the whole control block jump when you switched backdrop */}
+                <input type="color" title={backdrop === 'color' ? 'Backdrop colour' : 'Backdrop colour (pick Colour to use it)'}
+                  className={backdrop === 'color' ? '' : 'is-idle'} disabled={backdrop !== 'color'}
+                  value={bg} onChange={e => setBg(e.target.value)} />
               </div>
             </div>
 

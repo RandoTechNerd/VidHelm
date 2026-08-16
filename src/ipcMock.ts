@@ -5,6 +5,9 @@ const demoSfx = ['whoosh', 'pop', 'boing', 'squish', 'gummy-squish', 'gloop', 'p
 
 export function installIpcMock() {
   if (window.ipcRenderer) return
+  // Marks this as the browser preview so the UI can say so instead of appearing broken:
+  // file dialogs, FFmpeg and the agent bridge all live in the desktop process.
+  ;(window as unknown as { __vhWeb?: boolean }).__vhWeb = true
   const noop = async () => null
   window.ipcRenderer = {
     on: () => {}, off: () => {}, send: () => {}, invoke: noop, log: () => {},

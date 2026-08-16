@@ -1197,3 +1197,8 @@ textarea.duration-input { resize: vertical; font-family: inherit; }
 .proj-bar button:disabled { opacity: 0.35; cursor: default; }
 .sfx-rec { padding: 8px 12px; border-top: 1px solid rgba(255,255,255,0.08); }
 .sfx-foot button.rec-on { color: #fff; background: #e11d48; border-color: transparent; }
+.m3d-status { margin: 6px 0; min-height: 32px; display: flex; align-items: center; }
+.m3d-controls input[type="color"].is-idle { opacity: 0.32; cursor: default; }
+.m3d-group { min-height: 52px; }
+.web-banner { flex: none; background: rgba(251,191,36,0.12); border: 1px solid rgba(251,191,36,0.35); color: #fbbf24; border-radius: 8px; padding: 7px 12px; font-size: 12.5px; line-height: 1.5; }
+.web-banner code { background: rgba(0,0,0,0.35); border-radius: 4px; padding: 1px 5px; }
