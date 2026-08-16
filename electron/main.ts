@@ -692,8 +692,11 @@ ipcMain.handle('extract-model', async (_event, filePath: string) => {
   } catch (e) { return { error: String(e) } }
 })
 
-// MediaRecorder gives us a VFR webm off the WebGL canvas, re-encode to something clean.
-// Opaque renders become h264 mp4; transparent ones stay VP9 webm, the only common format
+// MediaRecorder gives us a VFR webm off the WebGL canvas. A complex model can take
+// longer than 1/30s to draw, but the renderer still requests exactly one view per
+// output frame. Re-time by frame index here so slow wall-clock capture never turns
+// into a stuttering/slow-motion result.
+// Opaque renders become h264 mp4; transparent ones stay VP8 WebM, the Chromium format
 // that keeps an alpha channel (h264 has none). Both decode to yuva420p for the export
 // filtergraph, so a transparent render composites straight over the footage below it.
 ipcMain.handle('save-3d-render', async (_event, { base64, name, alpha }: { base64: string; name: string; alpha?: boolean }) => {
@@ -707,10 +710,13 @@ ipcMain.handle('save-3d-render', async (_event, { base64, name, alpha }: { base6
       const cmd = ffmpeg(cap)
       // Transparent: stream-copy Chromium's VP8/VP9. Its alpha lives in a WebM side channel
       // that this ffmpeg build cannot re-encode (it writes the tag but drops the channel),
-      // so copying is the only way to keep it, and both the preview and the export
-      // filtergraph decode it happily. Timestamps are rebuilt because MediaRecorder is VFR.
-      if (alpha) cmd.outputOptions(['-c copy', '-fflags +genpts'])
-      else cmd.videoFilter('scale=trunc(iw/2)*2:trunc(ih/2)*2')
+      // so copying is the only way to keep it. The setts bitstream filter changes packet
+      // timestamps without touching the encoded frames or their alpha side data.
+      if (alpha) cmd.outputOptions([
+        '-c copy',
+        '-bsf:v setts=pts=N/(30*TB):dts=N/(30*TB):duration=1/(30*TB)',
+      ])
+      else cmd.videoFilter('setpts=N/(30*TB),scale=trunc(iw/2)*2:trunc(ih/2)*2')
         .outputOptions(['-c:v libx264', '-crf 18', '-preset medium', '-pix_fmt yuv420p', '-r 30', '-movflags +faststart', '-an'])
       cmd.save(out).on('end', () => resolve()).on('error', reject)
     })
