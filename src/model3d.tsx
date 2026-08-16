@@ -45,7 +45,7 @@ export function Model3DModal({ open, onClose, initialPath, onRendered, apiRef, g
   const [override, setOverride] = useState(false)
   const [finish, setFinish] = useState<Finish>('satin')
   const [bg, setBg] = useState('#0f1420')
-  // 'transparent' gives a true alpha PNG (stills only — no video codec here carries alpha);
+  // 'transparent' gives a true alpha PNG (stills only, no video codec here carries alpha);
   // 'frame' bakes the frame under the playhead behind the model so a spin sits over footage.
   const [backdrop, setBackdrop] = useState<'color' | 'frame' | 'transparent'>('color')
   const [framePath, setFramePath] = useState<string | null>(null)
@@ -55,7 +55,7 @@ export function Model3DModal({ open, onClose, initialPath, onRendered, apiRef, g
   const [seconds, setSeconds] = useState(6)
   const [recording, setRecording] = useState(false)
   const [busy, setBusy] = useState(false)
-  const [status, setStatus] = useState('Drop an STL, 3MF, OBJ, GLB or a 3D web page here — or click Open model.')
+  const [status, setStatus] = useState('Drop an STL, 3MF, OBJ, GLB or a 3D web page here, or click Open model.')
   const recState = useRef<{ start: number; baseRot: number; rec: MediaRecorder; secs: number } | null>(null)
   const spinRef = useRef(spin); spinRef.current = spin
   const zUpRef = useRef(zUp); zUpRef.current = zUp
@@ -143,7 +143,7 @@ export function Model3DModal({ open, onClose, initialPath, onRendered, apiRef, g
         setStatus('Looking for a 3D model inside that page…')
         const r = await window.ipcRenderer.extractModel(path)
         if (!r.path) { setStatus(r.error || 'no 3D model found inside that page'); return }
-        setStatus(`Found ${r.how} — loading…`)
+        setStatus(`Found ${r.how}, loading…`)
         path = r.path
         ext = (path.split('.').pop() || '').toLowerCase()
       }
@@ -161,7 +161,7 @@ export function Model3DModal({ open, onClose, initialPath, onRendered, apiRef, g
         obj = await new ThreeMFLoader().loadAsync(url); own = true
       } else if (ext === 'obj') {
         obj = await new OBJLoader().loadAsync(url); own = true
-      } else { setStatus(`Unsupported file: .${ext} — try STL, 3MF, OBJ, GLB/glTF, or an HTML viewer page`); return }
+      } else { setStatus(`Unsupported file: .${ext}, try STL, 3MF, OBJ, GLB/glTF, or an HTML viewer page`); return }
       obj.traverse(o => { if (o instanceof THREE.Mesh && !(o.material as any)?.isMeshStandardMaterial && !own) o.material = new THREE.MeshStandardMaterial({ color }) })
       // center on origin and normalize size so every model fills the frame the same way
       const box = new THREE.Box3().setFromObject(obj)
@@ -175,7 +175,7 @@ export function Model3DModal({ open, onClose, initialPath, onRendered, apiRef, g
       st.pivot.rotation.set(isZUp ? -Math.PI / 2 : 0, 0, 0)
       setHasOwnMaterials(own)
       setModelName((path.split(/[\\/]/).pop() || 'model').replace(/\.[^.]+$/, ''))
-      setStatus(`Loaded ${path.split(/[\\/]/).pop()} — drag to orbit, scroll to zoom.`)
+      setStatus(`Loaded ${path.split(/[\\/]/).pop()}, drag to orbit, scroll to zoom.`)
     } catch (e) { console.error(e); setStatus('Could not load that file: ' + String(e)) }
   }, [color, finish])
 
@@ -192,7 +192,7 @@ export function Model3DModal({ open, onClose, initialPath, onRendered, apiRef, g
 
   const recordTurntable = (opts?: { seconds?: number; transparent?: boolean }) => new Promise<{ path?: string; error?: string }>(resolve => {
     const st = threeRef.current
-    if (!st || !modelName) return resolve({ error: 'no model loaded — open one first' })
+    if (!st || !modelName) return resolve({ error: 'no model loaded, open one first' })
     if (recState.current) return resolve({ error: 'already recording' })
     const alpha = opts?.transparent ?? transparent
     if (opts?.transparent !== undefined) applyTransparent(opts.transparent)
@@ -218,7 +218,7 @@ export function Model3DModal({ open, onClose, initialPath, onRendered, apiRef, g
         for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode(...Array.from(buf.subarray(i, i + 0x8000)))
         out = await window.ipcRenderer.save3DRender({ base64: btoa(bin), name: modelName, alpha })
         if (out.path) {
-          setStatus(alpha ? 'Transparent turntable placed at the playhead — it sits on top of the footage below ✓' : 'Turntable added to the Media Bin ✓')
+          setStatus(alpha ? 'Transparent turntable placed at the playhead, it sits on top of the footage below ✓' : 'Turntable added to the Media Bin ✓')
           onRendered(out.path, 'video', `${modelName} spin`, alpha)
         }
         else setStatus(out.error || 'encode failed')
@@ -234,14 +234,14 @@ export function Model3DModal({ open, onClose, initialPath, onRendered, apiRef, g
 
   const snapshot = async (opts?: { transparent?: boolean }): Promise<{ path?: string; error?: string }> => {
     const st = threeRef.current
-    if (!st || !modelName) return { error: 'no model loaded — open one first' }
+    if (!st || !modelName) return { error: 'no model loaded, open one first' }
     const alpha = opts?.transparent ?? transparent
     if (opts?.transparent !== undefined) applyTransparent(opts.transparent)
     setBusy(true); setStatus('Saving still…')
     st.renderer.render(st.scene, st.camera)
     const r = await window.ipcRenderer.save3DStill({ dataUrl: st.renderer.domElement.toDataURL('image/png'), name: modelName })
     if (r.path) {
-      setStatus(alpha ? 'Transparent still placed at the playhead — it sits on top of the footage below ✓' : 'Still added to the Media Bin ✓')
+      setStatus(alpha ? 'Transparent still placed at the playhead, it sits on top of the footage below ✓' : 'Still added to the Media Bin ✓')
       onRendered(r.path, 'image', `${modelName} still`, alpha)
     }
     else setStatus(r.error || 'save failed')
@@ -277,7 +277,7 @@ export function Model3DModal({ open, onClose, initialPath, onRendered, apiRef, g
           <div className={`m3d-stage ${transparent ? 'alpha' : ''}`} ref={hostRef}
             onDragOver={e => e.preventDefault()}
             onDrop={e => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (f) loadModel(window.ipcRenderer.getPathForFile(f)) }}>
-            {!modelName && <div className="m3d-empty">Drop an STL / 3MF / OBJ / GLB — or an HTML viewer page</div>}
+            {!modelName && <div className="m3d-empty">Drop an STL / 3MF / OBJ / GLB, or an HTML viewer page</div>}
           </div>
           <p className="hint" style={{ margin: '6px 0' }}>{status}</p>
           <div className="m3d-controls">
@@ -291,12 +291,12 @@ export function Model3DModal({ open, onClose, initialPath, onRendered, apiRef, g
             <label>Backdrop
               <button className={`recipe-chip ${backdrop === 'color' ? 'on' : ''}`} onClick={() => setBackdrop('color')}>Colour</button>
               <button className={`recipe-chip ${backdrop === 'frame' ? 'on' : ''}`} title="Use the video frame under the playhead, so a spin sits over your footage"
-                onClick={async () => { setBackdrop('frame'); if (getFrame) { setStatus('Grabbing the frame under the playhead…'); const p = await getFrame(); setFramePath(p); setStatus(p ? 'Backdrop set to your timeline frame — the render lands on top of it.' : 'No video under the playhead to grab.') } }}>Video frame</button>
-              <button className={`recipe-chip ${backdrop === 'transparent' ? 'on' : ''}`} title="True transparency — stills become PNGs with alpha that overlay your footage"
+                onClick={async () => { setBackdrop('frame'); if (getFrame) { setStatus('Grabbing the frame under the playhead…'); const p = await getFrame(); setFramePath(p); setStatus(p ? 'Backdrop set to your timeline frame, the render lands on top of it.' : 'No video under the playhead to grab.') } }}>Video frame</button>
+              <button className={`recipe-chip ${backdrop === 'transparent' ? 'on' : ''}`} title="True transparency, stills become PNGs with alpha that overlay your footage"
                 onClick={() => setBackdrop('transparent')}>Transparent</button>
               {backdrop === 'color' && <input type="color" value={bg} onChange={e => setBg(e.target.value)} />}
             </label>
-            {hasOwnMaterials && <label className="switch" title="3MF/OBJ files carry their own colors — tick to recolor"><input type="checkbox" checked={override} onChange={e => setOverride(e.target.checked)} /> recolor</label>}
+            {hasOwnMaterials && <label className="switch" title="3MF/OBJ files carry their own colors, tick to recolor"><input type="checkbox" checked={override} onChange={e => setOverride(e.target.checked)} /> recolor</label>}
             <label className="switch" title="STL/3MF prints are Z-up; untick if the model lies on its side"><input type="checkbox" checked={zUp} onChange={e => setZUp(e.target.checked)} /> Z-up</label>
             <label className="switch"><input type="checkbox" checked={spin} onChange={e => setSpin(e.target.checked)} /> idle spin</label>
           </div>
@@ -309,7 +309,7 @@ export function Model3DModal({ open, onClose, initialPath, onRendered, apiRef, g
           </label>
           <button className="primary" disabled={!modelName || recording || busy} onClick={() => { void recordTurntable() }}>{recording ? 'Recording…' : '⏺ Render turntable clip'}</button>
           <button disabled={!modelName || recording || busy} onClick={() => { void snapshot() }}>📷 Still</button>
-          {transparent && <span className="hint" style={{ margin: 0, maxWidth: 260 }}>Stills keep real transparency. Video can’t — for a spin over footage use <b>Video frame</b>.</span>}
+          {transparent && <span className="hint" style={{ margin: 0, maxWidth: 260 }}>Stills keep real transparency. Video can’t, for a spin over footage use <b>Video frame</b>.</span>}
           <button disabled={!modelName || recording || busy} onClick={exportObj} title="Convert the loaded model to .obj">Save as OBJ…</button>
         </div>
       </div>

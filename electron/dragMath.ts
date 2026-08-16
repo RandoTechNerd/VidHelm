@@ -1,5 +1,5 @@
 // Pure geometry for header window-dragging. Kept free of Electron imports so the math
-// can be reasoned about (and tested) on its own — see docs/ARCHITECTURE.md.
+// can be reasoned about (and tested) on its own, see docs/ARCHITECTURE.md.
 
 export interface Pt { x: number; y: number }
 export interface Rect { x: number; y: number; width: number; height: number }

@@ -52,8 +52,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   recipe: { text: DEFAULT_RECIPE, introAudioPath: null },
 }
 
-// Every agent command carries an id. StrictMode's double mount — and, in dev, hot reloads
-// that leave the previous module's listener registered — meant one command could be executed
+// Every agent command carries an id. StrictMode's double mount, and, in dev, hot reloads
+// that leave the previous module's listener registered, meant one command could be executed
 // several times (two tags from a single add_tag). The guard hangs off window so it is shared
 // by every module instance that survives a reload, not just the current one.
 const handledAgentCmds: Set<number> = ((window as any).__vhHandledCmds ??= new Set<number>())
@@ -62,7 +62,7 @@ const handledAgentCmds: Set<number> = ((window as any).__vhHandledCmds ??= new S
 const HDR_CONTROLS = 'button, a, input, select, label, [role="button"]'
 
 // What the app accepts. FFmpeg decodes far more than the browser does, so these lists are
-// only a first guess — ffprobe has the final say (see importFiles), which means an unusual
+// only a first guess, ffprobe has the final say (see importFiles), which means an unusual
 // but valid file still imports, and a mislabelled one is refused with a reason.
 const VIDEO_EXT = new Set(['mp4', 'm4v', 'mov', 'mkv', 'webm', 'avi', 'wmv', 'flv', 'f4v', 'mpg', 'mpeg', 'mpe', 'm2v', 'ts', 'm2ts', 'mts', 'vob', '3gp', '3g2', 'ogv', 'mxf', 'asf', 'divx', 'rm', 'rmvb', 'y4m'])
 const AUDIO_EXT = new Set(['mp3', 'wav', 'wave', 'aac', 'm4a', 'm4b', 'flac', 'ogg', 'oga', 'opus', 'wma', 'aif', 'aiff', 'aifc', 'caf', 'ac3', 'eac3', 'dts', 'amr', 'mka', 'mp2', 'au', 'ape', 'wv', 'ra', 'weba'])
@@ -74,24 +74,24 @@ const extOf = (name: string) => (name.split('.').pop() || '').toLowerCase()
 
 // Friendlier explanations for things people drop by mistake
 const WRONG_TYPE: Record<string, string> = {
-  svg: 'SVG vectors can’t be rendered by the export engine — save it as a PNG first.',
-  pdf: 'PDFs aren’t media — export the page as a PNG or MP4 first.',
-  psd: 'Photoshop files aren’t supported — export a flattened PNG or JPG.',
-  ai: 'Illustrator files aren’t supported — export a PNG.',
-  zip: 'That’s an archive — unzip it and drop the media inside.',
-  rar: 'That’s an archive — unpack it and drop the media inside.',
-  '7z': 'That’s an archive — unpack it and drop the media inside.',
+  svg: 'SVG vectors can’t be rendered by the export engine, save it as a PNG first.',
+  pdf: 'PDFs aren’t media, export the page as a PNG or MP4 first.',
+  psd: 'Photoshop files aren’t supported, export a flattened PNG or JPG.',
+  ai: 'Illustrator files aren’t supported, export a PNG.',
+  zip: 'That’s an archive, unzip it and drop the media inside.',
+  rar: 'That’s an archive, unpack it and drop the media inside.',
+  '7z': 'That’s an archive, unpack it and drop the media inside.',
   txt: 'That’s a text file, not media.',
   docx: 'That’s a document, not media.',
-  pptx: 'That’s a slide deck — export it as images or a video first.',
+  pptx: 'That’s a slide deck, export it as images or a video first.',
   xlsx: 'That’s a spreadsheet, not media.',
   exe: 'That’s a program, not media.',
-  gcode: 'G-code is print instructions, not a model — drop the STL/3MF instead.',
-  step: 'STEP CAD files aren’t supported yet — export an STL, 3MF or OBJ.',
-  stp: 'STEP CAD files aren’t supported yet — export an STL, 3MF or OBJ.',
-  f3d: 'Fusion files aren’t supported — export an STL, 3MF or OBJ.',
-  blend: 'Blender files aren’t supported — export a GLB, OBJ or STL.',
-  srt: 'Subtitle files aren’t imported — use the Captions button instead.',
+  gcode: 'G-code is print instructions, not a model, drop the STL/3MF instead.',
+  step: 'STEP CAD files aren’t supported yet, export an STL, 3MF or OBJ.',
+  stp: 'STEP CAD files aren’t supported yet, export an STL, 3MF or OBJ.',
+  f3d: 'Fusion files aren’t supported, export an STL, 3MF or OBJ.',
+  blend: 'Blender files aren’t supported, export a GLB, OBJ or STL.',
+  srt: 'Subtitle files aren’t imported, use the Captions button instead.',
 }
 
 // ffprobe is the authority on what can be decoded, with one catch: it cheerfully reads a
@@ -573,15 +573,15 @@ function App() {
         if (MODEL_EXT.has(ext)) { setModel3DPath(path); setShowModel3D(true); continue }
         if (PAGE_EXT.has(ext)) {
           const r = await window.ipcRenderer.extractModel(path)
-          if (r.path) { setModel3DPath(r.path); setShowModel3D(true); notify(`Found a 3D model in ${file.name} (${r.how}) — opening the 3D Studio.`) }
-          else skipped.push(`${file.name} — ${r.error || 'no 3D model inside that page'}`)
+          if (r.path) { setModel3DPath(r.path); setShowModel3D(true); notify(`Found a 3D model in ${file.name} (${r.how}), opening the 3D Studio.`) }
+          else skipped.push(`${file.name} - ${r.error || 'no 3D model inside that page'}`)
           continue
         }
 
         // ffprobe decides: it reads far more formats than any extension list knows about
         const meta = await window.ipcRenderer.getMetadata(path).catch(() => null)
         const verdict = classifyMedia(file.name, meta)
-        if ('reject' in verdict) { skipped.push(`${file.name} — ${verdict.reject}`); continue }
+        if ('reject' in verdict) { skipped.push(`${file.name} - ${verdict.reject}`); continue }
         const { type } = verdict
         const m = meta as Probe   // a non-reject verdict means the probe succeeded
         added.push({
@@ -592,7 +592,7 @@ function App() {
         })
       } catch (err) {
         console.error(err)
-        skipped.push(`${file.name} — ${WRONG_TYPE[ext] || 'could not be imported'}`)
+        skipped.push(`${file.name} - ${WRONG_TYPE[ext] || 'could not be imported'}`)
       }
     }
     if (added.length) setMediaBin(prev => [...prev, ...added])
@@ -707,7 +707,7 @@ function App() {
   // Run the app-native steps of the start recipe; AI-facing lines are reported for the agent/chat
   const runRecipe = async () => {
     if (totalDuration <= 0 && !mediaBin.some(m => m.type === 'video')) {
-      notify('🚀 Start Recipe needs footage first — drag a video into the Media Bin (or ask your AI to load one), then hit Recipe again.', 9000)
+      notify('🚀 Start Recipe needs footage first, drag a video into the Media Bin (or ask your AI to load one), then hit Recipe again.', 9000)
       return
     }
     const active = recipeActive(settings.recipe.text)
@@ -873,17 +873,17 @@ function App() {
       }
       case 'render_3d': {
         const api = model3dApi.current
-        if (!showModel3D || !api?.loaded()) return { error: 'no model open — call open_panel { panel: "model3d", path } first' }
+        if (!showModel3D || !api?.loaded()) return { error: 'no model open, call open_panel { panel: "model3d", path } first' }
         const r = cmd.still ? await api.still({ transparent: cmd.transparent }) : await api.record({ seconds: cmd.seconds, transparent: cmd.transparent })
         if (r.error) return { error: r.error }
         return {
           ok: true, path: r.path, kind: cmd.still ? 'still' : 'turntable',
-          placement: cmd.transparent ? `transparent overlay placed at ${currentTime.toFixed(2)}s on the video track — it composites over the clip beneath it` : 'appended to the video track',
+          placement: cmd.transparent ? `transparent overlay placed at ${currentTime.toFixed(2)}s on the video track, it composites over the clip beneath it` : 'appended to the video track',
         }
       }
       case 'open_project': {
         const root = settings.workspace.root
-        if (!root) return { error: 'no project folder set — the human picks one in Settings → Project folder' }
+        if (!root) return { error: 'no project folder set, the human picks one in Settings → Project folder' }
         const r = await window.ipcRenderer.listProjects(root)
         const list = r.projects || []
         if (!cmd.name) return { ok: true, root, projects: list.map(p => ({ name: p.name, media: p.media, saved: p.saved })), current: currentProject?.name || null }
@@ -894,7 +894,7 @@ function App() {
         return { ok: true, opened: hit.name, folder: hit.path, mediaInFolder: hit.media }
       }
       case 'booth_script': {
-        if (typeof cmd.script !== 'string' || !cmd.script.trim()) return { error: 'script (string) required — one line per beat' }
+        if (typeof cmd.script !== 'string' || !cmd.script.trim()) return { error: 'script (string) required, one line per beat' }
         setBoothScript(cmd.script.trim())
         if (cmd.open !== false) setShowBooth(true)
         return { ok: true, lines: cmd.script.trim().split('\n').filter((l: string) => l.trim()).length }
@@ -925,7 +925,7 @@ function App() {
         setTimeout(() => setExportProgress(null), 3000)
         setLastExport(cmd.outputPath)
         const qc = cmd.qualityCheck === false ? null : await window.ipcRenderer.qualityCheck(cmd.outputPath).catch(() => null)
-        return { ok: true, outputPath: cmd.outputPath, qualityCheck: qc ? { verdict: qc.verdict, checks: qc.checks?.map((c: any) => `${c.status}: ${c.label} — ${c.detail}`) } : undefined }
+        return { ok: true, outputPath: cmd.outputPath, qualityCheck: qc ? { verdict: qc.verdict, checks: qc.checks?.map((c: any) => `${c.status}: ${c.label} - ${c.detail}`) } : undefined }
       }
       default:
         return { error: `unknown action: ${cmd.action}` }
@@ -1203,7 +1203,7 @@ function App() {
       })
     }
     if (added.length) setMediaBin(prev => [...prev, ...added])
-    notify(`${name} — ${added.length ? `${added.length} file${added.length > 1 ? 's' : ''} ready in the Media Bin` : 'no new media in the folder'}${r.project ? ', timeline restored' : ''}.`)
+    notify(`${name} - ${added.length ? `${added.length} file${added.length > 1 ? 's' : ''} ready in the Media Bin` : 'no new media in the folder'}${r.project ? ', timeline restored' : ''}.`)
   }
 
   const newProjectFolder = async () => {
@@ -1215,7 +1215,7 @@ function App() {
     await refreshProjects(root)
     setCurrentProject({ dir: r.path, name: r.name || name })
     setMediaBin([]); setClips([]); setTexts([]); setMarkers([]); setCurrentTime(0)
-    notify(`Created ${r.name}. Drop footage into that folder and hit ↻ — no import needed.`)
+    notify(`Created ${r.name}. Drop footage into that folder and hit ↻, no import needed.`)
     window.ipcRenderer.revealFolder(r.path)
   }
 
@@ -1399,8 +1399,8 @@ function App() {
           <button className="hdr-btn" onClick={saveProject} title="Save project">Save</button>
           <button className="hdr-btn" onClick={loadProject} title="Open project">Open</button>
           <button className="hdr-btn" onClick={runRecipe} title="Run your Start Recipe on this timeline">🚀 Recipe</button>
-          <button className="hdr-btn" onClick={() => { setModel3DPath(null); setShowModel3D(true) }} title="3D Studio — turn an STL / 3MF / OBJ into a spinning turntable clip">🧊 3D</button>
-          <button className="hdr-btn" onClick={() => setShowConnect(true)} title="Connect your AI — one-click setup + troubleshooter">🤖 AI</button>
+          <button className="hdr-btn" onClick={() => { setModel3DPath(null); setShowModel3D(true) }} title="3D Studio, turn an STL / 3MF / OBJ into a spinning turntable clip">🧊 3D</button>
+          <button className="hdr-btn" onClick={() => setShowConnect(true)} title="Connect your AI, one-click setup + troubleshooter">🤖 AI</button>
           <button className="hdr-btn icon" onClick={() => setShowHelp(true)} title="Take the tour, and see credits and licences">?</button>
           <button className="hdr-btn icon" onClick={() => setShowSettings(true)} title="Brand kit & settings"><IconGear /></button>
         </div>
@@ -1417,17 +1417,17 @@ function App() {
             <button title="vidhelm.com" onClick={() => window.ipcRenderer.openExternal('https://vidhelm.com')}>
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
             </button>
-            <button title="GitHub — star the repo, report issues" onClick={() => window.ipcRenderer.openExternal('https://github.com/RandoTechNerd/VidHelm')}>
+            <button title="GitHub, star the repo, report issues" onClick={() => window.ipcRenderer.openExternal('https://github.com/RandoTechNerd/VidHelm')}>
               <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.58.11.79-.25.79-.55v-1.94c-3.2.7-3.87-1.54-3.87-1.54-.52-1.33-1.28-1.68-1.28-1.68-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.19 1.76 1.19 1.03 1.75 2.69 1.25 3.34.95.1-.74.4-1.25.72-1.54-2.55-.29-5.23-1.28-5.23-5.68 0-1.26.45-2.28 1.19-3.09-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.17 1.18a11 11 0 0 1 5.78 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.83 1.19 3.09 0 4.42-2.69 5.39-5.25 5.67.41.35.77 1.05.77 2.12v3.15c0 .3.21.66.8.55A11.5 11.5 0 0 0 23.5 12C23.5 5.65 18.35.5 12 .5z"/></svg>
             </button>
-            <button title="YouTube — @randotechnerd" onClick={() => window.ipcRenderer.openExternal('https://www.youtube.com/@randotechnerd')}>
+            <button title="YouTube - @randotechnerd" onClick={() => window.ipcRenderer.openExternal('https://www.youtube.com/@randotechnerd')}>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M23.5 6.2a3 3 0 0 0-2.1-2.1C19.5 3.5 12 3.5 12 3.5s-7.5 0-9.4.6A3 3 0 0 0 .5 6.2 31.3 31.3 0 0 0 0 12a31.3 31.3 0 0 0 .5 5.8 3 3 0 0 0 2.1 2.1c1.9.6 9.4.6 9.4.6s7.5 0 9.4-.6a3 3 0 0 0 2.1-2.1A31.3 31.3 0 0 0 24 12a31.3 31.3 0 0 0-.5-5.8zM9.5 15.5v-7L15.8 12l-6.3 3.5z"/></svg>
             </button>
-            <button title="Instagram — @randotechnerd" onClick={() => window.ipcRenderer.openExternal('https://www.instagram.com/randotechnerd/')}>
+            <button title="Instagram - @randotechnerd" onClick={() => window.ipcRenderer.openExternal('https://www.instagram.com/randotechnerd/')}>
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="2" y="2" width="20" height="20" rx="5"/><circle cx="12" cy="12" r="4"/><circle cx="17.5" cy="6.5" r="1" fill="currentColor" stroke="none"/></svg>
             </button>
             <button className="bmc" title="Buy me a coffee ☕" onClick={() => window.ipcRenderer.openExternal('https://buymeacoffee.com/randotechnerd')}>☕</button>
-            <button title="Contact — randotechnerd@gmail.com" onClick={() => window.ipcRenderer.openExternal('mailto:randotechnerd@gmail.com')}>
+            <button title="Contact, randotechnerd@gmail.com" onClick={() => window.ipcRenderer.openExternal('mailto:randotechnerd@gmail.com')}>
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-10 6L2 7"/></svg>
             </button>
           </div>
@@ -1439,8 +1439,8 @@ function App() {
           <div className="sidebar left">
             <div className="section-header tabs">
               <button className={`tab ${sidebarTab === 'media' ? 'active' : ''}`} onClick={() => setSidebarTab('media')}>Media Bin</button>
-              <button className={`tab ${sidebarTab === 'sfx' ? 'active' : ''}`} onClick={() => setSidebarTab('sfx')} title="Sound effects — audition and drop on the SFX track">SFX</button>
-              {sidebarTab === 'media' && <label className="add-btn" title="Add video, audio or images — or a 3D model (STL / 3MF / OBJ / GLB)"><IconPlus /><input type="file" accept={ACCEPT_ATTR} multiple onChange={handleFileUpload} hidden /></label>}
+              <button className={`tab ${sidebarTab === 'sfx' ? 'active' : ''}`} onClick={() => setSidebarTab('sfx')} title="Sound effects, audition and drop on the SFX track">SFX</button>
+              {sidebarTab === 'media' && <label className="add-btn" title="Add video, audio or images, or a 3D model (STL / 3MF / OBJ / GLB)"><IconPlus /><input type="file" accept={ACCEPT_ATTR} multiple onChange={handleFileUpload} hidden /></label>}
             </div>
             {sidebarTab === 'sfx' && <SfxPanel onPlace={placeSfx} genCommand={settings.sfxGen.command} onGenCommand={c => setSettings(s => ({ ...s, sfxGen: { command: c } }))} />}
             {sidebarTab === 'media' && settings.workspace.root && (
@@ -1461,7 +1461,7 @@ function App() {
               {mediaBin.length === 0 && <div className="empty-hint">
                 Click <IconPlus /> or drag files here.
                 <InfoNote label="What can I add?">
-                  Double-click an item — or drop files straight onto the timeline — to use it.<br /><br />
+                  Double-click an item, or drop files straight onto the timeline, to use it.<br /><br />
                   Video, audio and images in just about any format, plus 3D models (STL · 3MF · OBJ · GLB), which open in the 3D Studio instead of the timeline.<br /><br />
                   New here? The <b>?</b> button up top walks you through a first video.
                 </InfoNote>
@@ -1529,7 +1529,7 @@ function App() {
             <button className="tool-btn" onClick={deleteSelected} disabled={!selectedId}><IconTrash /> Delete</button>
             <button className="tool-btn" onClick={addText}><IconText /> Text</button>
             <button className={`tool-btn ${isRecording ? 'recording' : ''}`} onClick={toggleRecord}><IconMic /> {isRecording ? 'Stop' : 'Voiceover'}</button>
-            <button className={`tool-btn ${showBooth ? 'active' : ''}`} onClick={() => setShowBooth(b => !b)} title="Karaoke booth — read a script along with the video in one take">🎙 Booth</button>
+            <button className={`tool-btn ${showBooth ? 'active' : ''}`} onClick={() => setShowBooth(b => !b)} title="Karaoke booth, read a script along with the video in one take">🎙 Booth</button>
             <button className="tool-btn" onClick={() => setShowNarration(true)} title="Generate narration with a cloned voice (external TTS tool)">🗣 Narrate</button>
             <button className="tool-btn captions-btn" onClick={generateCaptions} disabled={captioning !== null || totalDuration <= 0} title="Auto-caption the whole timeline (on-device Whisper)">
               <IconCaptions /> {captioning ? `${captioning}${captionPct !== null ? ` ${captionPct}%` : '…'}` : 'Captions'}
@@ -1539,7 +1539,7 @@ function App() {
             <div className="spacer" />
             <div className="zoom">
               <button onClick={() => setPxPerSec(p => clamp(p / 1.4, 2, 200))}>−</button><span>Zoom</span><button onClick={() => setPxPerSec(p => clamp(p * 1.4, 2, 200))}>+</button>
-              <button className="zoom-fit" title="Zoom to fit — see every clip at once (Ctrl+scroll on the timeline also zooms)" disabled={totalDuration <= 0}
+              <button className="zoom-fit" title="Zoom to fit, see every clip at once (Ctrl+scroll on the timeline also zooms)" disabled={totalDuration <= 0}
                 onClick={() => { const w = timelineRef.current?.clientWidth || 800; setPxPerSec(clamp((w - 60) / Math.max(totalDuration, 0.5), 2, 200)); if (timelineRef.current) timelineRef.current.scrollLeft = 0 }}>Fit</button>
             </div>
           </div>
@@ -1618,7 +1618,7 @@ function App() {
                 <div className="field"><label>Encoding Quality</label>
                   <select value={exportQuality} onChange={e => setExportQuality(e.target.value as any)}><option value="medium">Standard (faster)</option><option value="high">High (larger file)</option></select>
                 </div>
-                <div className="field"><label><IconVolume /> Master Volume — {Math.round(masterVolume * 100)}%</label>
+                <div className="field"><label><IconVolume /> Master Volume - {Math.round(masterVolume * 100)}%</label>
                   <input type="range" min="0" max="1.5" step="0.05" value={masterVolume} onChange={e => setMasterVolume(parseFloat(e.target.value))} style={{ width: '100%', accentColor: 'var(--accent-primary)' }} />
                 </div>
                 <div className="field chk" onClick={() => setSettings(s => ({ ...s, audio: { ...s.audio, optimize: !s.audio.optimize } }))}><input type="checkbox" checked={settings.audio.optimize} readOnly id="norm" /><label htmlFor="norm" style={{ cursor: 'pointer', marginBottom: 0 }}>Optimize loudness (−14 LUFS)</label></div>
@@ -1646,7 +1646,7 @@ function App() {
               <div className="control-group">
                 <h3 className="group-title">Clip Adjustments</h3>
                 <div className="card">
-                  <div className="field"><label>Volume — {Math.round(selClip.volume * 100)}%</label>
+                  <div className="field"><label>Volume - {Math.round(selClip.volume * 100)}%</label>
                     <input type="range" min="0" max="2" step="0.05" value={selClip.volume} onChange={e => patchClip({ volume: parseFloat(e.target.value), volumePoints: [] })} style={{ width: '100%', accentColor: 'var(--accent-primary)' }} />
                   </div>
                   <div className="field">
@@ -1736,9 +1736,9 @@ function App() {
           setMediaBin(prev => [...prev, media])
           if (overlay) {
             // transparent renders go in at the playhead so they land on top of the footage
-            // already there — clips composite in the order they were added
+            // already there, clips composite in the order they were added
             setClips(prev => [...prev, { id: rid(), mediaId: media.id, type: media.type, trackId: 'v1', start: currentTime, duration: media.duration, sourceStart: 0, volume: 1, fadeIn: 0, fadeOut: 0 }])
-            notify(`${name} added as a transparent overlay at ${fmt(currentTime)} — it sits on top of the clip underneath. Drag it anywhere on the video track.`, 9000)
+            notify(`${name} added as a transparent overlay at ${fmt(currentTime)}, it sits on top of the clip underneath. Drag it anywhere on the video track.`, 9000)
           } else addToTimeline(media)
         }} />
       <ThumbnailModal open={showThumbnail} onClose={() => setShowThumbnail(false)}
@@ -1785,8 +1785,8 @@ function App() {
                       <option value="whole">Whole video</option><option value="intro">Intro only</option><option value="outro">Outro watermark</option>
                     </select>
                   </label>
-                  <label>Size — {settings.brand.sizePct}% width<input type="range" min="4" max="40" step="1" value={settings.brand.sizePct} onChange={e => setSettings(s => ({ ...s, brand: { ...s.brand, sizePct: parseInt(e.target.value) } }))} /></label>
-                  <label>Opacity — {Math.round(settings.brand.opacity * 100)}%<input type="range" min="0.1" max="1" step="0.05" value={settings.brand.opacity} onChange={e => setSettings(s => ({ ...s, brand: { ...s.brand, opacity: parseFloat(e.target.value) } }))} /></label>
+                  <label>Size - {settings.brand.sizePct}% width<input type="range" min="4" max="40" step="1" value={settings.brand.sizePct} onChange={e => setSettings(s => ({ ...s, brand: { ...s.brand, sizePct: parseInt(e.target.value) } }))} /></label>
+                  <label>Opacity - {Math.round(settings.brand.opacity * 100)}%<input type="range" min="0.1" max="1" step="0.05" value={settings.brand.opacity} onChange={e => setSettings(s => ({ ...s, brand: { ...s.brand, opacity: parseFloat(e.target.value) } }))} /></label>
                   {settings.brand.showMode !== 'whole' && <label>Window (s)<input type="number" min="1" step="0.5" value={settings.brand.windowSec} onChange={e => setSettings(s => ({ ...s, brand: { ...s.brand, windowSec: parseFloat(e.target.value) || 5 } }))} /></label>}
                   <label>Fade (s)<input type="number" min="0" step="0.1" value={settings.brand.fade} onChange={e => setSettings(s => ({ ...s, brand: { ...s.brand, fade: parseFloat(e.target.value) || 0 } }))} /></label>
                 </div>
@@ -1794,9 +1794,9 @@ function App() {
 
               <section>
                 <div className="sec-title">
-                  <h3>Project folder <span className="hint" style={{ fontWeight: 400 }}>— skip importing altogether</span></h3>
+                  <h3>Project folder <span className="hint" style={{ fontWeight: 400 }}> -  skip importing altogether</span></h3>
                 </div>
-                <p className="hint">Point VidHelm at one folder you keep your video work in. Every sub-folder inside it is a project, and opening one loads whatever footage is sitting in that folder — drop files in with Explorer and they’re simply there, no import step. Saving writes back into the same folder, so a project is just a folder you can copy, back up or move.</p>
+                <p className="hint">Point VidHelm at one folder you keep your video work in. Every sub-folder inside it is a project, and opening one loads whatever footage is sitting in that folder, drop files in with Explorer and they’re simply there, no import step. Saving writes back into the same folder, so a project is just a folder you can copy, back up or move.</p>
                 <div className="recipe-files">
                   <div className="recipe-file">
                     <span>Folder:</span>
@@ -1811,7 +1811,7 @@ function App() {
                 </div>
                 {settings.workspace.root && <p className="hint">{projects.length
                   ? `${projects.length} project${projects.length > 1 ? 's' : ''} in there. Switch between them from the Media Bin.`
-                  : 'No sub-folders yet — use + in the Media Bin to start one.'}</p>}
+                  : 'No sub-folders yet, use + in the Media Bin to start one.'}</p>}
               </section>
 
               <RecipeSection recipe={settings.recipe} onChange={r => setSettings(s => ({ ...s, recipe: r }))}
@@ -1824,7 +1824,7 @@ function App() {
                   <label>Use segment
                     <select value={settings.intro.segment} onChange={e => setSettings(s => ({ ...s, intro: { ...s.intro, segment: e.target.value as any } }))}><option value="first">First seconds</option><option value="last">Last seconds</option></select>
                   </label>
-                  <label>Seconds (0–20)<input type="number" min="0.5" max="20" step="0.5" value={settings.intro.seconds} onChange={e => setSettings(s => ({ ...s, intro: { ...s.intro, seconds: clamp(parseFloat(e.target.value) || 5, 0.5, 20) } }))} /></label>
+                  <label>Seconds (0-20)<input type="number" min="0.5" max="20" step="0.5" value={settings.intro.seconds} onChange={e => setSettings(s => ({ ...s, intro: { ...s.intro, seconds: clamp(parseFloat(e.target.value) || 5, 0.5, 20) } }))} /></label>
                   <label>Fade (s)<input type="number" min="0" step="0.1" value={settings.intro.fade} onChange={e => setSettings(s => ({ ...s, intro: { ...s.intro, fade: parseFloat(e.target.value) || 0 } }))} /></label>
                   <label>At the start
                     <select value={settings.intro.treatment} onChange={e => setSettings(s => ({ ...s, intro: { ...s.intro, treatment: e.target.value as any } }))}><option value="ripple">Push everything later</option><option value="overlay">Overlay on top</option></select>
@@ -1848,14 +1848,14 @@ function App() {
                     </select>
                   </label>
                   <label>Color<input type="color" className="color-input" value={settings.caption.color} onChange={e => setSettings(s => ({ ...s, caption: { ...s.caption, color: e.target.value } }))} /></label>
-                  <label>Size — {settings.caption.fontSize}px<input type="range" min="20" max="90" step="2" value={settings.caption.fontSize} onChange={e => setSettings(s => ({ ...s, caption: { ...s.caption, fontSize: parseInt(e.target.value) } }))} /></label>
-                  <label>Box opacity — {Math.round(settings.caption.boxOpacity * 100)}%<input type="range" min="0" max="1" step="0.05" value={settings.caption.boxOpacity} onChange={e => setSettings(s => ({ ...s, caption: { ...s.caption, boxOpacity: parseFloat(e.target.value) } }))} /></label>
+                  <label>Size - {settings.caption.fontSize}px<input type="range" min="20" max="90" step="2" value={settings.caption.fontSize} onChange={e => setSettings(s => ({ ...s, caption: { ...s.caption, fontSize: parseInt(e.target.value) } }))} /></label>
+                  <label>Box opacity - {Math.round(settings.caption.boxOpacity * 100)}%<input type="range" min="0" max="1" step="0.05" value={settings.caption.boxOpacity} onChange={e => setSettings(s => ({ ...s, caption: { ...s.caption, boxOpacity: parseFloat(e.target.value) } }))} /></label>
                 </div>
                 <label className="switch"><input type="checkbox" checked={settings.caption.box} onChange={e => setSettings(s => ({ ...s, caption: { ...s.caption, box: e.target.checked } }))} /> Background bar behind captions</label>
                 <div className="grid2">
                   <label>Accuracy / speed
                     <select value={settings.caption.model} onChange={e => setSettings(s => ({ ...s, caption: { ...s.caption, model: e.target.value as any } }))}>
-                      <option value="tiny">Tiny — fastest</option><option value="base">Base — balanced</option><option value="small">Small — most accurate, slower</option>
+                      <option value="tiny">Tiny, fastest</option><option value="base">Base, balanced</option><option value="small">Small, most accurate, slower</option>
                     </select>
                   </label>
                   <label>Language
@@ -1889,7 +1889,7 @@ function App() {
                   <label>Transition (s)<input type="number" min="0" step="0.02" value={settings.silence.transition} disabled={!settings.silence.smooth} onChange={e => setSettings(s => ({ ...s, silence: { ...s.silence, transition: Math.max(0, parseFloat(e.target.value) || 0) } }))} /></label>
                 </div>
                 <label className="switch"><input type="checkbox" checked={settings.silence.smooth} onChange={e => setSettings(s => ({ ...s, silence: { ...s.silence, smooth: e.target.checked } }))} /> Smooth the cuts with a short fade</label>
-                <p className="hint">“Cut Pauses” removes dead space and ripples everything left. <b>Audio</b> mode cuts silent gaps; <b>Visual stillness</b> cuts motionless/frozen stretches (for silent footage) — raise the stillness sensitivity toward 0 to catch near-static shots.</p>
+                <p className="hint">“Cut Pauses” removes dead space and ripples everything left. <b>Audio</b> mode cuts silent gaps; <b>Visual stillness</b> cuts motionless/frozen stretches (for silent footage), raise the stillness sensitivity toward 0 to catch near-static shots.</p>
               </section>
             </div>
             <div className="modal-foot"><span>Settings save automatically and apply to every video.</span><button className="primary" onClick={() => setShowSettings(false)}>Done</button></div>
@@ -1905,7 +1905,7 @@ function App() {
               <button className="modal-close" onClick={() => setShowQC(false)}>✕</button>
             </div>
             <div className="modal-body">
-              {qcRunning && <div className="qc-loading">Analyzing render — loudness, peaks, black frames, sampling frames…</div>}
+              {qcRunning && <div className="qc-loading">Analyzing render, loudness, peaks, black frames, sampling frames…</div>}
               {!qcRunning && qcReport?.error && <div className="qc-loading">{qcReport.error}</div>}
               {!qcRunning && qcReport && !qcReport.error && (
                 <>

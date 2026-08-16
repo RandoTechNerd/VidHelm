@@ -1,4 +1,4 @@
-// Browser fallback for the Electron bridge — lets `npm run dev:web` render the full UI in a plain
+// Browser fallback for the Electron bridge, lets `npm run dev:web` render the full UI in a plain
 // browser for UI work and screenshots. Media import/export need real Electron; everything visual
 // (timeline, tag points, SFX list, booth, panels) works against this mock.
 const demoSfx = ['whoosh', 'pop', 'boing', 'squish', 'gummy-squish', 'gloop', 'poof', 'spoosh', 'sparkle', 'party', 'riser', 'ding', 'thud']

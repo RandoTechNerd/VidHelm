@@ -1,8 +1,8 @@
 # Driving VidHelm with an AI agent
 
-VidHelm is built for **two-handed editing**: you in the GUI, an AI assistant on the other side of a local bridge — both working on the same timeline at the same time. You drag clips; the agent tags beats, drops SFX, writes titles, and exports. Everything the agent does appears live in your window.
+VidHelm is built for **two-handed editing**: you in the GUI, an AI assistant on the other side of a local bridge, both working on the same timeline at the same time. You drag clips; the agent tags beats, drops SFX, writes titles, and exports. Everything the agent does appears live in your window.
 
-> **Connecting a client?** [docs/CONNECT.md](CONNECT.md) covers every AI client (Claude, Cursor, VS Code, Windsurf, Cline, Codex, Gemini, plain HTTP) plus troubleshooting — or click **🤖 AI** in the app header for live diagnostics and configs generated with your real install path. This page documents the bridge itself.
+> **Connecting a client?** [docs/CONNECT.md](CONNECT.md) covers every AI client (Claude, Cursor, VS Code, Windsurf, Cline, Codex, Gemini, plain HTTP) plus troubleshooting, or click **🤖 AI** in the app header for live diagnostics and configs generated with your real install path. This page documents the bridge itself.
 
 ## Setup with Claude Code (zero config)
 
@@ -48,17 +48,17 @@ Add to `claude_desktop_config.json`:
 A conversation that works well:
 
 > **You:** I dropped tags on all the beats. Make it fun.
-> **Agent:** *(get_state → sees `hook 3.5s`, `reveal 8.2s`, `punchline 11s`)* placing a riser into the reveal, a party horn on it, pop on the punchline, and a title over the hook… *(screenshot)* here's how it looks — want the horn louder?
+> **Agent:** *(get_state → sees `hook 3.5s`, `reveal 8.2s`, `punchline 11s`)* placing a riser into the reveal, a party horn on it, pop on the punchline, and a title over the hook… *(screenshot)* here's how it looks, want the horn louder?
 
-## The Start Recipe — your standing orders
+## The Start Recipe, your standing orders
 
-`get_state` returns `startRecipe`: the user's instruction block (# lines are OFF). Treat active lines as your to-do when they say "run my workflow": app-native steps go through `run_recipe`/`cut_pauses`/`compose_thumbnail`; lines like `titles 5` mean YOU pitch five title options in chat and let them pick. Free-typed lines are custom standing instructions — follow them.
+`get_state` returns `startRecipe`: the user's instruction block (# lines are OFF). Treat active lines as your to-do when they say "run my workflow": app-native steps go through `run_recipe`/`cut_pauses`/`compose_thumbnail`; lines like `titles 5` mean YOU pitch five title options in chat and let them pick. Free-typed lines are custom standing instructions, follow them.
 
 ## How it works / security
 
 - The app runs a **localhost-only** HTTP bridge (`127.0.0.1:5959`, override with `VH_AGENT_PORT`). Connections from other machines are refused; nothing is exposed to the network.
 - `agent/mcp-server.mjs` is a dependency-free stdio MCP server that proxies tool calls to the bridge. If the app isn't running, tools return a clear "start the app" message instead of hanging.
-- The agent edits the same React state you do — undo (Ctrl+Z) works on its changes, and yours and its edits interleave safely.
+- The agent edits the same React state you do: undo (Ctrl+Z) works on its changes, and yours and its edits interleave safely.
 
 ## For other agent frameworks
 

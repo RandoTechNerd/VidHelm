@@ -1,6 +1,6 @@
 // Generates the app icons from one source design: build/icon.ico (Windows exe, installer,
 // Start-menu and desktop shortcuts) and public/icon.png (the window/taskbar icon in dev).
-// Run:  node scripts/make-icons.mjs      (needs sharp — `npm i -D sharp` if it is missing)
+// Run:  node scripts/make-icons.mjs      (needs sharp - `npm i -D sharp` if it is missing)
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -23,7 +23,7 @@ const helm = (cx, cy, r, stroke) => {
     <path d="M ${cx - r * 0.17} ${cy - r * 0.3} L ${cx + r * 0.36} ${cy} L ${cx - r * 0.17} ${cy + r * 0.3} Z" fill="${BLUE}"/>`
 }
 
-// Small sizes drop the spokes and thicken everything — at 16px thin strokes turn to mush.
+// Small sizes drop the spokes and thicken everything, at 16px thin strokes turn to mush.
 const art = (simple) => `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
   <defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
     <stop offset="0" stop-color="${MID}"/><stop offset="1" stop-color="${DEEP}"/></linearGradient></defs>

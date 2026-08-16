@@ -19,13 +19,13 @@ For contributors. TL;DR: a React single-page renderer that owns *all* editing st
 
 ## Renderer model
 
-All editing state lives in `App.tsx` React state — no store library:
+All editing state lives in `App.tsx` React state, no store library:
 
-- `MediaFile[]` — the bin (id, path, type, duration, hasVideo/hasAudio)
-- `TimelineClip[]` — clips with `trackId: 'v1' | 'a1' | 'a2'` (video · voice/music · SFX), `start`, `duration`, `sourceStart`, volume + `volumePoints` automation, fades
-- `TextClip[]` — overlay text cues (position is 0..1 relative to frame)
-- `Marker[]` — tag points `{ t, label, color }` (see `extras.tsx`)
-- `AppSettings` — brand kit, intro defaults, audio, captions, silence detection, narration command; persisted via `get/set-settings` IPC
+- `MediaFile[]`: the bin (id, path, type, duration, hasVideo/hasAudio)
+- `TimelineClip[]`: clips with `trackId: 'v1' | 'a1' | 'a2'` (video · voice/music · SFX), `start`, `duration`, `sourceStart`, volume + `volumePoints` automation, fades
+- `TextClip[]`: overlay text cues (position is 0..1 relative to frame)
+- `Marker[]`: tag points `{ t, label, color }` (see `extras.tsx`)
+- `AppSettings`: brand kit, intro defaults, audio, captions, silence detection, narration command; persisted via `get/set-settings` IPC
 
 **Preview playback** is DOM-based: a rAF clock advances `currentTime`; `<video>` elements for active video clips and hidden `Audio` elements for `a1`/`a2` clips are seeked/played to follow the clock, with per-frame gain from `gainAt()` (automation) × fades × master. The preview intentionally mirrors the export math (`fadeFactor`, `gainAt` ↔ `volumeExpr`, `alphaExpr` in main.ts).
 
@@ -50,28 +50,28 @@ Progress streams to the renderer; a **quality check** pass (`quality-check`) the
 - **SFX library** (`sfx-library`): 13 effects defined as pure FFmpeg `lavfi` filtergraphs in `SFX_RECIPES`, rendered to `userData/sfx/*.wav` on first request (no downloads, no licensing). `userData/sfx/custom/` is scanned for user files. The renderer treats results as ordinary audio media placed on track `a2`.
 - **Karaoke booth** (`KaraokeBooth`): drives the app's own playback (`onSeek/onPlay`) while recording the mic via `MediaRecorder`; cue lines are indexed against tag points (or spread evenly). The take is saved through the existing `save-recording` handler and placed at 0:00 on `a1`.
 - **Voice clone** (`voice-clone`): spawns a user-configured shell command with `{script}`/`{outdir}` substitution, streams output, then returns the sorted `.wav` list. Placement logic lives in the renderer (`narrationGenerated`). See `docs/VOICE_CLONE.md` for the contract.
-- **Markers**: pure renderer state; rendered as draggable flags over the ruler, listed in `MarkerPanel`, included in project files (`version: 2`; older projects load fine — markers default to `[]`).
+- **Markers**: pure renderer state; rendered as draggable flags over the ruler, listed in `MarkerPanel`, included in project files (`version: 2`; older projects load fine, markers default to `[]`).
 
 - **Agent bridge** (`main.ts` + `agent/mcp-server.mjs`): a localhost-only HTTP server (127.0.0.1:5959) forwards agent commands into the renderer over IPC (`agent-command` → executor in App.tsx → `agent-response`), so agent edits go through the same React state (and undo history) as human edits. The MCP server is a dependency-free stdio JSON-RPC proxy over that bridge; `.mcp.json` makes Claude Code pick it up automatically. `GET /screenshot` uses `webContents.capturePage`. Export via agent runs the normal export pipeline with an explicit output path and returns the quality-check summary. See `docs/AGENT.md`.
 
-- **Window dragging** (`main.ts` + `electron/dragMath.ts`): the window has no OS title bar (`titleBarStyle: 'hidden'` + `titleBarOverlay`), so the header is the grab bar. Rather than `-webkit-app-region: drag` — which swallows mouse events and can't restore a maximized window under the cursor — the renderer sends `window-drag-start`/`-end` and the main process moves the window by polling `screen.getCursorScreenPoint()` every 16 ms. Dragging while maximized or full screen restores first and re-anchors the pointer proportionally along the header (`restoreDragOffset`); releasing within 6 px of the top of the work area maximizes (`shouldSnapMaximize`). Double-clicking the header toggles maximize. The geometry lives in `dragMath.ts` with no Electron imports so it can be tested standalone. Header children matching `HDR_CONTROLS` (buttons, inputs, …) never start a drag.
+- **Window dragging** (`main.ts` + `electron/dragMath.ts`): the window has no OS title bar (`titleBarStyle: 'hidden'` + `titleBarOverlay`), so the header is the grab bar. Rather than `-webkit-app-region: drag` (which swallows mouse events and can't restore a maximized window under the cursor), the renderer sends `window-drag-start`/`-end` and the main process moves the window by polling `screen.getCursorScreenPoint()` every 16 ms. Dragging while maximized or full screen restores first and re-anchors the pointer proportionally along the header (`restoreDragOffset`); releasing within 6 px of the top of the work area maximizes (`shouldSnapMaximize`). Double-clicking the header toggles maximize. The geometry lives in `dragMath.ts` with no Electron imports so it can be tested standalone. Header children matching `HDR_CONTROLS` (buttons, inputs, …) never start a drag.
 
-- **Media import** (`classifyMedia` in App.tsx): extension tables are only a hint — `get-metadata` (ffprobe) has the final say, so unusual-but-valid files import and broken ones are refused with a reason. Junk demuxers are filtered explicitly: ffprobe happily reads a `.txt` as an `ansi` video stream via the `tty` demuxer, which used to land on the timeline as a 0.04s clip. 3D models bypass the bin and open the 3D Studio; `.html` pages are scanned for a model first (`electron/modelSniff.ts` — sibling file reference, base64 payload, or inline model text; Electron-free so it can be tested standalone).
-- **3D Studio transparency**: stills render as PNGs with a real alpha channel and composite over footage (the export overlays every clip through `format=yuva420p`, and the preview stacks clips as absolutely-positioned layers, so an alpha clip added later sits on top). Turntable *video* cannot be transparent — Chromium's MediaRecorder flattens canvas alpha whatever the codec, and this FFmpeg build writes the WebM `ALPHA_MODE` tag but drops the channel. The **Video frame** backdrop is the workaround: it bakes the frame under the playhead behind the model.
+- **Media import** (`classifyMedia` in App.tsx): extension tables are only a hint - `get-metadata` (ffprobe) has the final say, so unusual-but-valid files import and broken ones are refused with a reason. Junk demuxers are filtered explicitly: ffprobe happily reads a `.txt` as an `ansi` video stream via the `tty` demuxer, which used to land on the timeline as a 0.04s clip. 3D models bypass the bin and open the 3D Studio; `.html` pages are scanned for a model first (`electron/modelSniff.ts`: sibling file reference, base64 payload, or inline model text; Electron-free so it can be tested standalone).
+- **3D Studio transparency**: stills render as PNGs with a real alpha channel and composite over footage (the export overlays every clip through `format=yuva420p`, and the preview stacks clips as absolutely-positioned layers, so an alpha clip added later sits on top). Turntable *video* cannot be transparent - Chromium's MediaRecorder flattens canvas alpha whatever the codec, and this FFmpeg build writes the WebM `ALPHA_MODE` tag but drops the channel. The **Video frame** backdrop is the workaround: it bakes the frame under the playhead behind the model.
 - **Agent command ids**: the renderer dedupes by `cmd.id` in a `window`-scoped set. StrictMode's double mount and dev hot reloads can leave more than one bridge listener registered, which otherwise applies each edit twice (two tags from a single `add_tag`).
 
 ## Dev modes
 
-- `npm run dev` — Vite + Electron via `vite-plugin-electron`; hot reload on both sides.
-- `npm run dev:web` — renderer only in a browser; `src/ipcMock.ts` installs a stub bridge (SFX list is fake, export disabled). Use it for UI/CSS work and screenshots.
-- `npm run typecheck` — strict `tsc -b` over renderer + main.
+- `npm run dev`: Vite + Electron via `vite-plugin-electron`; hot reload on both sides.
+- `npm run dev:web`: renderer only in a browser; `src/ipcMock.ts` installs a stub bridge (SFX list is fake, export disabled). Use it for UI/CSS work and screenshots.
+- `npm run typecheck`: strict `tsc -b` over renderer + main.
 
 ## Platform notes
 
 Windows-first. The three Windows-isms, all in `electron/main.ts`:
 
-1. `ffprobe-static` path uses `bin/win32/x64` — switch on `process.platform` to port.
-2. `drawtext` uses `C:/Windows/Fonts/arial.ttf` — pick a platform font or bundle one.
+1. `ffprobe-static` path uses `bin/win32/x64`: switch on `process.platform` to port.
+2. `drawtext` uses `C:/Windows/Fonts/arial.ttf`: pick a platform font or bundle one.
 3. Voice-clone commands run through the default shell (`cmd`).
 
 Everything else (fluent-ffmpeg, Whisper via `@huggingface/transformers`, the renderer) is cross-platform already. PRs welcome.

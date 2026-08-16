@@ -70,7 +70,7 @@ export function SfxPanel({ onPlace, genCommand, onGenCommand }: {
         <input className="duration-input" style={{ width: '100%' }} placeholder='describe a sound… e.g. "cartoon spring boing, short"' value={genPrompt}
           onChange={e => setGenPrompt(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') generate() }} />
         {!genCommand && <>
-          <p className="hint">One-time setup: a text-to-audio command with <b>{'{prompt}'}</b> and <b>{'{out}'}</b>. Free local option: <b>audio.cpp</b> (prebuilt exe + stable_audio model) — see docs/VOICE_CLONE.md.</p>
+          <p className="hint">One-time setup: a text-to-audio command with <b>{'{prompt}'}</b> and <b>{'{out}'}</b>. Free local option: <b>audio.cpp</b> (prebuilt exe + stable_audio model), see docs/VOICE_CLONE.md.</p>
           <input className="duration-input" style={{ width: '100%' }} placeholder='e.g. "C:\audiocpp\audiocpp_cli.exe" --task gen --family stable_audio --model "C:\models\stable-audio" --text "{prompt}" --out "{out}"'
             value={genCommand} onChange={e => onGenCommand(e.target.value)} />
         </>}
@@ -82,7 +82,7 @@ export function SfxPanel({ onPlace, genCommand, onGenCommand }: {
       </div>}
       <div className="sfx-foot">
         <button onClick={() => window.ipcRenderer.openSfxFolder()}>Add your own…</button>
-        <button onClick={() => setGenOpen(o => !o)} title="Generate a sound effect from a text description (bring your own local model — e.g. audio.cpp)">✨ AI</button>
+        <button onClick={() => setGenOpen(o => !o)} title="Generate a sound effect from a text description (bring your own local model, e.g. audio.cpp)">✨ AI</button>
         <button onClick={load} title="Rescan the custom folder">↻</button>
       </div>
     </div>
@@ -100,8 +100,8 @@ export function MarkerPanel({ markers, currentTime, onChange, onSeek }: {
       <button className="marker-add" onClick={() => onChange([...markers, newMarker(currentTime)])}>+ Tag at {fmtT(currentTime)} <kbd>M</kbd></button>
       {sorted.length === 0 && (
         <InfoNote label="What are tag points?">
-          They mark the beats of your video — a joke landing, a reveal, a cut point. Press <b>M</b> while it plays to drop one.<br /><br />
-          Everything lines up to them afterwards: sound effects, captions, narration lines — and your AI reads them too, so you can say “put a whoosh on every tag”.
+          They mark the beats of your video, a joke landing, a reveal, a cut point. Press <b>M</b> while it plays to drop one.<br /><br />
+          Everything lines up to them afterwards: sound effects, captions, narration lines, and your AI reads them too, so you can say “put a whoosh on every tag”.
         </InfoNote>
       )}
       <div className="marker-list">
@@ -139,7 +139,7 @@ export function KaraokeBooth({ open, onClose, markers, totalDuration, currentTim
   const [status, setStatus] = useState('')
   const recRef = useRef<{ rec: MediaRecorder; stream: MediaStream } | null>(null)
   const meterRaf = useRef(0)
-  // the booth floats over the editor — let people drag it out of the way by its header
+  // the booth floats over the editor, let people drag it out of the way by its header
   const boothRef = useRef<HTMLDivElement | null>(null)
   const grabRef = useRef<{ dx: number; dy: number } | null>(null)
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null)
@@ -218,8 +218,8 @@ export function KaraokeBooth({ open, onClose, markers, totalDuration, currentTim
       onSeek(0); onPlay(true)
       rec.start()
       setRecording(true)
-      setStatus('Recording — read along')
-    } catch (e) { console.error(e); setStatus('Microphone blocked — allow access and retry.') }
+      setStatus('Recording, read along')
+    } catch (e) { console.error(e); setStatus('Microphone blocked, allow access and retry.') }
   }
 
   const stop = () => {
@@ -245,10 +245,10 @@ export function KaraokeBooth({ open, onClose, markers, totalDuration, currentTim
           <div className="booth-next">{curIdx + 1 < lines.length ? `next: ${lines[curIdx + 1]}` : ''}</div>
         </div>
       ) : (<>
-        <textarea className="booth-script" rows={4} placeholder={'Paste your script — one line per beat.\nLines light up as the video plays; read along in one take.'} value={script} onChange={e => setScript(e.target.value)} />
+        <textarea className="booth-script" rows={4} placeholder={'Paste your script, one line per beat.\nLines light up as the video plays; read along in one take.'} value={script} onChange={e => setScript(e.target.value)} />
         <button className="booth-edit" disabled={drafting || totalDuration <= 0}
-          title="Transcribe the timeline audio with on-device Whisper and turn it into read-along lines — perfect for cleanly re-recording a rough take"
-          onClick={async () => { setDrafting(true); setStatus('Listening to your timeline…'); const s = await onDraft(); if (s) { setScript(s); setStatus('Draft ready — tidy the lines, then record.') } else setStatus('No speech found on the timeline.'); setDrafting(false) }}>
+          title="Transcribe the timeline audio with on-device Whisper and turn it into read-along lines, perfect for cleanly re-recording a rough take"
+          onClick={async () => { setDrafting(true); setStatus('Listening to your timeline…'); const s = await onDraft(); if (s) { setScript(s); setStatus('Draft ready, tidy the lines, then record.') } else setStatus('No speech found on the timeline.'); setDrafting(false) }}>
           {drafting ? 'Transcribing…' : '✨ Draft from timeline audio'}
         </button>
       </>)}
@@ -283,7 +283,7 @@ export const RECIPE_TOGGLES: { key: string; label: string; hint: string }[] = [
   { key: 'captions', label: 'Captions', hint: 'on-device Whisper subtitles' },
 ]
 
-export const DEFAULT_RECIPE = `# ── Start Recipe — runs when you (or your AI) kick off a video ──
+export const DEFAULT_RECIPE = `# ── Start Recipe, runs when you (or your AI) kick off a video ──
 cut-pauses           # tighten dead air before anything else
 thumbnail            # sample frames, pick one in the picker
 subtitle             # catchy one-liner on the thumbnail
@@ -326,7 +326,7 @@ export function RecipeSection({ recipe, onChange, logoPath, onPickLogo }: {
   return (
     <section>
       <div className="sec-title">
-        <h3>Start Recipe <span className="hint" style={{ fontWeight: 400 }}>— your defaults, like start G-code. <b>#</b> = off</span></h3>
+        <h3>Start Recipe <span className="hint" style={{ fontWeight: 400 }}> -  your defaults, like start G-code. <b>#</b> = off</span></h3>
       </div>
       <div className="recipe-toggles">
         {RECIPE_TOGGLES.map(t => (
@@ -368,7 +368,7 @@ export function ThumbnailModal({ open, onClose, videoPath, videoName, logoPath }
   const [status, setStatus] = useState('')
 
   useEffect(() => {
-    if (open && !videoPath) { setFrames([]); setStatus('No video yet — drag one into the Media Bin (or onto the timeline), then reopen this picker.'); return }
+    if (open && !videoPath) { setFrames([]); setStatus('No video yet, drag one into the Media Bin (or onto the timeline), then reopen this picker.'); return }
     if (!open || !videoPath) return
     setFrames([]); setSel(null); setStatus('Sampling frames…')
     window.ipcRenderer.sampleFrames({ filePath: videoPath, count: 8 }).then(r => {
@@ -409,7 +409,7 @@ export function ThumbnailModal({ open, onClose, videoPath, videoName, logoPath }
           </section>
         </div>
         <div className="modal-foot">
-          <span>1280×720 PNG — YouTube-ready</span>
+          <span>1280×720 PNG - YouTube-ready</span>
           <button className="primary" disabled={sel === null || busy} onClick={save}>{busy ? 'Composing…' : 'Save thumbnail…'}</button>
         </div>
       </div>
@@ -424,18 +424,18 @@ export function ThumbnailModal({ open, onClose, videoPath, videoName, logoPath }
 type AgentStatus = Awaited<ReturnType<Window['ipcRenderer']['agentStatus']>>
 
 const CLIENT_DOCS: { id: string; name: string; where: string; kind: 'json' | 'toml' | 'http' | 'auto' }[] = [
-  { id: 'claude-code', name: 'Claude Code', where: 'Zero config — open this repo folder and approve the "vidhelm" server when prompted (.mcp.json is auto-discovered). Installed-app users: run the command below once instead.', kind: 'auto' },
-  { id: 'claude-desktop', name: 'Claude Desktop', where: 'Settings → Developer → Edit Config, or edit  %APPDATA%\\Claude\\claude_desktop_config.json  — merge this in, then fully restart Claude Desktop.', kind: 'json' },
+  { id: 'claude-code', name: 'Claude Code', where: 'Zero config, open this repo folder and approve the "vidhelm" server when prompted (.mcp.json is auto-discovered). Installed-app users: run the command below once instead.', kind: 'auto' },
+  { id: 'claude-desktop', name: 'Claude Desktop', where: 'Settings → Developer → Edit Config, or edit  %APPDATA%\\Claude\\claude_desktop_config.json, merge this in, then fully restart Claude Desktop.', kind: 'json' },
   { id: 'cursor', name: 'Cursor', where: 'Zero config in the repo (.cursor/mcp.json ships with it). Otherwise: Settings → MCP → Add server, or merge into  %USERPROFILE%\\.cursor\\mcp.json.', kind: 'json' },
   { id: 'vscode', name: 'VS Code (Copilot)', where: 'Zero config in the repo (.vscode/mcp.json ships with it). Otherwise: Command Palette → "MCP: Add Server", or merge into your user mcp.json.', kind: 'json' },
   { id: 'windsurf', name: 'Windsurf', where: 'Merge into  %USERPROFILE%\\.codeium\\windsurf\\mcp_config.json  then reload Windsurf.', kind: 'json' },
   { id: 'cline', name: 'Cline / Roo', where: 'Extension sidebar → MCP Servers → Configure → merge this into the JSON.', kind: 'json' },
   { id: 'codex', name: 'Codex CLI', where: 'Append to  %USERPROFILE%\\.codex\\config.toml.', kind: 'toml' },
   { id: 'gemini', name: 'Gemini CLI', where: 'Merge into  %USERPROFILE%\\.gemini\\settings.json.', kind: 'json' },
-  { id: 'lmstudio', name: 'LM Studio', where: 'Fully local: chat sidebar → Program → Install → Edit mcp.json — merge this in. Pick a model that supports tool use (Qwen, Llama 3.1+, Mistral…) and toggle on just the VidHelm tools you need for small models.', kind: 'json' },
+  { id: 'lmstudio', name: 'LM Studio', where: 'Fully local: chat sidebar → Program → Install → Edit mcp.json, merge this in. Pick a model that supports tool use (Qwen, Llama 3.1+, Mistral…) and toggle on just the VidHelm tools you need for small models.', kind: 'json' },
   { id: 'jan', name: 'Jan', where: 'Fully local: Settings → MCP Servers (enable the experimental toggle) → add server, or merge this into its JSON.', kind: 'json' },
-  { id: 'openwebui', name: 'Open WebUI', where: 'Open WebUI speaks OpenAPI tool servers, not MCP — run the mcpo proxy below, then add http://localhost:8001 under Settings → Tools.', kind: 'http' },
-  { id: 'localmodels', name: 'Ollama / Lemonade', where: 'Ollama, AMD Lemonade Server, llama.cpp & co. serve the model but are not agents themselves — point an MCP-capable front-end (LM Studio, Cline, Continue, Open WebUI) at your local endpoint, then add VidHelm in that front-end:', kind: 'http' },
+  { id: 'openwebui', name: 'Open WebUI', where: 'Open WebUI speaks OpenAPI tool servers, not MCP, run the mcpo proxy below, then add http://localhost:8001 under Settings → Tools.', kind: 'http' },
+  { id: 'localmodels', name: 'Ollama / Lemonade', where: 'Ollama, AMD Lemonade Server, llama.cpp & co. serve the model but are not agents themselves, point an MCP-capable front-end (LM Studio, Cline, Continue, Open WebUI) at your local endpoint, then add VidHelm in that front-end:', kind: 'http' },
   { id: 'http', name: 'Anything else', where: 'No MCP? Any agent that can run shell commands can drive the plain HTTP bridge directly:', kind: 'http' },
 ]
 
@@ -481,7 +481,7 @@ export function ConnectModal({ open, onClose }: { open: boolean; onClose: () => 
   const Check = ({ ok, label, detail, fix }: { ok: boolean | undefined; label: string; detail?: string; fix?: string }) => (
     <div className={`conn-check ${ok === undefined ? '' : ok ? 'ok' : 'bad'}`}>
       <span className="conn-dot">{ok === undefined ? '…' : ok ? '✓' : '✕'}</span>
-      <div><b>{label}</b>{detail && <span className="conn-detail"> — {detail}</span>}
+      <div><b>{label}</b>{detail && <span className="conn-detail"> - {detail}</span>}
         {ok === false && fix && <div className="conn-fix">{fix}</div>}
       </div>
     </div>
@@ -500,13 +500,13 @@ export function ConnectModal({ open, onClose }: { open: boolean; onClose: () => 
               detail={st?.bridge.listening ? `http://127.0.0.1:${port}` : st?.bridge.error || undefined}
               fix={`Another program may be using port ${port}. Close it, or launch VidHelm with the environment variable VH_AGENT_PORT set to a free port (and add the same env to your AI client's server config).`} />
             <Check ok={st?.loopback.ok} label="Bridge answers HTTP" detail={st?.loopback.detail}
-              fix="The port is open but not answering — restart VidHelm. If a firewall prompt appeared, allow it (the bridge only ever listens on 127.0.0.1, nothing leaves your machine)." />
+              fix="The port is open but not answering, restart VidHelm. If a firewall prompt appeared, allow it (the bridge only ever listens on 127.0.0.1, nothing leaves your machine)." />
             <Check ok={st?.mcpFile.ok} label="MCP server file" detail={st?.mcpFile.ok ? mcpPath : `missing: ${mcpPath}`}
-              fix="Reinstall VidHelm, or clone the repo — the file is agent/mcp-server.mjs." />
+              fix="Reinstall VidHelm, or clone the repo, the file is agent/mcp-server.mjs." />
             <Check ok={st?.node.ok} label={`Node.js for your AI client ${st?.node.version ? `(${st.node.version})` : ''}`}
               detail={st?.node.ok ? 'found on PATH' : 'not found on PATH'}
               fix="MCP clients start the server themselves with `node`. Install Node 18+ from nodejs.org, then restart your AI client. (VidHelm itself runs fine without it.)" />
-            <p className="hint">All green? Then any failure below is on the client side — pick yours and re-check its config.</p>
+            <p className="hint">All green? Then any failure below is on the client side, pick yours and re-check its config.</p>
           </section>
           <section>
             <div className="sec-title"><h3>Set up your AI of choice</h3></div>
@@ -525,12 +525,12 @@ export function ConnectModal({ open, onClose }: { open: boolean; onClose: () => 
           </section>
           <section>
             <div className="sec-title"><h3>Optional power-ups</h3></div>
-            <details><summary>🌐 Claude in Chrome — let your AI upload &amp; film the web</summary>
-              <p className="hint">Pair Claude with its Chrome extension and your AI can take the finished export all the way: <b>upload it to YouTube for you</b> (title, description, tags, thumbnail) and pause for your OK before publishing. It can also <b>capture websites or your localhost app</b> — screenshots and walkthrough recordings that drop straight into your timeline as footage. Get it at <code>claude.ai/chrome</code>, then just ask: "upload my export to YouTube" or "record my site's landing page for the intro".</p></details>
-            <details><summary>🎞 Adversal AI — your agent understands the footage (optional)</summary>
-              <p className="hint">Adversal is a third-party video-analysis MCP: your AI sends it a video and gets back Markdown notes, chapters, and extracted stills — perfect for auto-writing chapters, summaries, and finding the best moments in long source footage before cutting in VidHelm. Free tier is 100 minutes/month; needs Python 3.13+. Setup:</p>
+            <details><summary>🌐 Claude in Chrome, let your AI upload &amp; film the web</summary>
+              <p className="hint">Pair Claude with its Chrome extension and your AI can take the finished export all the way: <b>upload it to YouTube for you</b> (title, description, tags, thumbnail) and pause for your OK before publishing. It can also <b>capture websites or your localhost app</b>, screenshots and walkthrough recordings that drop straight into your timeline as footage. Get it at <code>claude.ai/chrome</code>, then just ask: "upload my export to YouTube" or "record my site's landing page for the intro".</p></details>
+            <details><summary>🎞 Adversal AI, your agent understands the footage (optional)</summary>
+              <p className="hint">Adversal is a third-party video-analysis MCP: your AI sends it a video and gets back Markdown notes, chapters, and extracted stills, perfect for auto-writing chapters, summaries, and finding the best moments in long source footage before cutting in VidHelm. Free tier is 100 minutes/month; needs Python 3.13+. Setup:</p>
               <pre className="conn-snippet">{'pip install adversal-cli\nclaude mcp add adversal -- adversal-cli'}</pre>
-              <p className="hint">Then ask your AI things like "analyze my raw footage and tag the highlights in VidHelm". Details at <code>adversal.ai</code>. Entirely optional — VidHelm never requires it.</p></details>
+              <p className="hint">Then ask your AI things like "analyze my raw footage and tag the highlights in VidHelm". Details at <code>adversal.ai</code>. Entirely optional - VidHelm never requires it.</p></details>
           </section>
           <section>
             <h3>Still stuck?</h3>
@@ -539,13 +539,13 @@ export function ConnectModal({ open, onClose }: { open: boolean; onClose: () => 
             <details><summary>I added the config but no tools show up</summary>
               <p className="hint">Fully restart the AI client (most only read MCP configs at startup), make sure the JSON merged cleanly (no trailing commas), and confirm the file path in <code>args</code> exists. In Claude Code, run <code>/mcp</code> to see server status.</p></details>
             <details><summary>Tools exist but every call errors</summary>
-              <p className="hint">Run the health check above. If the bridge is green, the client is probably launching the server without Node on PATH, or pointing at an old path after an update — re-copy the config.</p></details>
+              <p className="hint">Run the health check above. If the bridge is green, the client is probably launching the server without Node on PATH, or pointing at an old path after an update, re-copy the config.</p></details>
             <details><summary>Port conflict (bridge check is red)</summary>
               <p className="hint">Set <code>VH_AGENT_PORT</code> to a free port before launching VidHelm, and add <code>"env": {'{'}"VH_AGENT_PORT": "5960"{'}'}</code> to the server entry in your client config so both sides agree.</p></details>
             <details><summary>My local model connects but never uses the tools</summary>
-              <p className="hint">The model itself must support tool calling — Qwen 2.5+, Llama 3.1+, and Mistral do; older or heavily-quantized models often don't. Twenty-one tools can also overwhelm small (7B) models: in clients with per-tool toggles (like LM Studio) enable just <code>get_state</code>, <code>screenshot</code>, <code>cut_pauses</code>, <code>place_sfx</code>, and <code>export_video</code> to start.</p></details>
+              <p className="hint">The model itself must support tool calling - Qwen 2.5+, Llama 3.1+, and Mistral do; older or heavily-quantized models often don't. Twenty-one tools can also overwhelm small (7B) models: in clients with per-tool toggles (like LM Studio) enable just <code>get_state</code>, <code>screenshot</code>, <code>cut_pauses</code>, <code>place_sfx</code>, and <code>export_video</code> to start.</p></details>
             <details><summary>My assistant doesn't support MCP at all</summary>
-              <p className="hint">If it can run shell commands, it can still steer VidHelm over plain HTTP — pick "Anything else" above and paste those curl examples into its instructions. The repo also ships a portable skill file (<code>agent/skills/vidhelm-skill.md</code>) you can paste into any assistant's custom instructions.</p></details>
+              <p className="hint">If it can run shell commands, it can still steer VidHelm over plain HTTP, pick "Anything else" above and paste those curl examples into its instructions. The repo also ships a portable skill file (<code>agent/skills/vidhelm-skill.md</code>) you can paste into any assistant's custom instructions.</p></details>
           </section>
         </div>
         <div className="modal-foot">
@@ -590,7 +590,7 @@ function VoiceWizard({ onCommand }: { onCommand: (c: string) => void }) {
         let bin = ''
         for (let i = 0; i < b.length; i += 0x8000) bin += String.fromCharCode(...Array.from(b.subarray(i, i + 0x8000)))
         setSample({ base64: btoa(bin), label: `recorded sample (${Math.round(elapsedRef.current)}s)` })
-        setStatus('Sample recorded ✓ — now create the engine.')
+        setStatus('Sample recorded ✓, now create the engine.')
       }
       const t0 = Date.now()
       const timer = window.setInterval(() => { elapsedRef.current = (Date.now() - t0) / 1000; setElapsed(elapsedRef.current) }, 250)
@@ -598,8 +598,8 @@ function VoiceWizard({ onCommand }: { onCommand: (c: string) => void }) {
       recRef.current.raf = requestAnimationFrame(meter)
       rec.start()
       setRecording(true)
-      setStatus('Reading the sample text aloud — 15 to 30 seconds is perfect.')
-    } catch { setStatus('Microphone blocked — allow access and retry.') }
+      setStatus('Reading the sample text aloud, 15 to 30 seconds is perfect.')
+    } catch { setStatus('Microphone blocked, allow access and retry.') }
   }
   const elapsedRef = useRef(0)
   const stop = () => {
@@ -616,17 +616,17 @@ function VoiceWizard({ onCommand }: { onCommand: (c: string) => void }) {
     if (!sample) return
     setBusy(true)
     if (engine === 'xtts') {
-      setStatus('Pick a folder in the dialog — the installer opens in its own window (one time, ~2 GB).')
+      setStatus('Pick a folder in the dialog, the installer opens in its own window (one time, ~2 GB).')
       const r = await window.ipcRenderer.voiceCloneSetup(sample.base64 ? { sampleBase64: sample.base64 } : { samplePath: sample.path })
       if (r.command) {
         onCommand(r.command)
-        setStatus('Voice engine created and the command below is filled in ✓ — once the installer window finishes, write a script and hit Generate narration.')
+        setStatus('Voice engine created and the command below is filled in ✓, once the installer window finishes, write a script and hit Generate narration.')
       } else setStatus(r.error || 'canceled')
     } else {
       const r = await window.ipcRenderer.voiceCppSetup({ ...(sample.base64 ? { sampleBase64: sample.base64 } : { samplePath: sample.path }), cliPath, modelPath, family })
       if (r.command) {
         onCommand(r.command)
-        setStatus('Wrapper + reference written next to audiocpp_cli and the command below is filled in ✓ — write a script and hit Generate narration.')
+        setStatus('Wrapper + reference written next to audiocpp_cli and the command below is filled in ✓, write a script and hit Generate narration.')
       } else setStatus(r.error || 'canceled')
     }
     setBusy(false)
@@ -640,17 +640,17 @@ function VoiceWizard({ onCommand }: { onCommand: (c: string) => void }) {
       {expanded && <>
         <div className="conn-clients" style={{ marginTop: 4 }}>
           <button className={`recipe-chip ${engine === 'xtts' ? 'on' : ''}`} onClick={() => setEngine('xtts')} title="Fully guided; needs Python 3.10+">XTTS-v2 (guided)</button>
-          <button className={`recipe-chip ${engine === 'acpp' ? 'on' : ''}`} onClick={() => setEngine('acpp')} title="No Python — prebuilt exe + GGUF model">audio.cpp (no Python)</button>
+          <button className={`recipe-chip ${engine === 'acpp' ? 'on' : ''}`} onClick={() => setEngine('acpp')} title="No Python, prebuilt exe + GGUF model">audio.cpp (no Python)</button>
         </div>
         {engine === 'xtts'
-          ? <p className="hint" style={{ marginTop: 4 }}>Three steps, all free and local: record ~20 seconds of your voice, pick an install folder, and VidHelm sets up the XTTS-v2 engine (needs <b>Python 3.10+</b> from python.org) and fills in the command for you. Heads up: the XTTS-v2 <i>model</i> is licensed for non-commercial use — for monetized videos consider the audio.cpp engines (Apache-licensed models).</p>
-          : <p className="hint" style={{ marginTop: 4 }}>No Python needed: grab a prebuilt <b>audio.cpp</b> zip (github.com/0xShug0/audio.cpp → Releases → <code>audiocpp-windows-cpu-*.zip</code>), download a voice-cloning GGUF model (Hugging Face: <code>audio-cpp/audio.cpp-gguf</code>), point VidHelm at both, and it writes the wrapper + reference and fills in the command. Model families like PocketTTS and Fish are Apache/permissively licensed — good for monetized videos.</p>}
+          ? <p className="hint" style={{ marginTop: 4 }}>Three steps, all free and local: record ~20 seconds of your voice, pick an install folder, and VidHelm sets up the XTTS-v2 engine (needs <b>Python 3.10+</b> from python.org) and fills in the command for you. Heads up: the XTTS-v2 <i>model</i> is licensed for non-commercial use, for monetized videos consider the audio.cpp engines (Apache-licensed models).</p>
+          : <p className="hint" style={{ marginTop: 4 }}>No Python needed: grab a prebuilt <b>audio.cpp</b> zip (github.com/0xShug0/audio.cpp → Releases → <code>audiocpp-windows-cpu-*.zip</code>), download a voice-cloning GGUF model (Hugging Face: <code>audio-cpp/audio.cpp-gguf</code>), point VidHelm at both, and it writes the wrapper + reference and fills in the command. Model families like PocketTTS and Fish are Apache/permissively licensed, good for monetized videos.</p>}
         <div className="vc-sample">{VOICE_SAMPLE_TEXT}</div>
         <div className="vc-row">
           <button className={`booth-rec ${recording ? 'on' : ''}`} onClick={() => recording ? stop() : record()}>{recording ? `■ Stop (${elapsed.toFixed(0)}s)` : '● Record sample'}</button>
           {recording && <div className="booth-meter"><i style={{ width: `${Math.min(100, level * 100)}%` }} /></div>}
           <span className="hint" style={{ margin: 0 }}>or</span>
-          <button onClick={async () => { const p = await window.ipcRenderer.pickAudio(); if (p) { setSample({ path: p, label: p.split(/[\\/]/).pop() || 'sample' }); setStatus('Sample chosen ✓ — now create the engine.') } }}>Use a WAV/MP3 I have…</button>
+          <button onClick={async () => { const p = await window.ipcRenderer.pickAudio(); if (p) { setSample({ path: p, label: p.split(/[\\/]/).pop() || 'sample' }); setStatus('Sample chosen ✓, now create the engine.') } }}>Use a WAV/MP3 I have…</button>
         </div>
         {engine === 'acpp' && <div className="vc-row">
           <button onClick={async () => { const p = await window.ipcRenderer.pickFile({ title: 'audiocpp_cli.exe', extensions: ['exe'] }); if (p) setCliPath(p) }}>{cliPath ? cliPath.split(/[\\/]/).pop() : 'audiocpp_cli.exe…'}</button>
@@ -699,13 +699,13 @@ export function NarrationModal({ open, onClose, command, onCommand, onGenerated 
         <div className="modal-body">
           <VoiceWizard onCommand={onCommand} />
           <section>
-            <h3>Script — one line per scene</h3>
+            <h3>Script, one line per scene</h3>
             <textarea className="booth-script" rows={6} placeholder={'In 1959, a scientist looked down a microscope…\nEverybody has 46. He counted 45.'} value={script} onChange={e => setScript(e.target.value)} />
           </section>
           <section>
             <h3>Narration command</h3>
             <input className="duration-input" style={{ width: '100%' }} placeholder='e.g.  python C:\tools\clone_voice.py my_voice.wav {script} {outdir}' value={command} onChange={e => onCommand(e.target.value)} />
-            <p className="hint"><b>{'{script}'}</b> is replaced with a text file of your lines, <b>{'{outdir}'}</b> with a folder your tool should fill with <b>scene_1.wav, scene_2.wav…</b> (one per line). Works with any TTS/voice-clone CLI — see <b>docs/VOICE_CLONE.md</b> for a ready-made XTTS setup.</p>
+            <p className="hint"><b>{'{script}'}</b> is replaced with a text file of your lines, <b>{'{outdir}'}</b> with a folder your tool should fill with <b>scene_1.wav, scene_2.wav…</b> (one per line). Works with any TTS/voice-clone CLI, see <b>docs/VOICE_CLONE.md</b> for a ready-made XTTS setup.</p>
           </section>
           {log && <pre className="clone-log">{log}</pre>}
         </div>

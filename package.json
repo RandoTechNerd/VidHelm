@@ -43,7 +43,7 @@
     "vite-plugin-electron": "^0.29.1",
     "vite-plugin-electron-renderer": "^0.14.6"
   },
-  "description": "VidHelm — a lean desktop video editor for makers: you take the helm, your AI crews the busywork. Tag points, karaoke narration booth, cloned-voice narration, synthesized SFX, Start Recipes, and a built-in MCP server.",
+  "description": "VidHelm, a lean desktop video editor for makers: you take the helm, your AI crews the busywork. Tag points, karaoke narration booth, cloned-voice narration, synthesized SFX, Start Recipes, and a built-in MCP server.",
   "license": "MIT",
   "author": "RandoTechNerd <randotechnerd@gmail.com>",
   "repository": {

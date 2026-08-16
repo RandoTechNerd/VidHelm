@@ -63,7 +63,7 @@ header {
   flex-shrink: 0;
   /* The whole bar is the window's grab handle. Movement is driven from the main process
      (electron/main.ts) instead of -webkit-app-region so dragging works from a maximized
-     or full-screen window too — the CSS region can't restore-and-follow. */
+     or full-screen window too, the CSS region can't restore-and-follow. */
   cursor: default;
   user-select: none;
   -webkit-user-select: none;
@@ -495,7 +495,7 @@ main.expanded .center-panel { flex: 1; }
 .text-clip { background: #f59e0b; color: #3b1d00; }
 .clip-label { pointer-events: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: flex; align-items: center; gap: 4px; z-index: 1; }
 
-/* video clips with filmstrip thumbnails — keep the label legible */
+/* video clips with filmstrip thumbnails, keep the label legible */
 .clip.has-thumb { color: #fff; }
 .clip.has-thumb .clip-label {
   background: rgba(0, 0, 0, 0.55);

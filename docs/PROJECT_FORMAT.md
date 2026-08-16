@@ -1,6 +1,6 @@
 # Project file & state format
 
-`Save` writes a single JSON file (version 2). The agent bridge's `get_state` returns a close cousin of this shape. Both are stable, hand-editable, and diff-friendly — a valid target for scripts and agents.
+`Save` writes a single JSON file (version 2). The agent bridge's `get_state` returns a close cousin of this shape. Both are stable, hand-editable, and diff-friendly, a valid target for scripts and agents.
 
 ```jsonc
 {
@@ -38,7 +38,7 @@
       "box": true, "boxOpacity": 0.5 }
   ],
 
-  "markers": [                     // tag points — the beat map
+  "markers": [                     // tag points, the beat map
     { "id": "m1", "t": 3.5, "label": "hook", "color": "#f472b6" }
   ]
 }
@@ -46,8 +46,8 @@
 
 Notes for tooling:
 
-- **Media paths are absolute** — projects reference files in place, nothing is copied.
+- **Media paths are absolute**: projects reference files in place, nothing is copied.
 - Overlapping `v1` clips composite in array order (later on top); give both fades for a crossfade.
 - All clips with audio are mixed regardless of track; tracks are an organizational convention (`a2` keeps effects out of the voice lane).
-- `markers` don't affect rendering — they're coordination points for humans, the karaoke booth, narration placement, and agents.
+- `markers` don't affect rendering: they're coordination points for humans, the karaoke booth, narration placement, and agents.
 - The bridge's `get_state` flattens this for reading (media names inlined into clips, tags sorted); write operations go through `POST /command` actions rather than file writes, so the GUI updates live and undo history stays intact.

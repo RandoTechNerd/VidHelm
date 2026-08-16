@@ -4,7 +4,7 @@ This is the editing pipeline VidHelm is designed around. You can use it like any
 
 ## 0 · Your Start Recipe (like start G-code)
 
-Settings → **Start Recipe** holds your standing instructions — a plain-text block where each line is a step and `#` comments a step out. Toggle chips rewrite the text (off = the line gets `#`-ed), and anything you free-type is preserved and handed to your AI as instructions. The default recipe:
+Settings → **Start Recipe** holds your standing instructions, a plain-text block where each line is a step and `#` comments a step out. Toggle chips rewrite the text (off = the line gets `#`-ed), and anything you free-type is preserved and handed to your AI as instructions. The default recipe:
 
 ```
 cut-pauses           # tighten dead air before anything else
@@ -16,14 +16,14 @@ intro-audio          # your intro sting at 0:00 (pick it below)
 # captions           # on-device Whisper captions
 ```
 
-Pick your **logo** (PNG) and **intro audio** right in the section. Then drop a video on the timeline and hit **🚀 Recipe** in the header: dead air is cut, your intro sting lands at 0:00, the watermark arms itself, and the **thumbnail picker** opens — choose a frame, type the catchy subtitle, and save a YouTube-ready 1280×720 PNG with your logo composited on. Steps marked for AI (like `titles 5`) are picked up automatically when your assistant reads the project (see [AGENT.md](AGENT.md)).
+Pick your **logo** (PNG) and **intro audio** right in the section. Then drop a video on the timeline and hit **🚀 Recipe** in the header: dead air is cut, your intro sting lands at 0:00, the watermark arms itself, and the **thumbnail picker** opens, choose a frame, type the catchy subtitle, and save a YouTube-ready 1280×720 PNG with your logo composited on. Steps marked for AI (like `titles 5`) are picked up automatically when your assistant reads the project (see [AGENT.md](AGENT.md)).
 
 ## 1 · Import
 
 - Drag files into the **Media Bin** (left panel) or straight onto the timeline.
 - Video and images land on the **VIDEO** track; audio lands on **VOICE / MUSIC**.
-- Double-click a bin item to append it; right-click for **Add as intro clip** (uses your intro defaults from Settings — e.g. "first 5 seconds, faded, push everything later").
-- Images default to 5 s stills — trim to taste.
+- Double-click a bin item to append it; right-click for **Add as intro clip** (uses your intro defaults from Settings, e.g. "first 5 seconds, faded, push everything later").
+- Images default to 5 s stills: trim to taste.
 
 ## 2 · Tag the beats
 
@@ -45,28 +45,28 @@ Tag points are the backbone of everything else.
   - *Auto* picks for you. Configure thresholds in Settings → Cut Dead Space.
 - Undo history (Ctrl+Z) covers everything.
 
-## 4 · Narrate — three ways
+## 4 · Narrate, three ways
 
 VidHelm treats narration as a first-class citizen. All three routes end with audio on the **VOICE / MUSIC** track:
 
 ### 🎙 The karaoke booth (one-take read-along)
-1. Click **Booth**. Paste your script — one line per beat.
+1. Click **Booth**. Paste your script, one line per beat.
 2. If you have at least as many tags as lines, each line is **pinned to its tag** ("time lines with tag points"); otherwise lines are spread evenly.
 3. Hit **Record take** → 3-2-1 countdown → the video plays from the top and each line lights up when it's time to say it. Read along; there are no buttons to press between lines.
 4. It auto-stops at the end and drops the take at 0:00 on the voice track. Don't like it? Delete the clip and go again.
 
 ### 🗣 Cloned-voice narration
-Write the script in the **Narrate** dialog, and VidHelm runs your local TTS/voice-clone tool on it — one WAV per line, placed at your tag points automatically. Any CLI works via a command template; a complete free local setup (XTTS-v2) is documented in [VOICE_CLONE.md](VOICE_CLONE.md).
+Write the script in the **Narrate** dialog, and VidHelm runs your local TTS/voice-clone tool on it, one WAV per line, placed at your tag points automatically. Any CLI works via a command template; a complete free local setup (XTTS-v2) is documented in [VOICE_CLONE.md](VOICE_CLONE.md).
 
 ### Plain voiceover
-The **Voiceover** button punch-in records from the playhead — good for one-off pickups.
+The **Voiceover** button punch-in records from the playhead, good for one-off pickups.
 
 ## 5 · Sound effects
 
 - Open the **SFX** tab (left panel). Every sound has ▶ audition and **+** place-at-playhead.
-- The 13 built-ins are synthesized locally on first launch — zero downloads, zero licensing.
+- The 13 built-ins are synthesized locally on first launch: zero downloads, zero licensing.
 - **Add your own…** opens the custom folder; any `.wav/.mp3/.ogg/.m4a/.flac` you drop there appears in the list.
-- SFX land on their own **SFX** track so your voice lane stays clean. They're normal clips — trim, fade, or automate their volume like anything else.
+- SFX land on their own **SFX** track so your voice lane stays clean. They're normal clips, trim, fade, or automate their volume like anything else.
 
 Placement recipe: seek to a tag (click its flag), then hit **+** on the effect.
 
@@ -81,8 +81,8 @@ Placement recipe: seek to a tag (click its flag), then hit **+** on the effect.
 Mixing tools, per clip: flat volume slider, **drawable volume-automation graph** (click to add points, drag to shape, double-click to delete), fade in/out. Master volume on the right.
 
 **Export mastering** (Settings → Audio or the checkbox in Export):
-- *Optimize loudness* compresses gently and lands the mix at YouTube's loudness target (≈ −14 LUFS, −1 dBTP) — leave it on unless you know why you're turning it off.
-- *Noise reduction* adds an 80 Hz high-pass + FFT denoise — for hissy rooms.
+- *Optimize loudness* compresses gently and lands the mix at YouTube's loudness target (≈ −14 LUFS, −1 dBTP), leave it on unless you know why you're turning it off.
+- *Noise reduction* adds an 80 Hz high-pass + FFT denoise: for hissy rooms.
 
 ## 7 · Captions
 

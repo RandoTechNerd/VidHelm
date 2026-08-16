@@ -6,22 +6,22 @@ export type HelpPanel = 'media' | 'sfx' | 'booth' | 'narration' | 'thumbnail' | 
 
 const TOUR: { title: string; body: string; go?: { label: string; panel: HelpPanel } }[] = [
   {
-    title: 'Welcome — you take the helm',
-    body: 'VidHelm is a normal video editor you can drive by hand, and it is at its best with an AI co-captain sitting alongside you, doing the busywork while you make the calls. That part comes at the end of this tour — for now, here is the hand-driven version.',
+    title: 'Welcome. You take the helm',
+    body: 'VidHelm is a normal video editor you can drive by hand, and it is at its best with an AI co-captain sitting alongside you, doing the busywork while you make the calls. That part comes at the end of this tour, for now, here is the hand-driven version.',
   },
   {
     title: '1 · Bring in your footage',
-    body: 'Drag a video straight onto the timeline, or drop it in the Media Bin first. Audio, images and 3D models work too — anything VidHelm can’t use is refused with a reason rather than landing as a broken clip.',
+    body: 'Drag a video straight onto the timeline, or drop it in the Media Bin first. Audio, images and 3D models work too, anything VidHelm can’t use is refused with a reason rather than landing as a broken clip.',
     go: { label: 'Open the Media Bin', panel: 'media' },
   },
   {
     title: '1b · Or skip importing entirely',
-    body: 'In Settings, point VidHelm at a project folder. Every sub-folder inside it becomes a project, and opening one loads the footage sitting in that folder — so dropping files in with Explorer is the import. Saving writes back to the same folder, which makes a project something you can copy or back up like anything else.',
+    body: 'In Settings, point VidHelm at a project folder. Every sub-folder inside it becomes a project, and opening one loads the footage sitting in that folder, so dropping files in with Explorer is the import. Saving writes back to the same folder, which makes a project something you can copy or back up like anything else.',
     go: { label: 'Set up a project folder', panel: 'settings' },
   },
   {
     title: '2 · Mark the beats',
-    body: 'Play it through once and tap M wherever something happens — a joke landing, a reveal, a cut. Those tag points become the skeleton of the edit: sound effects, captions and narration all snap to them, and your AI reads them too.',
+    body: 'Play it through once and tap M wherever something happens, a joke landing, a reveal, a cut. Those tag points become the skeleton of the edit: sound effects, captions and narration all snap to them, and your AI reads them too.',
   },
   {
     title: '3 · Tighten it up',
@@ -29,12 +29,12 @@ const TOUR: { title: string; body: string; go?: { label: string; panel: HelpPane
   },
   {
     title: '4 · Give it a voice',
-    body: 'Voiceover records at the playhead. The Booth plays your video while your script scrolls in time so you can read the whole thing in one take. Narrate generates lines in a cloned voice — the wizard there sets up a free local engine for you.',
+    body: 'Voiceover records at the playhead. The Booth plays your video while your script scrolls in time so you can read the whole thing in one take. Narrate generates lines in a cloned voice, the wizard there sets up a free local engine for you.',
     go: { label: 'Open the Booth', panel: 'booth' },
   },
   {
     title: '5 · Sound and sparkle',
-    body: 'The SFX tab has thirteen built-in effects, synthesized on your machine — audition one, then drop it on a tag point. You can generate new ones from a text description, or drop your own files in.',
+    body: 'The SFX tab has thirteen built-in effects, synthesized on your machine, audition one, then drop it on a tag point. You can generate new ones from a text description, or drop your own files in.',
     go: { label: 'Open the SFX library', panel: 'sfx' },
   },
   {
@@ -44,11 +44,11 @@ const TOUR: { title: string; body: string; go?: { label: string; panel: HelpPane
   },
   {
     title: '7 · Export, checked',
-    body: 'Pick your format on the right and hit Export Video. Watch & Verify then checks the finished file the way a platform would — resolution, loudness, true peak, black frames — so you know it is upload-ready before you upload it.',
+    body: 'Pick your format on the right and hit Export Video. Watch & Verify then checks the finished file the way a platform would, resolution, loudness, true peak, black frames, so you know it is upload-ready before you upload it.',
   },
   {
     title: '8 · Let your AI drive (the fun part)',
-    body: 'Connect an assistant and it works the same timeline you do: reading your tag points, dropping effects, writing titles, exporting. You stay in the chair — it does the busywork.',
+    body: 'Connect an assistant and it works the same timeline you do: reading your tag points, dropping effects, writing titles, exporting. You stay in the chair, it does the busywork.',
     go: { label: 'Connect your AI', panel: 'connect' },
   },
 ]
@@ -69,8 +69,8 @@ const LICENCES: { name: string; licence: string; note: string }[] = [
 ]
 
 const OPTIONAL = [
-  { name: 'audio.cpp', licence: 'Apache-2.0', note: 'Optional local voice cloning and sound generation. Not bundled — you install it yourself.' },
-  { name: 'XTTS-v2 (Coqui)', licence: 'CPML — non-commercial', note: 'Optional voice cloning. The model weights are non-commercial; prefer an Apache-licensed audio.cpp model for monetised videos.' },
+  { name: 'audio.cpp', licence: 'Apache-2.0', note: 'Optional local voice cloning and sound generation. Not bundled, you install it yourself.' },
+  { name: 'XTTS-v2 (Coqui)', licence: 'CPML, non-commercial', note: 'Optional voice cloning. The model weights are non-commercial; prefer an Apache-licensed audio.cpp model for monetised videos.' },
   { name: 'Adversal', licence: 'third-party service', note: 'Optional video analysis for your assistant. Not bundled.' },
 ]
 
@@ -111,16 +111,16 @@ export function HelpModal({ open, onClose, onOpenPanel, version }: {
                   : <button className="primary" onClick={onClose}>Start editing</button>}
                 {s.go && <button onClick={() => { onOpenPanel(s.go!.panel); onClose() }}>{s.go.label}</button>}
               </div>
-              <p className="hint">Nothing here is a wrong turn — every edit is undoable with Ctrl+Z, and nothing touches your original files.</p>
+              <p className="hint">Nothing here is a wrong turn, every edit is undoable with Ctrl+Z, and nothing touches your original files.</p>
             </section>
           ) : (
             <>
               <section>
                 <h3>Thanks</h3>
                 <p className="hint" style={{ lineHeight: 1.6 }}>
-                  VidHelm is built by <b>RandoTechNerd</b>. Special thanks to <b>inventinside</b>, now a contributor on GitHub, whose feedback drove a good chunk of what this app can do — the ideas kept coming and the app kept growing because of them.
+                  VidHelm is built by <b>RandoTechNerd</b>. Special thanks to <b>inventinside</b>, now a contributor on GitHub, whose feedback drove a good chunk of what this app can do, the ideas kept coming and the app kept growing because of them.
                 </p>
-                <p className="hint">Found something rough, or want it to do something it doesn’t? Open an issue on GitHub — that is exactly how the list above got written.</p>
+                <p className="hint">Found something rough, or want it to do something it doesn’t? Open an issue on GitHub, that is exactly how the list above got written.</p>
               </section>
 
               <section>
@@ -150,7 +150,7 @@ export function HelpModal({ open, onClose, onOpenPanel, version }: {
 
               <section>
                 <h3>VidHelm itself</h3>
-                <p className="hint">MIT licensed — use it, change it, ship it. Full text and the third-party notices live in the repository.</p>
+                <p className="hint">MIT licensed, use it, change it, ship it. Full text and the third-party notices live in the repository.</p>
                 <div className="conn-actions">
                   <button onClick={() => window.ipcRenderer.openExternal('https://github.com/RandoTechNerd/VidHelm/blob/main/LICENSE')}>VidHelm licence ↗</button>
                   <button onClick={() => window.ipcRenderer.openExternal('https://github.com/RandoTechNerd/VidHelm/blob/main/THIRD-PARTY-NOTICES.md')}>Third-party notices ↗</button>
@@ -166,7 +166,7 @@ export function HelpModal({ open, onClose, onOpenPanel, version }: {
   )
 }
 
-/** A verbose hint collapsed behind a small (i) — click to expand, click again to tuck away. */
+/** A verbose hint collapsed behind a small (i), click to expand, click again to tuck away. */
 export function InfoNote({ children, label = 'What can I put here?' }: { children: React.ReactNode; label?: string }) {
   const [open, setOpen] = useState(false)
   return (

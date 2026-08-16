@@ -3,7 +3,7 @@
 
 export type ModelKind = 'stl' | '3mf' | 'obj' | 'glb' | 'gltf'
 
-/** Identify a model from its contents — extensions inside HTML wrappers are unreliable. */
+/** Identify a model from its contents, extensions inside HTML wrappers are unreliable. */
 export const sniffModel = (buf: Buffer): ModelKind | null => {
   if (buf.length < 16) return null
   if (buf.toString('latin1', 0, 4) === 'glTF') return 'glb'

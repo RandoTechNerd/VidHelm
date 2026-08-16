@@ -12,7 +12,7 @@ if (!process.env.VH_GPU) app.disableHardwareAcceleration()   // VH_GPU=1 keeps t
 // Handy for testing a dev build without disturbing the settings of an installed copy.
 if (process.env.VH_USER_DATA) app.setPath('userData', process.env.VH_USER_DATA)
 
-// Must match build.appId so Windows ties the running window to the installed shortcut —
+// Must match build.appId so Windows ties the running window to the installed shortcut - 
 // without it the taskbar shows a generic Electron icon and pinning behaves oddly.
 if (process.platform === 'win32') app.setAppUserModelId('com.randotechnerd.vidhelm')
 
@@ -320,7 +320,7 @@ ipcMain.handle('detect-silence', async (_event, { filePath, thresholdDb = -30, m
   const re = /silence_start:\s*(-?[\d.]+)[\s\S]*?silence_end:\s*([\d.]+)/g
   let m: RegExpExecArray | null
   while ((m = re.exec(out))) intervals.push({ start: Math.max(0, parseFloat(m[1])), end: parseFloat(m[2]) })
-  // a silence running to EOF has no silence_end — close it at the file's duration
+  // a silence running to EOF has no silence_end, close it at the file's duration
   const starts = [...out.matchAll(/silence_start:\s*(-?[\d.]+)/g)]
   if (starts.length > intervals.length) {
     const lastStart = Math.max(0, parseFloat(starts[starts.length - 1][1]))
@@ -390,8 +390,8 @@ ipcMain.handle('quality-check', async (_event, filePath: string) => {
   const okRes = [720, 1080, 1440, 2160]
   checks.push({ label: 'Resolution', status: v && okRes.includes(v.height) ? 'pass' : 'warn', detail: v ? `${v.width}×${v.height}` : 'no video' })
   checks.push({ label: 'Frame rate', status: [24, 25, 30, 48, 50, 60].includes(fps) ? 'pass' : 'warn', detail: `${fps} fps` })
-  checks.push({ label: 'Video codec', status: ['h264', 'hevc', 'vp9', 'av1'].includes(v?.codec_name) ? 'pass' : 'warn', detail: v?.codec_name || '—' })
-  checks.push({ label: 'Pixel format', status: v?.pix_fmt === 'yuv420p' ? 'pass' : 'warn', detail: v?.pix_fmt || '—' })
+  checks.push({ label: 'Video codec', status: ['h264', 'hevc', 'vp9', 'av1'].includes(v?.codec_name) ? 'pass' : 'warn', detail: v?.codec_name || ' - ' })
+  checks.push({ label: 'Pixel format', status: v?.pix_fmt === 'yuv420p' ? 'pass' : 'warn', detail: v?.pix_fmt || ' - ' })
   checks.push({ label: 'Audio', status: a && ['aac', 'opus', 'mp3'].includes(a.codec_name) ? 'pass' : 'warn', detail: a ? `${a.codec_name} ${a.sample_rate}Hz ${a.channels}ch` : 'no audio' })
   // faststart
   let faststart = false
@@ -438,7 +438,7 @@ ipcMain.handle('get-metadata', async (event, filePath: string) => {
           hasVideo,
           hasAudio,
           ok: hasVideo || hasAudio,
-          // still images probe as image2/png_pipe/mjpeg_pipe — used to tell photos from video
+          // still images probe as image2/png_pipe/mjpeg_pipe, used to tell photos from video
           format: metadata.format.format_name || '',
           videoCodec: metadata.streams.find((s: any) => s.codec_type === 'video')?.codec_name || '',
         })
@@ -457,7 +457,7 @@ ipcMain.handle('save-recording', async (_event, base64: string) => {
 
 // ---------------- Project folder (workspace) ----------------
 // Point VidHelm at one folder; every sub-folder inside it is a project. Opening a project
-// pulls in whatever media is sitting in that folder, so there is no separate import step —
+// pulls in whatever media is sitting in that folder, so there is no separate import step - 
 // drop files in with Explorer and they are simply there.
 const MEDIA_RE = /\.(mp4|m4v|mov|mkv|webm|avi|wmv|flv|mpg|mpeg|ts|m2ts|mts|3gp|ogv|mxf|mp3|wav|aac|m4a|flac|ogg|oga|opus|wma|aif|aiff|caf|ac3|mka|png|jpg|jpeg|jfif|webp|gif|bmp|tif|tiff|avif)$/i
 const PROJECT_FILE = 'project.vidhelm.json'
@@ -475,7 +475,7 @@ ipcMain.handle('list-projects', async (_event, root: string) => {
           if (f === PROJECT_FILE) saved = true
         }
         modified = fs.statSync(dir).mtimeMs
-      } catch { /* unreadable folder — still list it */ }
+      } catch { /* unreadable folder, still list it */ }
       return { name: e.name, path: dir, media, saved, modified }
     })
     projects.sort((a, b) => b.modified - a.modified)
@@ -493,7 +493,7 @@ ipcMain.handle('scan-project', async (_event, dir: string) => {
       .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
     const projectFile = path.join(dir, PROJECT_FILE)
     let project = null
-    if (fs.existsSync(projectFile)) { try { project = JSON.parse(fs.readFileSync(projectFile, 'utf8')) } catch { /* corrupt save — keep the media */ } }
+    if (fs.existsSync(projectFile)) { try { project = JSON.parse(fs.readFileSync(projectFile, 'utf8')) } catch { /* corrupt save, keep the media */ } }
     return { files, project, projectFile }
   } catch (e) { return { error: String(e) } }
 })
@@ -510,7 +510,7 @@ ipcMain.handle('create-project', async (_event, { root, name }: { root: string; 
 
 ipcMain.handle('reveal-folder', async (_event, dir: string) => { if (dir && fs.existsSync(dir)) shell.openPath(dir) })
 
-// Save straight into the project folder — no dialog once a project is open
+// Save straight into the project folder, no dialog once a project is open
 ipcMain.handle('save-project-to', async (_event, { dir, data }: { dir: string; data: any }) => {
   try {
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
@@ -679,7 +679,7 @@ ipcMain.handle('extract-model', async (_event, filePath: string) => {
   } catch (e) { return { error: String(e) } }
 })
 
-// MediaRecorder gives us a VFR webm off the WebGL canvas — re-encode to something clean.
+// MediaRecorder gives us a VFR webm off the WebGL canvas, re-encode to something clean.
 // Opaque renders become h264 mp4; transparent ones stay VP9 webm, the only common format
 // that keeps an alpha channel (h264 has none). Both decode to yuva420p for the export
 // filtergraph, so a transparent render composites straight over the footage below it.
@@ -694,7 +694,7 @@ ipcMain.handle('save-3d-render', async (_event, { base64, name, alpha }: { base6
       const cmd = ffmpeg(cap)
       // Transparent: stream-copy Chromium's VP8/VP9. Its alpha lives in a WebM side channel
       // that this ffmpeg build cannot re-encode (it writes the tag but drops the channel),
-      // so copying is the only way to keep it — and both the preview and the export
+      // so copying is the only way to keep it, and both the preview and the export
       // filtergraph decode it happily. Timestamps are rebuilt because MediaRecorder is VFR.
       if (alpha) cmd.outputOptions(['-c copy', '-fflags +genpts'])
       else cmd.videoFilter('scale=trunc(iw/2)*2:trunc(ih/2)*2')
@@ -740,7 +740,7 @@ print("done", flush=True)
 const SETUP_BAT = `@echo off
 title VidHelm voice engine setup
 cd /d "%~dp0"
-echo == VidHelm voice clone setup — one time, downloads the XTTS-v2 model (~2 GB) ==
+echo == VidHelm voice clone setup, one time, downloads the XTTS-v2 model (~2 GB) ==
 where python >nul 2>nul || (echo Python 3.10+ is required. Install it from python.org, tick "Add to PATH", then run this file again. & pause & exit /b 1)
 if not exist venv python -m venv venv
 call venv\\Scripts\\activate.bat
@@ -818,7 +818,7 @@ Write-Output "done"
 })
 
 // ---------------- AI sound-effect generator ----------------
-// Runs the user's text-to-audio command ({prompt} and {out} placeholders — e.g. audio.cpp's
+// Runs the user's text-to-audio command ({prompt} and {out} placeholders, e.g. audio.cpp's
 // stable_audio gen task) and drops the result into the custom SFX folder so it shows up
 // in the library immediately.
 ipcMain.handle('sfx-generate', async (_event, { command, prompt }: { command: string; prompt: string }) => {
@@ -908,7 +908,7 @@ const agentServer = http.createServer(async (req, res) => {
     }
     if (req.method === 'GET' && req.url === '/screenshot') {
       if (!win) { res.writeHead(503); return res.end(JSON.stringify({ error: 'no window' })) }
-      // force a fresh composite — capturePage can return a stale frame on idle/background windows
+      // force a fresh composite, capturePage can return a stale frame on idle/background windows
       win.webContents.invalidate()
       await new Promise(r => setTimeout(r, 120))
       const img = await win.webContents.capturePage()
@@ -933,12 +933,12 @@ agentServer.on('error', (e: NodeJS.ErrnoException) => {
   bridgeState = {
     listening: false,
     error: e?.code === 'EADDRINUSE'
-      ? `port ${AGENT_PORT} is already taken — another copy of VidHelm (or another app) is using it`
+      ? `port ${AGENT_PORT} is already taken, another copy of VidHelm (or another app) is using it`
       : String(e),
   }
   console.warn('agent bridge disabled:', bridgeState.error)
 })
-// Only the primary instance opens the bridge — a duplicate on its way out must never race
+// Only the primary instance opens the bridge, a duplicate on its way out must never race
 // the running app for the port.
 if (isPrimaryInstance) {
   app.whenReady().then(() => agentServer.listen(AGENT_PORT, '127.0.0.1', () => { bridgeState = { listening: true, error: '' }; console.log(`agent bridge on http://127.0.0.1:${AGENT_PORT}`) }))
@@ -1154,7 +1154,7 @@ ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outp
       currentVOut = `v_txt_${i}`
     })
 
-    // Brand logo / outro watermark (applied on top of everything) — from persistent settings
+    // Brand logo / outro watermark (applied on top of everything), from persistent settings
     if (brand && brand.enabled && brand.logoPath && fs.existsSync(brand.logoPath)) {
       const logoIdx = 2 + clips.length
       command.input(brand.logoPath).inputOptions(['-loop 1', '-t', String(totalDuration)])
@@ -1187,7 +1187,7 @@ ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outp
       filterComplex.push(`${chain}volume=${master}[amaster]`)
       // "Loud for YouTube" master: compress dynamics for higher perceived loudness, then land at -13 LUFS
       // (the loud end of YouTube's window; tighter LRA=7 = denser/punchier). loudnorm runs single-pass here,
-      // and its internal true-peak limiter only approximates the ceiling — it measured -0.9 dBTP against the
+      // and its internal true-peak limiter only approximates the ceiling, it measured -0.9 dBTP against the
       // -1 dBTP target, i.e. the export failed our own quality check. Asking loudnorm for -1.5 and following
       // it with a hard ceiling leaves enough room for inter-sample peaks to still land under -1 dBTP.
       // level=disabled matters: without it alimiter re-normalises the level and undoes loudnorm.
