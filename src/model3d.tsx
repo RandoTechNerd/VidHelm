@@ -21,6 +21,15 @@ type Finish = keyof typeof FINISHES
 const W = 1600, H = 900   // internal render buffer (downscaled by CSS in the modal)
 const fileUrl = (p: string) => 'file:///' + p.replace(/\\/g, '/').split('/').map((s, i) => i === 0 ? s : encodeURIComponent(s)).join('/')
 const isWebPreview = () => !!(window as unknown as { __vhWeb?: boolean }).__vhWeb
+// Key colours for the green-screen backdrop. Magenta is the fallback for green models,
+// where a green key would eat the model along with the background.
+export const KEY_GREEN = '#00e800'
+export const KEY_MAGENTA = '#e800e8'
+const pickKeyColour = (modelColour: string) => {
+  const n = parseInt(modelColour.replace('#', ''), 16)
+  const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255
+  return (g > 90 && g - r > 30 && g - b > 30) ? KEY_MAGENTA : KEY_GREEN
+}
 const WEB_ONLY = 'That needs the desktop app. This is the browser preview, which draws the interface but has no file access or FFmpeg behind it.'
 
 export interface Model3DApi {
@@ -32,7 +41,7 @@ export interface Model3DApi {
 export function Model3DModal({ open, onClose, initialPath, onRendered, apiRef, getFrame }: {
   open: boolean; onClose: () => void
   initialPath: string | null
-  onRendered: (path: string, kind: 'video' | 'image', name: string, overlay?: boolean) => void
+  onRendered: (path: string, kind: 'video' | 'image', name: string, overlay?: boolean, chromaKey?: string) => void
   apiRef?: React.MutableRefObject<Model3DApi | null>
   getFrame?: () => Promise<string | null>
 }) {
@@ -49,7 +58,7 @@ export function Model3DModal({ open, onClose, initialPath, onRendered, apiRef, g
   const [bg, setBg] = useState('#0f1420')
   // 'transparent' gives a true alpha PNG (stills only, no video codec here carries alpha);
   // 'frame' bakes the frame under the playhead behind the model so a spin sits over footage.
-  const [backdrop, setBackdrop] = useState<'color' | 'frame' | 'transparent'>('color')
+  const [backdrop, setBackdrop] = useState<'color' | 'frame' | 'green' | 'transparent'>('color')
   const [framePath, setFramePath] = useState<string | null>(null)
   const transparent = backdrop === 'transparent'
   const [zUp, setZUp] = useState(false)
@@ -113,13 +122,14 @@ export function Model3DModal({ open, onClose, initialPath, onRendered, apiRef, g
     if (!st) return
     if (backdrop === 'transparent') { st.scene.background = null; st.renderer.setClearAlpha(0); return }
     st.renderer.setClearAlpha(1)
+    if (backdrop === 'green') { st.scene.background = new THREE.Color(pickKeyColour(color)); return }
     if (backdrop === 'frame' && framePath) {
       new THREE.TextureLoader().load(fileUrl(framePath), tex => {
         tex.colorSpace = THREE.SRGBColorSpace
         if (threeRef.current) threeRef.current.scene.background = tex
       })
     } else st.scene.background = new THREE.Color(bg)
-  }, [bg, backdrop, framePath, open, modelName])
+  }, [bg, backdrop, framePath, open, modelName, color])
   useEffect(() => {
     const st = threeRef.current
     if (!st) return
@@ -227,8 +237,11 @@ export function Model3DModal({ open, onClose, initialPath, onRendered, apiRef, g
         for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode(...Array.from(buf.subarray(i, i + 0x8000)))
         out = await window.ipcRenderer.save3DRender({ base64: btoa(bin), name: modelName, alpha })
         if (out.path) {
-          setStatus(alpha ? 'Transparent turntable placed at the playhead, it sits on top of the footage below ✓' : 'Turntable added to the Media Bin ✓')
-          onRendered(out.path, 'video', `${modelName} spin`, alpha)
+          const key = backdrop === 'green' ? pickKeyColour(color) : undefined
+          setStatus(key
+            ? 'Green-screen turntable placed at the playhead, the backdrop is keyed out over the clip below ✓'
+            : alpha ? 'Transparent turntable placed at the playhead, it sits on top of the footage below ✓' : 'Turntable added to the Media Bin ✓')
+          onRendered(out.path, 'video', `${modelName} spin`, alpha || !!key, key)
         }
         else setStatus(out.error || 'encode failed')
       } catch (e) { out = { error: String(e) }; setStatus(String(e)) }
@@ -250,8 +263,10 @@ export function Model3DModal({ open, onClose, initialPath, onRendered, apiRef, g
     st.renderer.render(st.scene, st.camera)
     const r = await window.ipcRenderer.save3DStill({ dataUrl: st.renderer.domElement.toDataURL('image/png'), name: modelName })
     if (r.path) {
-      setStatus(alpha ? 'Transparent still placed at the playhead, it sits on top of the footage below ✓' : 'Still added to the Media Bin ✓')
-      onRendered(r.path, 'image', `${modelName} still`, alpha)
+      const key = backdrop === 'green' ? pickKeyColour(color) : undefined
+      setStatus(key ? 'Green-screen still placed at the playhead, keyed over the clip below ✓'
+        : alpha ? 'Transparent still placed at the playhead, it sits on top of the footage below ✓' : 'Still added to the Media Bin ✓')
+      onRendered(r.path, 'image', `${modelName} still`, alpha || !!key, key)
     }
     else setStatus(r.error || 'save failed')
     setBusy(false)
@@ -328,6 +343,8 @@ export function Model3DModal({ open, onClose, initialPath, onRendered, apiRef, g
                   <button className={backdrop === 'color' ? 'on' : ''} onClick={() => setBackdrop('color')}>Colour</button>
                   <button className={backdrop === 'frame' ? 'on' : ''} title="Use the video frame under the playhead, so a spin sits over your footage"
                     onClick={async () => { setBackdrop('frame'); if (getFrame) { setStatus('Grabbing the frame under the playhead…'); const p = await getFrame(); setFramePath(p); setStatus(p ? 'Backdrop set to your timeline frame, the render lands on top of it.' : 'No video under the playhead to grab.') } }}>Video frame</button>
+                  <button className={backdrop === 'green' ? 'on' : ''} title="Render on a key colour that is removed when you export, so a spinning clip sits over your footage"
+                    onClick={() => setBackdrop('green')}>Green screen</button>
                   <button className={backdrop === 'transparent' ? 'on' : ''} title="True transparency, stills become PNGs with alpha that overlay your footage"
                     onClick={() => setBackdrop('transparent')}>Transparent</button>
                 </div>
@@ -357,7 +374,8 @@ export function Model3DModal({ open, onClose, initialPath, onRendered, apiRef, g
           </label>
           <button className="primary" disabled={!modelName || recording || busy} onClick={() => { void recordTurntable() }}>{recording ? 'Recording…' : '⏺ Render turntable clip'}</button>
           <button disabled={!modelName || recording || busy} onClick={() => { void snapshot() }}>📷 Still</button>
-          {transparent && <span className="hint" style={{ margin: 0, maxWidth: 260 }}>Stills keep real transparency. Video can’t, for a spin over footage use <b>Video frame</b>.</span>}
+          {transparent && <span className="hint" style={{ margin: 0, maxWidth: 264 }}>Stills keep real transparency. Video can’t, so for a spin over footage use <b>Green screen</b>.</span>}
+          {backdrop === 'green' && <span className="hint" style={{ margin: 0, maxWidth: 264 }}>Rendered on {pickKeyColour(color) === KEY_MAGENTA ? 'magenta' : 'green'} and keyed out on the timeline, so the clip below shows through.</span>}
           <button disabled={!modelName || recording || busy} onClick={exportObj} title="Convert the loaded model to .obj">Save as OBJ…</button>
         </div>
       </div>

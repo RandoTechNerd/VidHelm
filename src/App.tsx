@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import './App.css'
 import { SfxPanel, MarkerPanel, KaraokeBooth, NarrationModal, RecipeSection, ThumbnailModal, ConnectModal, DEFAULT_RECIPE, recipeActive, newMarker, type Marker, type SfxItem, type RecipeSettings } from './extras'
-import { Model3DModal, type Model3DApi } from './model3d'
+import { Model3DModal, KEY_GREEN, KEY_MAGENTA, type Model3DApi } from './model3d'
 import { HelpModal, InfoNote, type HelpPanel } from './help'
 
 interface MediaFile {
@@ -12,6 +12,7 @@ interface MediaFile {
   duration: number
   hasVideo: boolean
   hasAudio: boolean
+  chromaKey?: string   // 3D renders made on a key colour: removed on export, keyed in preview
 }
 
 interface TimelineClip {
@@ -57,6 +58,28 @@ const DEFAULT_SETTINGS: AppSettings = {
 // several times (two tags from a single add_tag). The guard hangs off window so it is shared
 // by every module instance that survives a reload, not just the current one.
 const handledAgentCmds: Set<number> = ((window as any).__vhHandledCmds ??= new Set<number>())
+
+// Preview-side chroma key. The export does the real thing with FFmpeg's colorkey; this is
+// the same idea as an SVG filter so what you see on the stage matches what you render.
+// The alpha row measures how much the key channel dominates, then the transfer turns that
+// into a hard cut with a soft edge.
+const keyFilterFor = (hex: string) => (hex.toLowerCase() === KEY_MAGENTA ? 'vh-key-magenta' : 'vh-key-green')
+const ChromaKeyFilters = () => (
+  <svg width="0" height="0" style={{ position: 'absolute' }} aria-hidden>
+    <defs>
+      <filter id="vh-key-green" colorInterpolationFilters="sRGB">
+        <feColorMatrix type="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  -1 1 -1 0 0" result="dom" />
+        <feComponentTransfer in="dom" result="mask"><feFuncA type="linear" slope="-14" intercept="1.35" /></feComponentTransfer>
+        <feComposite in="SourceGraphic" in2="mask" operator="in" />
+      </filter>
+      <filter id="vh-key-magenta" colorInterpolationFilters="sRGB">
+        <feColorMatrix type="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  1 -1 1 0 0" result="dom" />
+        <feComponentTransfer in="dom" result="mask"><feFuncA type="linear" slope="-14" intercept="1.9" /></feComponentTransfer>
+        <feComposite in="SourceGraphic" in2="mask" operator="in" />
+      </filter>
+    </defs>
+  </svg>
+)
 
 // Everything in the header except these moves the window (see electron/dragMath.ts)
 const HDR_CONTROLS = 'button, a, input, select, label, [role="button"]'
@@ -766,7 +789,7 @@ function App() {
         return {
           format: { orientation, resolution, fps, width: w, height: h },
           duration: totalDuration, currentTime, isPlaying,
-          mediaBin: mediaBin.map(m => ({ id: m.id, name: m.name, type: m.type, duration: m.duration, path: m.path })),
+          mediaBin: mediaBin.map(m => ({ id: m.id, name: m.name, type: m.type, duration: m.duration, path: m.path, chromaKey: m.chromaKey })),
           clips: clips.map(c => ({ id: c.id, track: c.trackId, media: mediaBin.find(m => m.id === c.mediaId)?.name, start: +c.start.toFixed(3), duration: +c.duration.toFixed(3), sourceStart: +c.sourceStart.toFixed(3), volume: c.volume, fadeIn: c.fadeIn, fadeOut: c.fadeOut, automationPoints: c.volumePoints?.length || 0 })),
           texts: texts.map(t => ({ id: t.id, text: t.text, start: +t.start.toFixed(3), duration: +t.duration.toFixed(3), x: t.x, y: t.y, fontSize: t.fontSize, color: t.color })),
           tags: [...markers].sort((a, b) => a.t - b.t).map(m => ({ id: m.id, t: +m.t.toFixed(3), label: m.label })),
@@ -790,7 +813,7 @@ function App() {
         if ('reject' in verdict) return { error: `cannot use ${cmd.path}: ${verdict.reject}` }
         const type: MediaFile['type'] = verdict.type
         const m = meta as Probe   // a non-reject verdict means the probe succeeded
-        const media: MediaFile = { id: rid(), name: cmd.path.split(/[\\/]/).pop() || 'media', path: cmd.path, type, duration: type === 'image' ? (cmd.duration || 5) : (m.duration || 5), hasVideo: m.hasVideo || type === 'image', hasAudio: m.hasAudio }
+        const media: MediaFile = { id: rid(), name: cmd.path.split(/[\\/]/).pop() || 'media', path: cmd.path, type, duration: type === 'image' ? (cmd.duration || 5) : (m.duration || 5), hasVideo: m.hasVideo || type === 'image', hasAudio: m.hasAudio, chromaKey: typeof cmd.chromaKey === 'string' ? cmd.chromaKey : undefined }
         setMediaBin(prev => [...prev, media])
         if (cmd.place !== false) {
           const isAudio = media.type === 'audio'
@@ -1006,7 +1029,7 @@ function App() {
         if (clips.length === 0 && texts.length === 0) return { error: 'timeline is empty' }
         setIsPlaying(false)
         const payload = {
-          clips: clips.map(c => { const media = mediaBin.find(m => m.id === c.mediaId); return { ...c, path: media?.path, hasVideo: media?.hasVideo, hasAudio: media?.hasAudio } }),
+          clips: clips.map(c => { const media = mediaBin.find(m => m.id === c.mediaId); return { ...c, path: media?.path, hasVideo: media?.hasVideo, hasAudio: media?.hasAudio, chromaKey: media?.chromaKey } }),
           texts, brand: settings.brand, audio: settings.audio, outputPath: cmd.outputPath,
           settings: { width: w, height: h, fps, quality: exportQuality, masterVolume },
         }
@@ -1230,7 +1253,7 @@ function App() {
       const payload = {
         clips: clips.map(c => {
           const media = mediaBin.find(m => m.id === c.mediaId)
-          return { ...c, path: media?.path, hasVideo: media?.hasVideo, hasAudio: media?.hasAudio }
+          return { ...c, path: media?.path, hasVideo: media?.hasVideo, hasAudio: media?.hasAudio, chromaKey: media?.chromaKey }
         }),
         texts,
         brand: settings.brand,
@@ -1484,6 +1507,7 @@ function App() {
 
   return (
     <div className="app-container" onDragOver={(e) => e.preventDefault()}>
+      <ChromaKeyFilters />
       {(window as unknown as { __vhWeb?: boolean }).__vhWeb && (
         <div className="web-banner">
           Browser preview: this draws the interface only. Opening files, FFmpeg, exporting and the AI bridge all live in the desktop app, run <code>npm run dev</code> or open the installed VidHelm.
@@ -1591,8 +1615,9 @@ function App() {
                 if (!media) return null
                 const op = fadeFactor(c, currentTime)
                 return media.type === 'image'
-                  ? <img key={c.id} className="layer" style={{ opacity: op }} src={fileUrl(media.path)} alt="" />
-                  : <video key={c.id} ref={el => { if (el) videoEls.current.set(c.id, el); else videoEls.current.delete(c.id) }} className="layer" style={{ opacity: op }} src={fileUrl(media.path)} />
+                  ? <img key={c.id} className="layer" style={{ opacity: op, filter: media.chromaKey ? `url(#${keyFilterFor(media.chromaKey)})` : undefined }} src={fileUrl(media.path)} alt="" />
+                  : <video key={c.id} ref={el => { if (el) videoEls.current.set(c.id, el); else videoEls.current.delete(c.id) }} className="layer"
+                      style={{ opacity: op, filter: media.chromaKey ? `url(#${keyFilterFor(media.chromaKey)})` : undefined }} src={fileUrl(media.path)} />
               })}
               {activeTexts.map(t => (
                 <div key={t.id} className={`text-layer ${selectedId === t.id && !isPlaying ? 'editing' : ''}`}
@@ -1826,19 +1851,19 @@ function App() {
           const r = await window.ipcRenderer.sampleFrames({ filePath: hit.m.path, count: 1, sourceStart: srcT, duration: 0.05 }).catch(() => null)
           return r?.frames?.[0]?.path || null
         }}
-        onRendered={async (path, kind, name, overlay) => {
+        onRendered={async (path, kind, name, overlay, chromaKey) => {
           const meta = await window.ipcRenderer.getMetadata(path).catch(() => null)
           const media: MediaFile = {
             id: rid(), name, path, type: kind,
             duration: kind === 'image' ? 5 : (meta?.duration || 6),
-            hasVideo: true, hasAudio: false,
+            hasVideo: true, hasAudio: false, chromaKey,
           }
           setMediaBin(prev => [...prev, media])
           if (overlay) {
             // transparent renders go in at the playhead so they land on top of the footage
             // already there, clips composite in the order they were added
             setClips(prev => [...prev, { id: rid(), mediaId: media.id, type: media.type, trackId: 'v1', start: currentTime, duration: media.duration, sourceStart: 0, volume: 1, fadeIn: 0, fadeOut: 0 }])
-            notify(`${name} added as a transparent overlay at ${fmt(currentTime)}, it sits on top of the clip underneath. Drag it anywhere on the video track.`, 9000)
+            notify(`${name} added as an overlay at ${fmt(currentTime)}${chromaKey ? ', its backdrop is keyed out' : ''}. It sits on top of the clip underneath, drag it anywhere on the video track.`, 9000)
           } else addToTimeline(media)
         }} />
       <ThumbnailModal open={showThumbnail} onClose={() => setShowThumbnail(false)}
@@ -1851,6 +1876,10 @@ function App() {
           <div className="ctx-menu" style={{ left: ctxMenu.x, top: ctxMenu.y }} onClick={e => e.stopPropagation()}>
             <button onClick={() => { addToTimeline(media); setCtxMenu(null) }}>Add to timeline</button>
             <button onClick={() => { addAsIntro(media); setCtxMenu(null) }}>Add as intro clip ({settings.intro.segment} {settings.intro.seconds}s)</button>
+            {media.type !== 'audio' && <button title="Remove a solid green or magenta backdrop so the clip below shows through, applied on export and in the preview"
+              onClick={() => { setMediaBin(prev => prev.map(m => m.id === media.id ? { ...m, chromaKey: m.chromaKey ? undefined : KEY_GREEN } : m)); setCtxMenu(null) }}>
+              {media.chromaKey ? 'Stop keying the backdrop' : 'Key out a green screen'}
+            </button>}
             <div className="ctx-sep" />
             <button onClick={() => { setMediaBin(prev => prev.filter(m => m.id !== media.id)); setCtxMenu(null) }}>Remove from bin</button>
           </div>

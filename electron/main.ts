@@ -1166,8 +1166,17 @@ ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outp
       }
 
       if (clip.hasVideo || clip.type === 'image') {
+        // Clips rendered on a key colour (3D Studio green screen) get it removed first, so
+        // whatever sits below shows through. despill cleans the fringe that 4:2:0 chroma
+        // subsampling leaves around antialiased edges. Costs roughly a second per six
+        // seconds of overlay at 1080p, which is cheap next to the encode itself.
+        const key = typeof clip.chromaKey === 'string' && /^#?[0-9a-f]{6}$/i.test(clip.chromaKey)
+          ? clip.chromaKey.replace('#', '') : null
+        const keyChain = key
+          ? `colorkey=0x${key}:0.30:0.10,${/^00e/i.test(key) ? 'despill=type=green:mix=0.5:expand=0,' : ''}`
+          : ''
         // Fit into frame with transparent padding so overlapping clips can crossfade through each other
-        let v = `[${idx}:v]format=yuva420p,scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=0x00000000,setpts=PTS-STARTPTS+${clip.start}/TB`
+        let v = `[${idx}:v]${keyChain}format=yuva420p,scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=0x00000000,setpts=PTS-STARTPTS+${clip.start}/TB`
         if (clip.fadeIn > 0) v += `,fade=t=in:st=${clip.start}:d=${clip.fadeIn}:alpha=1`
         if (clip.fadeOut > 0) v += `,fade=t=out:st=${(end - clip.fadeOut).toFixed(3)}:d=${clip.fadeOut}:alpha=1`
         filterComplex.push(`${v}[v_scaled_${idx}]`)
