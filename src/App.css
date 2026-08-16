@@ -1159,3 +1159,9 @@ textarea.duration-input { resize: vertical; font-family: inherit; }
 .info-toggle { background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.12); color: var(--text-muted, #94a3b8); border-radius: 999px; padding: 4px 11px; font-size: 12px; cursor: pointer; display: inline-flex; align-items: center; gap: 5px; }
 .info-toggle:hover, .info-toggle.on { color: var(--text-main, #f8fafc); border-color: var(--accent-primary, #3b82f6); }
 .info-body { margin-top: 8px; padding: 10px 12px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.07); border-radius: 10px; font-size: 12.5px; line-height: 1.6; color: var(--text-muted, #94a3b8); }
+/* project-folder switcher above the media list */
+.proj-bar { display: flex; gap: 6px; align-items: center; padding: 0 12px 10px; }
+.proj-bar select { flex: 1; min-width: 0; background: var(--bg-input, #121214); color: var(--text-main, #f8fafc); border: 1px solid var(--border-subtle, rgba(255,255,255,0.1)); border-radius: 8px; padding: 6px 8px; font-size: 12.5px; }
+.proj-bar button { background: var(--bg-surface-elevated, #24242a); color: var(--text-muted, #94a3b8); border: 1px solid var(--border-subtle, rgba(255,255,255,0.1)); border-radius: 8px; width: 30px; height: 30px; cursor: pointer; font-size: 13px; flex: none; }
+.proj-bar button:hover:not(:disabled) { color: var(--text-main, #f8fafc); border-color: var(--accent-primary, #3b82f6); }
+.proj-bar button:disabled { opacity: 0.35; cursor: default; }

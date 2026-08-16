@@ -8,6 +8,10 @@ import ffmpeg from 'fluent-ffmpeg'
 
 if (!process.env.VH_GPU) app.disableHardwareAcceleration()   // VH_GPU=1 keeps the GPU on (needed for video-layer screenshots)
 
+// VH_USER_DATA=<dir> runs against an isolated profile (settings, SFX cache, renders).
+// Handy for testing a dev build without disturbing the settings of an installed copy.
+if (process.env.VH_USER_DATA) app.setPath('userData', process.env.VH_USER_DATA)
+
 // Must match build.appId so Windows ties the running window to the installed shortcut —
 // without it the taskbar shows a generic Electron icon and pinning behaves oddly.
 if (process.platform === 'win32') app.setAppUserModelId('com.randotechnerd.vidhelm')
@@ -108,7 +112,9 @@ function createWindow() {
 
 // Only one VidHelm at a time: a second copy would fail to claim the agent-bridge port and
 // silently have no AI connection, so hand focus back to the window that is already open.
-const isPrimaryInstance = app.requestSingleInstanceLock()
+// Packaged builds only: during development you often want a dev build running next to the
+// installed app (on its own VH_AGENT_PORT), and the lock would silently quit it.
+const isPrimaryInstance = !app.isPackaged || app.requestSingleInstanceLock()
 if (!isPrimaryInstance) {
   app.quit()
 } else {
@@ -449,6 +455,71 @@ ipcMain.handle('save-recording', async (_event, base64: string) => {
   return filePath
 })
 
+// ---------------- Project folder (workspace) ----------------
+// Point VidHelm at one folder; every sub-folder inside it is a project. Opening a project
+// pulls in whatever media is sitting in that folder, so there is no separate import step —
+// drop files in with Explorer and they are simply there.
+const MEDIA_RE = /\.(mp4|m4v|mov|mkv|webm|avi|wmv|flv|mpg|mpeg|ts|m2ts|mts|3gp|ogv|mxf|mp3|wav|aac|m4a|flac|ogg|oga|opus|wma|aif|aiff|caf|ac3|mka|png|jpg|jpeg|jfif|webp|gif|bmp|tif|tiff|avif)$/i
+const PROJECT_FILE = 'project.vidhelm.json'
+
+ipcMain.handle('list-projects', async (_event, root: string) => {
+  try {
+    if (!root || !fs.existsSync(root)) return { error: 'that folder is not there any more' }
+    const entries = fs.readdirSync(root, { withFileTypes: true }).filter(e => e.isDirectory() && !e.name.startsWith('.'))
+    const projects = entries.map(e => {
+      const dir = path.join(root, e.name)
+      let media = 0, saved = false, modified = 0
+      try {
+        for (const f of fs.readdirSync(dir)) {
+          if (MEDIA_RE.test(f)) media++
+          if (f === PROJECT_FILE) saved = true
+        }
+        modified = fs.statSync(dir).mtimeMs
+      } catch { /* unreadable folder — still list it */ }
+      return { name: e.name, path: dir, media, saved, modified }
+    })
+    projects.sort((a, b) => b.modified - a.modified)
+    return { projects }
+  } catch (e) { return { error: String(e) } }
+})
+
+// Everything usable sitting in a project folder, newest first, so it can be loaded without an import step
+ipcMain.handle('scan-project', async (_event, dir: string) => {
+  try {
+    if (!dir || !fs.existsSync(dir)) return { error: 'that project folder is not there any more' }
+    const files = fs.readdirSync(dir, { withFileTypes: true })
+      .filter(f => f.isFile() && MEDIA_RE.test(f.name))
+      .map(f => ({ path: path.join(dir, f.name), name: f.name, mtime: fs.statSync(path.join(dir, f.name)).mtimeMs }))
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
+    const projectFile = path.join(dir, PROJECT_FILE)
+    let project = null
+    if (fs.existsSync(projectFile)) { try { project = JSON.parse(fs.readFileSync(projectFile, 'utf8')) } catch { /* corrupt save — keep the media */ } }
+    return { files, project, projectFile }
+  } catch (e) { return { error: String(e) } }
+})
+
+ipcMain.handle('create-project', async (_event, { root, name }: { root: string; name: string }) => {
+  try {
+    const safe = (name || 'New project').replace(/[<>:"/\\|?*]/g, '').trim() || 'New project'
+    let dir = path.join(root, safe), n = 2
+    while (fs.existsSync(dir)) dir = path.join(root, `${safe} ${n++}`)
+    fs.mkdirSync(dir, { recursive: true })
+    return { path: dir, name: path.basename(dir) }
+  } catch (e) { return { error: String(e) } }
+})
+
+ipcMain.handle('reveal-folder', async (_event, dir: string) => { if (dir && fs.existsSync(dir)) shell.openPath(dir) })
+
+// Save straight into the project folder — no dialog once a project is open
+ipcMain.handle('save-project-to', async (_event, { dir, data }: { dir: string; data: any }) => {
+  try {
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+    const file = path.join(dir, PROJECT_FILE)
+    fs.writeFileSync(file, JSON.stringify(data, null, 2), 'utf8')
+    return { path: file }
+  } catch (e) { return { error: String(e) } }
+})
+
 ipcMain.handle('save-project', async (_event, data: any) => {
   if (!win) return null
   const { filePath } = await dialog.showSaveDialog(win, {
@@ -483,7 +554,17 @@ const DEFAULT_SETTINGS = {
 ipcMain.handle('get-settings', async () => {
   try {
     const raw = JSON.parse(fs.readFileSync(settingsPath(), 'utf8'))
-    return { brand: { ...DEFAULT_SETTINGS.brand, ...raw.brand }, intro: { ...DEFAULT_SETTINGS.intro, ...raw.intro }, audio: { ...DEFAULT_SETTINGS.audio, ...raw.audio }, caption: { ...DEFAULT_SETTINGS.caption, ...raw.caption }, silence: { ...DEFAULT_SETTINGS.silence, ...raw.silence } }
+    // Spread raw first: settings owned entirely by the renderer (the Start Recipe, the
+    // narration command the voice wizard fills in, the SFX generator, the project folder)
+    // used to be dropped here, so they were written to disk and then forgotten on restart.
+    return {
+      ...raw,
+      brand: { ...DEFAULT_SETTINGS.brand, ...raw.brand },
+      intro: { ...DEFAULT_SETTINGS.intro, ...raw.intro },
+      audio: { ...DEFAULT_SETTINGS.audio, ...raw.audio },
+      caption: { ...DEFAULT_SETTINGS.caption, ...raw.caption },
+      silence: { ...DEFAULT_SETTINGS.silence, ...raw.silence },
+    }
   } catch { return DEFAULT_SETTINGS }
 })
 

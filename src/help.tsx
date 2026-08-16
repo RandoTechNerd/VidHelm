@@ -6,9 +6,18 @@ export type HelpPanel = 'media' | 'sfx' | 'booth' | 'narration' | 'thumbnail' | 
 
 const TOUR: { title: string; body: string; go?: { label: string; panel: HelpPanel } }[] = [
   {
+    title: 'Welcome — you take the helm',
+    body: 'VidHelm is a normal video editor you can drive by hand, and it is at its best with an AI co-captain sitting alongside you, doing the busywork while you make the calls. That part comes at the end of this tour — for now, here is the hand-driven version.',
+  },
+  {
     title: '1 · Bring in your footage',
     body: 'Drag a video straight onto the timeline, or drop it in the Media Bin first. Audio, images and 3D models work too — anything VidHelm can’t use is refused with a reason rather than landing as a broken clip.',
     go: { label: 'Open the Media Bin', panel: 'media' },
+  },
+  {
+    title: '1b · Or skip importing entirely',
+    body: 'In Settings, point VidHelm at a project folder. Every sub-folder inside it becomes a project, and opening one loads the footage sitting in that folder — so dropping files in with Explorer is the import. Saving writes back to the same folder, which makes a project something you can copy or back up like anything else.',
+    go: { label: 'Set up a project folder', panel: 'settings' },
   },
   {
     title: '2 · Mark the beats',

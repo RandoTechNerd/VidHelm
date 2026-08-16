@@ -36,6 +36,7 @@ interface AppSettings {
   silence: { minPause: number; thresholdDb: number; pad: number; smooth: boolean; transition: number; detectBy: 'auto' | 'audio' | 'motion'; freezeDb: number }
   narration: { command: string }
   sfxGen: { command: string }
+  workspace: { root: string | null; autoLoad: boolean }
   recipe: RecipeSettings
 }
 
@@ -47,6 +48,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   silence: { minPause: 0.8, thresholdDb: -30, pad: 0.12, smooth: true, transition: 0.12, detectBy: 'auto', freezeDb: -50 },
   narration: { command: '' },
   sfxGen: { command: '' },
+  workspace: { root: null, autoLoad: true },
   recipe: { text: DEFAULT_RECIPE, introAudioPath: null },
 }
 
@@ -293,6 +295,8 @@ function App() {
   const [model3DPath, setModel3DPath] = useState<string | null>(null)
   const [boothScript, setBoothScript] = useState('')
   const [showHelp, setShowHelp] = useState(false)
+  const [projects, setProjects] = useState<{ name: string; path: string; media: number; saved: boolean; modified: number }[]>([])
+  const [currentProject, setCurrentProject] = useState<{ dir: string; name: string } | null>(null)
   const [appVersion, setAppVersion] = useState('')
   useEffect(() => { window.ipcRenderer.agentStatus?.().then(s => setAppVersion(s?.appVersion || '')).catch(() => {}) }, [])
   const [scrubbing, setScrubbing] = useState(false)
@@ -511,7 +515,7 @@ function App() {
   // Load persistent settings (brand kit, intro defaults, audio) once
   useEffect(() => {
     window.ipcRenderer.getSettings().then((s: AppSettings) => {
-      if (s) setSettings({ ...DEFAULT_SETTINGS, ...s, brand: { ...DEFAULT_SETTINGS.brand, ...s.brand }, intro: { ...DEFAULT_SETTINGS.intro, ...s.intro }, audio: { ...DEFAULT_SETTINGS.audio, ...s.audio }, recipe: { ...DEFAULT_SETTINGS.recipe, ...s.recipe } })
+      if (s) setSettings({ ...DEFAULT_SETTINGS, ...s, brand: { ...DEFAULT_SETTINGS.brand, ...s.brand }, intro: { ...DEFAULT_SETTINGS.intro, ...s.intro }, audio: { ...DEFAULT_SETTINGS.audio, ...s.audio }, workspace: { ...DEFAULT_SETTINGS.workspace, ...s.workspace }, recipe: { ...DEFAULT_SETTINGS.recipe, ...s.recipe } })
       settingsLoaded.current = true
     }).catch(() => { settingsLoaded.current = true })
   }, [])
@@ -877,6 +881,18 @@ function App() {
           placement: cmd.transparent ? `transparent overlay placed at ${currentTime.toFixed(2)}s on the video track — it composites over the clip beneath it` : 'appended to the video track',
         }
       }
+      case 'open_project': {
+        const root = settings.workspace.root
+        if (!root) return { error: 'no project folder set — the human picks one in Settings → Project folder' }
+        const r = await window.ipcRenderer.listProjects(root)
+        const list = r.projects || []
+        if (!cmd.name) return { ok: true, root, projects: list.map(p => ({ name: p.name, media: p.media, saved: p.saved })), current: currentProject?.name || null }
+        const want = String(cmd.name).toLowerCase()
+        const hit = list.find(p => p.name.toLowerCase() === want) || list.find(p => p.name.toLowerCase().includes(want))
+        if (!hit) return { error: `no project called "${cmd.name}". Available: ${list.map(p => p.name).join(', ') || '(none yet)'}` }
+        await openProjectFolder(hit.path, hit.name)
+        return { ok: true, opened: hit.name, folder: hit.path, mediaInFolder: hit.media }
+      }
       case 'booth_script': {
         if (typeof cmd.script !== 'string' || !cmd.script.trim()) return { error: 'script (string) required — one line per beat' }
         setBoothScript(cmd.script.trim())
@@ -1136,9 +1152,83 @@ function App() {
     } catch (err) { console.error('Export failed', err); setExportProgress(null) }
   }
 
+  // ---- project folders ----
+  // A workspace root holds one sub-folder per project. Opening a project pulls in whatever
+  // media is sitting in that folder, so dropping files in with Explorer is the "import".
+  const projectData = () => ({ version: 2, mediaBin, clips, texts, markers, orientation, resolution, fps, masterVolume, exportQuality })
+
+  const refreshProjects = async (root: string | null) => {
+    if (!root) { setProjects([]); return }
+    const r = await window.ipcRenderer.listProjects(root)
+    if (r.projects) setProjects(r.projects)
+    else { setProjects([]); if (r.error) notify(`Project folder: ${r.error}`) }
+  }
+  useEffect(() => { refreshProjects(settings.workspace.root) }, [settings.workspace.root])   // eslint-disable-line react-hooks/exhaustive-deps
+
+  const openProjectFolder = async (dir: string, name: string) => {
+    const r = await window.ipcRenderer.scanProject(dir)
+    if (r.error) { notify(`Could not open ${name}: ${r.error}`); return }
+    setIsPlaying(false)
+    setCurrentProject({ dir, name })
+
+    // a saved timeline in the folder wins; otherwise start clean with the folder's media
+    if (r.project) {
+      setMediaBin(r.project.mediaBin || [])
+      setClips(r.project.clips || [])
+      setTexts(r.project.texts || [])
+      setMarkers(r.project.markers || [])
+      if (r.project.orientation) setOrientation(r.project.orientation)
+      if (r.project.resolution) setResolution(r.project.resolution)
+      if (r.project.fps) setFps(r.project.fps)
+      if (typeof r.project.masterVolume === 'number') setMasterVolume(r.project.masterVolume)
+    } else {
+      setClips([]); setTexts([]); setMarkers([]); setMediaBin([])
+    }
+    setSelectedId(null); setCurrentTime(0)
+
+    if (!settings.workspace.autoLoad) { notify(`Opened ${name}.`); return }
+    // pull in everything in the folder that isn't already in the bin
+    const known = new Set((r.project?.mediaBin || []).map((m: MediaFile) => m.path))
+    const fresh = (r.files || []).filter(f => !known.has(f.path))
+    const added: MediaFile[] = []
+    for (const f of fresh) {
+      const meta = await window.ipcRenderer.getMetadata(f.path).catch(() => null)
+      const verdict = classifyMedia(f.name, meta)
+      if ('reject' in verdict) continue
+      const m = meta as Probe
+      added.push({
+        id: rid(), name: f.name, path: f.path, type: verdict.type,
+        duration: verdict.type === 'image' ? 5 : (m.duration || 5),
+        hasVideo: m.hasVideo || verdict.type === 'image', hasAudio: m.hasAudio,
+      })
+    }
+    if (added.length) setMediaBin(prev => [...prev, ...added])
+    notify(`${name} — ${added.length ? `${added.length} file${added.length > 1 ? 's' : ''} ready in the Media Bin` : 'no new media in the folder'}${r.project ? ', timeline restored' : ''}.`)
+  }
+
+  const newProjectFolder = async () => {
+    const root = settings.workspace.root
+    if (!root) return
+    const name = `Project ${new Date().toISOString().slice(0, 10)}`
+    const r = await window.ipcRenderer.createProject({ root, name })
+    if (r.error || !r.path) { notify(`Could not create the project: ${r.error || 'unknown error'}`); return }
+    await refreshProjects(root)
+    setCurrentProject({ dir: r.path, name: r.name || name })
+    setMediaBin([]); setClips([]); setTexts([]); setMarkers([]); setCurrentTime(0)
+    notify(`Created ${r.name}. Drop footage into that folder and hit ↻ — no import needed.`)
+    window.ipcRenderer.revealFolder(r.path)
+  }
+
   const saveProject = async () => {
     try {
-      await window.ipcRenderer.saveProject({ version: 2, mediaBin, clips, texts, markers, orientation, resolution, fps, masterVolume, exportQuality })
+      // inside a project folder this is silent; otherwise fall back to the file dialog
+      if (currentProject) {
+        const r = await window.ipcRenderer.saveProjectTo({ dir: currentProject.dir, data: projectData() })
+        notify(r.path ? `Saved into ${currentProject.name}.` : `Save failed: ${r.error || 'unknown error'}`)
+        refreshProjects(settings.workspace.root)
+        return
+      }
+      await window.ipcRenderer.saveProject(projectData())
     } catch (e) { console.error(e) }
   }
 
@@ -1353,6 +1443,20 @@ function App() {
               {sidebarTab === 'media' && <label className="add-btn" title="Add video, audio or images — or a 3D model (STL / 3MF / OBJ / GLB)"><IconPlus /><input type="file" accept={ACCEPT_ATTR} multiple onChange={handleFileUpload} hidden /></label>}
             </div>
             {sidebarTab === 'sfx' && <SfxPanel onPlace={placeSfx} genCommand={settings.sfxGen.command} onGenCommand={c => setSettings(s => ({ ...s, sfxGen: { command: c } }))} />}
+            {sidebarTab === 'media' && settings.workspace.root && (
+              <div className="proj-bar">
+                <select value={currentProject?.dir || ''} title="Each sub-folder of your project folder is a project"
+                  onChange={e => { const p = projects.find(x => x.path === e.target.value); if (p) openProjectFolder(p.path, p.name) }}>
+                  <option value="" disabled>Open a project…</option>
+                  {projects.map(p => <option key={p.path} value={p.path}>{p.name}{p.media ? ` · ${p.media} file${p.media > 1 ? 's' : ''}` : ''}{p.saved ? ' ✓' : ''}</option>)}
+                </select>
+                <button onClick={newProjectFolder} title="Create a new project folder">+</button>
+                <button title="Rescan this folder for new files" disabled={!currentProject}
+                  onClick={() => currentProject && openProjectFolder(currentProject.dir, currentProject.name)}>↻</button>
+                <button title="Show the folder in Explorer" disabled={!currentProject}
+                  onClick={() => currentProject && window.ipcRenderer.revealFolder(currentProject.dir)}>📂</button>
+              </div>
+            )}
             {sidebarTab === 'media' && <div className="media-list" onDrop={async (e) => { e.preventDefault(); await importFiles(Array.from(e.dataTransfer.files)) }} onDragOver={(e) => e.preventDefault()}>
               {mediaBin.length === 0 && <div className="empty-hint">
                 Click <IconPlus /> or drag files here.
@@ -1686,6 +1790,28 @@ function App() {
                   {settings.brand.showMode !== 'whole' && <label>Window (s)<input type="number" min="1" step="0.5" value={settings.brand.windowSec} onChange={e => setSettings(s => ({ ...s, brand: { ...s.brand, windowSec: parseFloat(e.target.value) || 5 } }))} /></label>}
                   <label>Fade (s)<input type="number" min="0" step="0.1" value={settings.brand.fade} onChange={e => setSettings(s => ({ ...s, brand: { ...s.brand, fade: parseFloat(e.target.value) || 0 } }))} /></label>
                 </div>
+              </section>
+
+              <section>
+                <div className="sec-title">
+                  <h3>Project folder <span className="hint" style={{ fontWeight: 400 }}>— skip importing altogether</span></h3>
+                </div>
+                <p className="hint">Point VidHelm at one folder you keep your video work in. Every sub-folder inside it is a project, and opening one loads whatever footage is sitting in that folder — drop files in with Explorer and they’re simply there, no import step. Saving writes back into the same folder, so a project is just a folder you can copy, back up or move.</p>
+                <div className="recipe-files">
+                  <div className="recipe-file">
+                    <span>Folder:</span>
+                    <button onClick={async () => { const p = await window.ipcRenderer.pickFolder('Choose the folder that holds your projects'); if (p) setSettings(s => ({ ...s, workspace: { ...s.workspace, root: p } })) }}>
+                      {settings.workspace.root || 'Choose a folder…'}
+                    </button>
+                    {settings.workspace.root && <button title="Stop using a project folder" onClick={() => { setSettings(s => ({ ...s, workspace: { ...s.workspace, root: null } })); setCurrentProject(null) }}>✕</button>}
+                  </div>
+                  <label className="switch" title="Load every media file in the project folder when you open it">
+                    <input type="checkbox" checked={settings.workspace.autoLoad} onChange={e => setSettings(s => ({ ...s, workspace: { ...s.workspace, autoLoad: e.target.checked } }))} /> load the folder’s media automatically
+                  </label>
+                </div>
+                {settings.workspace.root && <p className="hint">{projects.length
+                  ? `${projects.length} project${projects.length > 1 ? 's' : ''} in there. Switch between them from the Media Bin.`
+                  : 'No sub-folders yet — use + in the Media Bin to start one.'}</p>}
               </section>
 
               <RecipeSection recipe={settings.recipe} onChange={r => setSettings(s => ({ ...s, recipe: r }))}

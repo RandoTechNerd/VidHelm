@@ -16,6 +16,10 @@ Your footage never leaves your machine: FFmpeg does the rendering, Whisper runs 
 - **Start Recipe** — standing instructions like start G-code: a plain-text block with toggle chips (off = `#`-commented), free-type welcome. Default pipeline: cut dead air → thumbnail picker (frame + catchy subtitle + your logo) → 5 AI-pitched titles → brand watermark → intro sting at 0:00. One click (🚀 Recipe) or one sentence to your AI runs it
 - **Robust pause removal** — trim-aware audio analysis, tail-silence detection, overlap-safe splicing with crossfades
 
+**Project folders — no importing**
+- Point VidHelm at one folder in Settings and every sub-folder inside it becomes a project. Open one and the footage sitting in that folder is simply there, so dropping files in with Explorer *is* the import
+- Saving writes back into the same folder, which makes a project something you can copy, back up or hand to someone else. Switch projects from the Media Bin, or ask your AI to (`open_project`)
+
 **Editing**
 - Timeline with filmstrip thumbnails, trim/split/ripple, snapping, undo/redo, zoom-to-fit (see every clip at once; Ctrl+scroll zooms around the cursor)
 - **🧊 3D Studio** — drop in an **STL / 3MF / OBJ / GLB** (your prints!) — even an HTML viewer page with a model inside — pose it in a live viewer, pick color/finish/backdrop, and render a spinning **turntable clip** or still straight onto the timeline. Choose a **transparent** backdrop and a still becomes a real alpha overlay that composites over your footage, or pick **Video frame** to render the spin over the frame under your playhead. Converts to OBJ too

@@ -39,6 +39,11 @@ export function installIpcMock() {
     sfxGenerate: async () => ({ error: 'SFX generation needs the desktop app (npm run dev)' }),
     pickFile: async () => null,
     pickFolder: async () => null,
+    listProjects: async () => ({ error: 'Project folders need the desktop app (npm run dev)' }),
+    scanProject: async () => ({ error: 'Project folders need the desktop app (npm run dev)' }),
+    createProject: async () => ({ error: 'Project folders need the desktop app (npm run dev)' }),
+    saveProjectTo: async () => ({ error: 'Project folders need the desktop app (npm run dev)' }),
+    revealFolder: async () => {},
     windowDragStart: () => {}, windowDragEnd: () => {}, windowToggleMaximize: () => {},
     agentStatus: async () => ({
       appVersion: 'web', port: 5959, portOverridden: false,

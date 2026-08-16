@@ -41,6 +41,11 @@ interface Window {
     sfxGenerate: (data: { command: string; prompt: string }) => Promise<{ path?: string; error?: string; log?: string }>
     pickFile: (data: { title: string; extensions: string[] }) => Promise<string | null>
     pickFolder: (title: string) => Promise<string | null>
+    listProjects: (root: string) => Promise<{ projects?: { name: string; path: string; media: number; saved: boolean; modified: number }[]; error?: string }>
+    scanProject: (dir: string) => Promise<{ files?: { path: string; name: string; mtime: number }[]; project?: any; projectFile?: string; error?: string }>
+    createProject: (data: { root: string; name: string }) => Promise<{ path?: string; name?: string; error?: string }>
+    saveProjectTo: (data: { dir: string; data: any }) => Promise<{ path?: string; error?: string }>
+    revealFolder: (dir: string) => Promise<void>
     windowDragStart: () => void
     windowDragEnd: () => void
     windowToggleMaximize: () => void
