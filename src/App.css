@@ -70,7 +70,7 @@ header {
 }
 
 header .logo-section h1, header .header-info { cursor: grab; }
-header .hdr-btn, header .orient-btn, header .social-row button { cursor: pointer; }
+header .hdr-btn, header .orient-btn, header .links-pop button { cursor: pointer; }
 
 .logo-section { display: flex; align-items: center; gap: 12px; }
 
