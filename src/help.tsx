@@ -53,7 +53,7 @@ const TOUR: { title: string; body: string; go?: { label: string; panel: HelpPane
   },
   {
     title: '8 · Now connect your co-captain (do not skip this)',
-    body: 'This is the step that turns VidHelm from a lean editor into a fast one. Connect an assistant and it works the same timeline you do: reading your tag points, dropping effects on every beat, writing your titles, running your whole Start Recipe from one sentence, and exporting with a quality report. The 🤖 AI button checks your setup and hands you the exact one-line command. About a minute, and free if you already have an assistant.',
+    body: 'This is the step that turns VidHelm from a lean editor into a fast one. Connect an assistant and it works the same timeline you do: reading your tag points, dropping effects on every beat, writing your titles, running your whole Start Recipe from one sentence, and exporting with a quality report. The 🤖 AI button does the fiddly part for you: it checks your setup, writes the command with your real install path already in it, then copies it and opens a terminal on request. Paste it, press Enter, restart your assistant, and leave VidHelm open. About a minute, and free if you already have an assistant.',
     go: { label: 'Connect your AI', panel: 'connect' },
   },
 ]

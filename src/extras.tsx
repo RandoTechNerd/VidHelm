@@ -509,6 +509,8 @@ export function ThumbnailModal({ open, onClose, videoPath, videoName, logoPath }
 // fixes for the usual snags. Agents can open it too (open_panel "connect").
 type AgentStatus = Awaited<ReturnType<Window['ipcRenderer']['agentStatus']>>
 
+const ADVERSAL_SETUP = 'pip install adversal-cli\nclaude mcp add adversal -- adversal-cli'
+
 const CLIENT_DOCS: { id: string; name: string; where: string; kind: 'json' | 'toml' | 'http' | 'auto' }[] = [
   { id: 'claude-code', name: 'Claude Code', where: 'Zero config, open this repo folder and approve the "vidhelm" server when prompted (.mcp.json is auto-discovered). Installed-app users: run the command below once instead.', kind: 'auto' },
   { id: 'claude-desktop', name: 'Claude Desktop', where: 'Settings → Developer → Edit Config, or edit  %APPDATA%\\Claude\\claude_desktop_config.json, merge this in, then fully restart Claude Desktop.', kind: 'json' },
@@ -560,7 +562,11 @@ export function ConnectModal({ open, onClose }: { open: boolean; onClose: () => 
     'http': `# read the timeline          # drive the editor\ncurl http://127.0.0.1:${port}/state\ncurl -X POST http://127.0.0.1:${port}/command -H "Content-Type: application/json" -d "{\\"action\\":\\"place_sfx\\",\\"name\\":\\"pop\\",\\"t\\":3.2}"`,
   }
   const copy = (label: string, text: string) => {
-    navigator.clipboard.writeText(text).then(() => { setCopied(label); setTimeout(() => setCopied(''), 1600) })
+    navigator.clipboard.writeText(text)
+      .then(() => { setCopied(label); setTimeout(() => setCopied(''), 1600) })
+      // Clipboard access can be refused (locked-down policies, some remote sessions). Say so,
+      // rather than leaving a button that looks like it worked and pasted nothing.
+      .catch(() => { setCopied('fail'); setTimeout(() => setCopied(''), 4000) })
   }
   const cdoc = CLIENT_DOCS.find(c => c.id === client)!
 
@@ -606,8 +612,10 @@ export function ConnectModal({ open, onClose }: { open: boolean; onClose: () => 
             <div className="conn-actions">
               <button className="primary" onClick={() => copy('snippet', SNIPPETS[client])}>{copied === 'snippet' ? 'Copied ✓' : 'Copy config'}</button>
               <button onClick={() => copy('path', mcpPath)}>{copied === 'path' ? 'Copied ✓' : 'Copy server path'}</button>
+              <button onClick={() => { copy('cmdline', SNIPPETS[client]); window.ipcRenderer.openTerminal() }}>⌨ Copy &amp; open a terminal</button>
               <button onClick={() => window.ipcRenderer.openExternal('https://github.com/RandoTechNerd/VidHelm/blob/main/docs/CONNECT.md')}>Full guide ↗</button>
             </div>
+            {copied === 'fail' && <p className="hint">Clipboard is blocked here. Select the command above and copy it by hand.</p>}
           </section>
           <section>
             <div className="sec-title"><h3>Optional power-ups</h3></div>
@@ -615,8 +623,15 @@ export function ConnectModal({ open, onClose }: { open: boolean; onClose: () => 
               <p className="hint">Pair Claude with its Chrome extension and your AI can take the finished export all the way: <b>upload it to YouTube for you</b> (title, description, tags, thumbnail) and pause for your OK before publishing. It can also <b>capture websites or your localhost app</b>, screenshots and walkthrough recordings that drop straight into your timeline as footage. Get it at <code>claude.ai/chrome</code>, then just ask: "upload my export to YouTube" or "record my site's landing page for the intro".</p></details>
             <details><summary>🎞 Adversal AI, your agent understands the footage (optional)</summary>
               <p className="hint">Adversal is a third-party video-analysis MCP: your AI sends it a video and gets back Markdown notes, chapters, and extracted stills, perfect for auto-writing chapters, summaries, and finding the best moments in long source footage before cutting in VidHelm. Free tier is 100 minutes/month; needs Python 3.13+. Setup:</p>
-              <pre className="conn-snippet">{'pip install adversal-cli\nclaude mcp add adversal -- adversal-cli'}</pre>
-              <p className="hint">Then ask your AI things like "analyze my raw footage and tag the highlights in VidHelm". Details at <code>adversal.ai</code>. Entirely optional - VidHelm never requires it.</p></details>
+              <pre className="conn-snippet">{ADVERSAL_SETUP}</pre>
+              <div className="conn-actions">
+                <button className="primary" onClick={() => { copy('adversal', ADVERSAL_SETUP); window.ipcRenderer.openTerminal() }}>{copied === 'adversal' ? 'Copied ✓, paste in the terminal' : '⌨ Copy & open a terminal'}</button>
+                <button onClick={() => copy('adversal2', ADVERSAL_SETUP)}>{copied === 'adversal2' ? 'Copied ✓' : 'Copy only'}</button>
+                <button onClick={() => window.ipcRenderer.openExternal('https://adversal.ai')}>adversal.ai ↗</button>
+              </div>
+              {copied === 'fail' && <p className="hint">Clipboard is blocked here. Select the two lines above and copy them by hand.</p>}
+              <p className="hint">Paste the two lines into the terminal one at a time. Not a Claude Code user? Skip the second line and register <code>adversal-cli</code> with your own client exactly the way you registered VidHelm above, it is the command to run, with no arguments. Then ask your AI to run its <b>authenticate</b> tool once, which opens a browser sign-in.</p>
+              <p className="hint">After that, ask for things like "analyze my raw footage and tag the highlights in VidHelm". Entirely optional, VidHelm never requires it. Your footage does leave your machine for this step, unlike everything else in the app.</p></details>
           </section>
           <section>
             <h3>Still stuck?</h3>

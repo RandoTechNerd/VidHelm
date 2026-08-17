@@ -32,6 +32,7 @@ export function installIpcMock() {
     openSfxFolder: async () => ({ error: 'The sound folder needs the desktop app (npm run dev)' }),
     saveSfxRecording: async () => ({ error: 'Recording needs the desktop app (npm run dev)' }),
     openExternal: async (url: string) => { window.open(url, "_blank") },
+    openTerminal: async () => ({ error: 'Opening a terminal needs the desktop app' }),
     voiceClone: async () => ({ error: 'Narration needs the desktop app (npm run dev)' }),
     pickModel: async () => null,
     extractModel: async () => ({ error: 'Reading models needs the desktop app (npm run dev)' }),

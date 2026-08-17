@@ -3,6 +3,7 @@ import { restoreDragOffset, plainDragOffset, shouldSnapMaximize } from './dragMa
 import { findModelInHtml } from './modelSniff'
 import path from 'node:path'
 import fs from 'node:fs'
+import os from 'node:os'
 import { spawn } from 'node:child_process'
 import ffmpeg from 'fluent-ffmpeg'
 
@@ -206,6 +207,24 @@ ipcMain.handle('open-external', async (_event, url: string) => {
 
 ipcMain.handle('reveal-file', async (_event, filePath: string) => {
   if (filePath) shell.showItemInFolder(filePath)
+})
+
+// Setup lines like `pip install adversal-cli` have to be typed somewhere, and "open a terminal"
+// is a step people get stuck on. This opens one in the user's home folder, nothing is run for
+// them: the command is on the clipboard and they paste it, so they see what they are running.
+ipcMain.handle('open-terminal', async () => {
+  const home = os.homedir()
+  try {
+    if (process.platform === 'win32') {
+      spawn('cmd.exe', ['/c', 'start', '', 'powershell.exe', '-NoExit', '-Command', `Set-Location -LiteralPath '${home.replace(/'/g, "''")}'`],
+        { detached: true, stdio: 'ignore', windowsHide: false }).unref()
+    } else if (process.platform === 'darwin') {
+      spawn('open', ['-a', 'Terminal', home], { detached: true, stdio: 'ignore' }).unref()
+    } else {
+      spawn('x-terminal-emulator', [], { cwd: home, detached: true, stdio: 'ignore' }).unref()
+    }
+    return { ok: true }
+  } catch (e) { return { error: String(e) } }
 })
 
 // Generate a horizontal filmstrip (tiled frames) for a video clip's source range, for timeline previews

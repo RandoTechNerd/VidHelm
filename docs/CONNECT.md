@@ -2,13 +2,13 @@
 
 VidHelm is built to be co-piloted: you edit in the GUI while your AI assistant edits the same timeline through a local bridge. This page gets **any** assistant connected in a couple of minutes.
 
-> **Shortcut:** open VidHelm and click **🤖 AI** in the header. It runs live diagnostics, generates the exact config for your client with the real install path filled in, and walks you through fixes. Everything below is the long-hand version.
+> **Shortcut:** open VidHelm and click **🤖 AI** in the header. It runs live diagnostics, generates the exact config for your client with the real install path filled in, and walks you through fixes. The **Copy & open a terminal** button puts the command on your clipboard and opens a shell, so setup is paste, Enter, restart your assistant. Everything below is the long-hand version.
 
 ## How it fits together
 
 ```
 your AI client  ──stdio──▶  agent/mcp-server.mjs  ──HTTP──▶  VidHelm app (127.0.0.1:5959)
-(Claude, Cursor, …)          (21 MCP tools)                   (the editor you see)
+(Claude, Cursor, …)          (25 MCP tools)                   (the editor you see)
 ```
 
 - The **bridge** lives inside the app: it only exists while VidHelm is open, and only listens on localhost. Nothing leaves your machine.
