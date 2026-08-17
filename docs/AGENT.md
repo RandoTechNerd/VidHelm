@@ -41,6 +41,8 @@ Add to `claude_desktop_config.json`:
 | `set_format` | Landscape/portrait/square, resolution, fps |
 | `export_video` | Render + automatic quality check (loudness, peaks, black frames) |
 | `cut_pauses` | Remove silent/static dead space across the timeline, spliced with crossfades |
+| `find_repeats` | Read the timeline's speech on-device and return the spots where a line was said more than once, with every attempt's words, timing, and the default pick. Cuts nothing |
+| `apply_takes` | Cut the rejected takes (`keep` as `"group:member"` pairs, `drop` as line indexes). Ripples and stays undoable; re-running rebuilds from the pre-cut state |
 | `run_recipe` | Execute the user's Start Recipe (their standing workflow) |
 | `sample_frames` / `compose_thumbnail` | Pick a moment and produce a 1280×720 thumbnail with subtitle + logo |
 | `open_panel` | Open the booth / narration / thumbnail picker / settings for the user |

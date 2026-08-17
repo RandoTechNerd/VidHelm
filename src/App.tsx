@@ -3,6 +3,8 @@ import './App.css'
 import { SfxPanel, MarkerPanel, KaraokeBooth, NarrationModal, RecipeSection, ThumbnailModal, ConnectModal, DEFAULT_RECIPE, recipeActive, newMarker, type Marker, type SfxItem, type RecipeSettings } from './extras'
 import { Model3DModal, KEY_GREEN, KEY_MAGENTA, type Model3DApi } from './model3d'
 import { HelpModal, InfoNote, type HelpPanel } from './help'
+import { TakesModal, takeStats, type TakeAnalysis } from './takes'
+import { groupTakes, removalRanges, removedSeconds, chunksFromWords } from '../electron/takes'
 
 interface MediaFile {
   id: string
@@ -362,6 +364,13 @@ function App() {
   const notify = (text: string, ms = 7000) => { const id = rid(); setToasts(t => [...t, { id, text }]); setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), ms) }
   const [sidebarTab, setSidebarTab] = useState<'media' | 'sfx'>('media')
   const [silenceBusy, setSilenceBusy] = useState<string | null>(null)
+  // Takes & history: the transcript, the repeat groups, and enough snapshots to let the user
+  // change their mind about which take to keep without re-scanning.
+  const [showTakes, setShowTakes] = useState(false)
+  const [takes, setTakes] = useState<TakeAnalysis | null>(null)
+  const [takesBusy, setTakesBusy] = useState<string | null>(null)
+  const takeSnap = useRef<{ before: string; after: string } | null>(null)
+  const takesRef = useRef<TakeAnalysis | null>(null); takesRef.current = takes
   const [eta, setEta] = useState<number | null>(null)
   const exportStartRef = useRef(0)
   const settingsLoaded = useRef(false)
@@ -897,6 +906,49 @@ function App() {
         return { x: Math.round(r.x * dpr), y: Math.round(r.y * dpr), w: Math.round(r.width * dpr), h: Math.round(r.height * dpr), dpr }
       }
       case 'cut_pauses': return await runCutDeadSpace()
+      case 'find_repeats': {
+        const r = await scanTakes()
+        if (r.error) return r
+        setShowTakes(true)
+        // hand back the actual words so the assistant can judge the takes itself
+        const a = r.analysis || takesRef.current
+        return {
+          ok: true, lines: r.lines, groups: (a?.groups || []).map((g, i) => ({
+            group: i,
+            keep: g.members.indexOf(g.keep),
+            takes: g.members.map(m => ({ member: g.members.indexOf(m), at: +a!.chunks[m].start.toFixed(2), seconds: +(a!.chunks[m].end - a!.chunks[m].start).toFixed(2), text: a!.chunks[m].text })),
+          })),
+          hint: 'Pick a take per group with apply_takes { keep: [{ group, member }] }, or drop extra lines with drop: [lineIndex]. Nothing is cut until you call it.',
+        }
+      }
+      case 'apply_takes': {
+        const a = takesRef.current
+        if (!a) return { error: 'call find_repeats first' }
+        let next = a
+        // "0:2, 1:0" = group 0 keeps its 3rd take, group 1 keeps its 1st. Arrays work too, for
+        // anything driving the plain HTTP bridge.
+        const pairs: { group: number; member: number }[] = Array.isArray(cmd.keep)
+          ? cmd.keep
+          : typeof cmd.keep === 'string'
+            ? (cmd.keep as string).split(',').map((p: string) => p.split(':').map((n: string) => parseInt(n.trim(), 10)))
+                .filter((pair: number[]) => Number.isInteger(pair[0]) && Number.isInteger(pair[1]))
+                .map((pair: number[]) => ({ group: pair[0], member: pair[1] }))
+            : []
+        if (pairs.length) {
+          next = { ...next, groups: next.groups.map((g, i) => {
+            const pick = pairs.find(k => k.group === i)
+            const m = pick ? g.members[pick.member] : undefined
+            return m === undefined ? g : { ...g, keep: m }
+          }) }
+        }
+        const dropList: number[] = Array.isArray(cmd.drop)
+          ? cmd.drop
+          : typeof cmd.drop === 'string' ? (cmd.drop as string).split(',').map((n: string) => parseInt(n.trim(), 10)) : []
+        if (dropList.length) next = { ...next, drops: dropList.filter(i => Number.isInteger(i) && i >= 0 && i < next.chunks.length) }
+        takesRef.current = next
+        setTakes(next)
+        return applyTakes(next)
+      }
       case 'run_recipe': { await runRecipe(); return { ok: true } }
       case 'sample_frames': {
         const v = cmd.path ? { path: cmd.path } : firstVideo()
@@ -919,7 +971,8 @@ function App() {
         else if (cmd.panel === 'connect') setShowConnect(cmd.open !== false)
         else if (cmd.panel === 'model3d') { if (cmd.path) setModel3DPath(cmd.path); setShowModel3D(cmd.open !== false) }
         else if (cmd.panel === 'help') setShowHelp(cmd.open !== false)
-        else return { error: `unknown panel: ${cmd.panel}. Use booth | narration | sfx | media | settings | thumbnail | connect | model3d (optional path) | help` }
+        else if (cmd.panel === 'takes') setShowTakes(cmd.open !== false)
+        else return { error: `unknown panel: ${cmd.panel}. Use booth | narration | sfx | media | settings | thumbnail | connect | model3d (optional path) | help | takes` }
         return { ok: true, panel: cmd.panel }
       }
       case 'render_3d': {
@@ -1197,6 +1250,89 @@ function App() {
     const r = await runCutDeadSpace()
     if (r.error) notify(r.error)
     else notify(`Removed ${r.removed} ${r.mode === 'stillness' ? 'static stretch(es)' : 'pause(s)'} (~${r.seconds}s). Undo with Ctrl+Z if needed.`)
+  }
+
+  // ---- Takes & history ----
+  // Transcribe the timeline, group the lines that are retakes of each other, and hand the result
+  // to the panel. Detection is in electron/takes.ts; nothing is cut until the user applies.
+  const stateKey = () => JSON.stringify({ c: clips, t: texts })
+
+  const scanTakes = async (): Promise<{ error?: string; groups?: number; lines?: number; analysis?: TakeAnalysis }> => {
+    const hasAudio = clips.some(c => c.trackId !== 'v1' || mediaBin.find(m => m.id === c.mediaId)?.hasAudio)
+    if (!hasAudio) return { error: 'Nothing with speech on the timeline yet.' }
+    setTakesBusy('Mixing audio…')
+    try {
+      const payload = clips.map(c => { const m = mediaBin.find(x => x.id === c.mediaId); return { path: m?.path, hasAudio: m?.hasAudio, start: c.start, duration: c.duration, sourceStart: c.sourceStart, volume: c.volume } })
+      const mix = await window.ipcRenderer.renderMixAudio({ clips: payload })
+      if (mix.error || !mix.path) return { error: 'Takes: ' + (mix.error || 'could not prepare audio') }
+      setTakesBusy('Reading speech…')
+      // Word timings, not phrases: Whisper packs a false start and its retake into one segment
+      // ("Say hello to VidHelm. Say hello to VidHelm, a free editor"), so we rebuild the lines
+      // ourselves and split them where the speaker started over.
+      const res = await window.ipcRenderer.transcribe(mix.path, { model: settings.caption.model, language: settings.caption.language, word: true })
+      if (res.error) return { error: 'Takes: ' + res.error }
+      const words = (res.chunks || [])
+        .map(c => ({ start: c.start, end: c.end ?? c.start + 0.3, text: (c.text || '') }))
+        .filter(w => w.text.trim() && w.end > w.start)
+      const chunks = words.length
+        ? chunksFromWords(words)
+        : (res.chunks || []).map(c => ({ start: c.start, end: c.end ?? c.start + 2, text: (c.text || '').trim() })).filter(c => c.text && c.end > c.start)
+      if (!chunks.length) return { error: 'No speech detected on the timeline.' }
+      const groups = groupTakes(chunks)
+      takeSnap.current = null
+      const analysis: TakeAnalysis = { chunks, groups, drops: [], applied: false, scannedAt: new Date().toLocaleTimeString() }
+      // the ref is what the agent path reads back, state has not re-rendered yet
+      takesRef.current = analysis
+      setTakes(analysis)
+      return { groups: groups.length, lines: chunks.length, analysis }
+    } catch (e) { console.error(e); return { error: 'Takes scan failed: ' + String(e) } }
+    finally { setTakesBusy(null) }
+  }
+
+  // Apply the current choices. Cuts run last→first so earlier timestamps stay valid, exactly like
+  // Cut Pauses. Re-applying is allowed only while the timeline still matches what we left behind,
+  // otherwise a stale transcript would cut the wrong seconds.
+  const applyTakes = (analysis: TakeAnalysis | null = takes): { error?: string; cuts?: number; seconds?: number } => {
+    if (!analysis) return { error: 'Scan the timeline first.' }
+    const ranges = removalRanges(analysis.chunks, analysis.groups, analysis.drops)
+    if (!ranges.length) return { error: 'Nothing selected to cut.' }
+    let baseClips = clips, baseTexts = texts
+    const snap = takeSnap.current
+    if (analysis.applied) {
+      if (!snap || snap.after !== stateKey()) return { error: 'The timeline changed since these cuts were applied, re-scan to change takes.' }
+      const before = JSON.parse(snap.before) as { c: TimelineClip[]; t: TextClip[] }
+      baseClips = before.c; baseTexts = before.t
+    }
+    const beforeKey = JSON.stringify({ c: baseClips, t: baseTexts })
+    let nc = baseClips, nt = baseTexts
+    for (const r of [...ranges].sort((a, b) => b.start - a.start)) {
+      const out = removeRange(nc, nt, r.start, r.end, settings.silence.smooth ? settings.silence.transition : 0)
+      nc = out.clips; nt = out.texts
+    }
+    setClips(nc); setTexts(nt); setSelectedId(null)
+    takeSnap.current = { before: beforeKey, after: JSON.stringify({ c: nc, t: nt }) }
+    setTakes({ ...analysis, applied: true })
+    return { cuts: ranges.length, seconds: removedSeconds(ranges) }
+  }
+
+  const setTakeKeep = (groupIndex: number, member: number) => {
+    setTakes(prev => prev ? { ...prev, groups: prev.groups.map((g, i) => i === groupIndex ? { ...g, keep: member } : g) } : prev)
+  }
+  const toggleTakeDrop = (index: number) => {
+    setTakes(prev => {
+      if (!prev) return prev
+      const hit = prev.groups.findIndex(g => g.members.includes(index))
+      // inside a group, "cut this one" means keep a different take instead
+      if (hit >= 0) {
+        const g = prev.groups[hit]
+        if (g.keep !== index) return prev
+        const other = g.members.find(m => m !== index)
+        if (other === undefined) return prev
+        return { ...prev, groups: prev.groups.map((x, i) => i === hit ? { ...x, keep: other } : x) }
+      }
+      const drops = prev.drops.includes(index) ? prev.drops.filter(d => d !== index) : [...prev.drops, index]
+      return { ...prev, drops }
+    })
   }
 
   // ---- voiceover ----
@@ -1661,6 +1797,10 @@ function App() {
               {captioning && captionPct !== null && <span className="cap-bar"><span className="cap-fill" style={{ width: `${captionPct}%` }} /></span>}
             </button>
             <button className="tool-btn" onClick={cutDeadSpace} disabled={silenceBusy !== null || totalDuration <= 0} title="Detect & remove long silent pauses (great for faceless videos)"><IconScissors /> {silenceBusy || 'Cut Pauses'}</button>
+            <button className="tool-btn tk-btn" onClick={() => setShowTakes(true)} disabled={takesBusy !== null}
+              title="Takes & history: find repeated takes, keep the best one, and see the full transcript of what was cut">
+              📋 {takesBusy || 'Takes'}{takeStats(takes).cuts > 0 && <span className="tk-badge">{takeStats(takes).cuts}</span>}
+            </button>
             <div className="spacer" />
             <div className="zoom">
               <button onClick={() => setPxPerSec(p => clamp(p / 1.4, 2, 200))}>−</button><span>Zoom</span><button onClick={() => setPxPerSec(p => clamp(p * 1.4, 2, 200))}>+</button>
@@ -1868,6 +2008,12 @@ function App() {
         }} />
       <ThumbnailModal open={showThumbnail} onClose={() => setShowThumbnail(false)}
         videoPath={firstVideo()?.path || null} videoName={firstVideo()?.name || 'video'} logoPath={settings.brand.logoPath} />
+
+      <TakesModal open={showTakes} onClose={() => setShowTakes(false)} analysis={takes} busy={takesBusy}
+        canReapply={!!takeSnap.current && takeSnap.current.after === stateKey()}
+        onScan={async () => { const r = await scanTakes(); if (r.error) notify(r.error); else notify(r.groups ? `Found ${r.groups} repeated spot${r.groups === 1 ? '' : 's'} across ${r.lines} lines. Pick the takes you want, then cut.` : `No repeated takes in ${r.lines} lines. You can still strike out any line by hand.`) }}
+        onApply={() => { const r = applyTakes(); if (r.error) notify(r.error); else notify(`Cut ${r.cuts} spot${r.cuts === 1 ? '' : 's'} (~${r.seconds}s). Undo with Ctrl+Z, or change a take in Takes & history.`) }}
+        onSetKeep={setTakeKeep} onToggleDrop={toggleTakeDrop} onSeek={t => setCurrentTime(t)} />
 
       {ctxMenu && (() => {
         const media = mediaBin.find(m => m.id === ctxMenu.mediaId)

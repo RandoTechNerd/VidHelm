@@ -45,6 +45,24 @@ Tag points are the backbone of everything else.
   - *Auto* picks for you. Configure thresholds in Settings → Cut Dead Space.
 - Undo history (Ctrl+Z) covers everything.
 
+### 📋 Takes & history (when you said it three times)
+
+Cut Pauses removes silence. **Takes** removes the retakes. Click **📋 Takes** in the toolbar and hit *Scan the timeline*:
+
+1. It mixes the timeline audio and transcribes it **on your machine** (Whisper, nothing uploaded).
+2. It rebuilds the transcript from word timings, which matters: Whisper hands back a false start and its retake as one segment ("Say hello to VidHelm. Say hello to VidHelm, a free editor"), and that is the commonest repeat of all. Lines get split where you started over.
+3. Attempts at the same line are grouped, and one is picked: the longest, finished, least um-filled version, preferring the later one on a tie.
+
+Nothing is cut until you press the button. In the panel you can:
+
+- **Switch takes** with *use take 1 / 2*, if you prefer an earlier one.
+- **Strike out any single line** with ✕, for a flub with no retake.
+- **Click a timecode** to send the playhead there and watch it before deciding.
+
+After applying, the same panel becomes the record: the full transcript with every cut line greyed and struck through. Change a take there and it re-cuts from the pre-cut state, so you are never stacking cuts on cuts. Ctrl+Z undoes the whole thing, and if you have edited the timeline since applying it will ask for a fresh scan rather than cutting the wrong seconds.
+
+Your AI can do this too: `find_repeats` returns every attempt's words for it to judge, then `apply_takes` with the takes it chose.
+
 ## 4 · Narrate, three ways
 
 VidHelm treats narration as a first-class citizen. All three routes end with audio on the **VOICE / MUSIC** track:

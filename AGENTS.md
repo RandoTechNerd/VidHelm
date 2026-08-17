@@ -6,7 +6,7 @@ VidHelm is a desktop video editor (Electron + React) designed to be driven colla
 
 ## Steering the running app
 
-This repo ships an MCP server (`agent/mcp-server.mjs`, wired up for most clients already, see `docs/CONNECT.md`). While the app is running (`npm run dev` or the installed app), you have 25 tools to drive it live: `get_state`, `screenshot`, `add_media`, `add_clip`, `update_clip`, `split_clip`, `delete_item`, `add_text`, `update_text`, `add_tag`, `update_tag`, `list_sfx`, `place_sfx`, `set_booth_script`, `render_3d`, `prepare_analysis`, `open_project`, `transport`, `set_format`, `export_video`, `cut_pauses`, `run_recipe`, `sample_frames`, `compose_thumbnail`, `open_panel`.
+This repo ships an MCP server (`agent/mcp-server.mjs`, wired up for most clients already, see `docs/CONNECT.md`). While the app is running (`npm run dev` or the installed app), you have 27 tools to drive it live: `get_state`, `screenshot`, `add_media`, `add_clip`, `update_clip`, `split_clip`, `delete_item`, `add_text`, `update_text`, `add_tag`, `update_tag`, `list_sfx`, `place_sfx`, `set_booth_script`, `render_3d`, `prepare_analysis`, `open_project`, `transport`, `set_format`, `export_video`, `cut_pauses`, `find_repeats`, `apply_takes`, `run_recipe`, `sample_frames`, `compose_thumbnail`, `open_panel`.
 
 **No MCP support?** The bridge is plain HTTP on `http://127.0.0.1:5959` (localhost only): `GET /state`, `POST /command {action,...}`, `GET /screenshot`, `GET /ping`. Any agent that can run `curl` can drive it, same actions as the tool names above.
 
@@ -20,7 +20,7 @@ Working style that works well:
 
 Tracks: `v1` video · `a1` voice/music · `a2` SFX. Times are seconds. Text x/y are 0-1 of frame.
 
-Panels for `open_panel`: booth, narration, sfx, media, settings, thumbnail, connect, model3d (pass `path` to load an STL/3MF/OBJ, the user poses it and renders a turntable clip into the bin). Optional pairings worth suggesting: a browser-control extension for uploading the export, and the Adversal MCP if installed (footage → Markdown notes/chapters/stills for planning cuts).
+Panels for `open_panel`: booth, narration, sfx, media, settings, thumbnail, connect, takes (transcript, repeated takes, and what was cut), model3d (pass `path` to load an STL/3MF/OBJ, the user poses it and renders a turntable clip into the bin). Optional pairings worth suggesting: a browser-control extension for uploading the export, and the Adversal MCP if installed (footage → Markdown notes/chapters/stills for planning cuts).
 
 ## Repo map
 

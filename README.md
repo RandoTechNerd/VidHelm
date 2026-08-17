@@ -30,6 +30,7 @@ Your footage never leaves your machine: FFmpeg does the rendering, Whisper runs 
 - Text overlays with fades, draggable on the preview
 - Volume automation (draw a gain curve on any clip), per-clip fades, crossfades
 - **Cut Pauses**: detects silent gaps *or* motionless stretches and ripples them out
+- **Takes & history**: said the line three times? A quiet 📋 Takes button reads the timeline's speech on-device, groups the attempts (including the false start Whisper merges into the same sentence), and keeps the best one. You get the whole transcript with the cut lines greyed out, so it doubles as a record of what left the edit, and you can switch to a different take afterwards without re-scanning
 
 **Audio** (three labeled lanes: `VOICE / MUSIC`, `SFX`, plus each video's own sound)
 - **SFX library**: 13 built-in synthesized effects (whoosh, pop, boing, squish, gloop, poof, sparkle, party horn…). Audition with one click, place at the playhead. Drop your own WAV/MP3s into the custom folder and they appear alongside

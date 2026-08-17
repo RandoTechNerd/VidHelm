@@ -1106,6 +1106,35 @@ textarea.duration-input { resize: vertical; font-family: inherit; }
 .conn-modal details .hint { margin: 8px 0 2px; }
 .conn-modal code { background: rgba(255,255,255,0.08); border-radius: 4px; padding: 1px 5px; font-size: 12px; }
 
+/* ============ Takes & history ============ */
+.tk-modal { max-width: 760px; }
+.tk-modal .modal-body { min-height: 0; }
+.tk-summary { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12px; color: var(--text-muted); margin-bottom: 10px; }
+.tk-summary span { background: rgba(255,255,255,0.05); border: 1px solid var(--border-subtle); border-radius: 999px; padding: 3px 10px; }
+.tk-summary .tk-when { background: none; border: none; color: var(--text-dim); padding-left: 0; }
+.tk-list { display: flex; flex-direction: column; gap: 2px; max-height: 46vh; overflow-y: auto; padding-right: 4px; }
+.tk-row { display: flex; align-items: flex-start; gap: 10px; padding: 6px 8px; border-radius: var(--radius-sm); font-size: 13px; line-height: 1.45; }
+.tk-row:hover { background: rgba(255,255,255,0.04); }
+.tk-time { flex: 0 0 auto; background: none; border: none; color: var(--text-dim); font-size: 11px; font-variant-numeric: tabular-nums; cursor: pointer; padding: 2px 0; min-width: 38px; text-align: left; }
+.tk-time:hover { color: var(--accent-primary); }
+.tk-text { flex: 1 1 auto; color: var(--text-main); }
+/* a cut line stays readable but obviously gone: this is the record of what was removed */
+.tk-row.cut .tk-text { color: var(--text-dim); text-decoration: line-through; }
+.tk-drop, .tk-pick { flex: 0 0 auto; background: transparent; border: 1px solid var(--border-subtle); color: var(--text-muted); border-radius: 999px;
+  font-size: 11px; font-weight: 600; padding: 3px 10px; cursor: pointer; opacity: 0; transition: opacity 0.12s, color 0.12s; }
+.tk-row:hover .tk-drop, .tk-drop:focus-visible { opacity: 1; }
+.tk-drop:hover { color: var(--text-main); border-color: var(--accent-primary); }
+.tk-pick { opacity: 1; }
+.tk-pick.on { background: rgba(59,130,246,0.16); border-color: var(--accent-primary); color: var(--text-main); cursor: default; }
+.tk-group { border: 1px solid var(--border-subtle); border-left: 2px solid var(--accent-warning); border-radius: var(--radius-md);
+  padding: 6px; margin: 6px 0; background: rgba(245,158,11,0.04); }
+.tk-group-head { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--accent-warning); padding: 2px 8px 4px; }
+.tk-row.keep .tk-text { color: var(--text-main); }
+.tk-foot { gap: 14px; }
+/* the toolbar entry stays quiet: this is an occasional tool, not part of the main flow */
+.tk-btn .tk-badge { display: inline-block; margin-left: 6px; background: var(--accent-warning); color: #1a1a1e;
+  border-radius: 999px; font-size: 10px; font-weight: 700; padding: 0 5px; line-height: 15px; min-width: 15px; text-align: center; }
+
 /* ============ 3D Studio ============ */
 .m3d-modal { max-width: 760px; }
 .m3d-modal .modal-body { gap: 10px; min-height: 0; overflow: hidden; }

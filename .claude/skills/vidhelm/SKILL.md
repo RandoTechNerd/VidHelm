@@ -32,6 +32,7 @@ You are co-editing with a human: they see every change live in the GUI and can m
 
 ## Narration
 
+- `find_repeats` / `apply_takes`: for footage where the person said a line two or three times over. `find_repeats` reads the timeline's speech on-device, splits merged Whisper segments where the speaker started again, and hands back each repeated spot with every attempt's words and timing plus the default pick (longest, finished, fewest fillers, later on a tie). It cuts nothing. Read the takes, decide which one is actually best, then `apply_takes { keep: "0:2, 1:0" }` (group:member pairs) plus `drop: "7"` for a flub with no retake. Rippling and undo are handled. The human sees the same list in the Takes & history panel, so say which take you kept and why.
 - `set_booth_script {script}`: write a read-along script straight into the karaoke booth and open it. The killer workflow: analyze the footage first (its transcript, or Adversal video notes if that MCP is available), draft clean lines one-per-beat, inject them, and the user re-records polished narration in one take.
 - `open_panel booth`: the booth alone; it also has a "Draft from timeline audio" button (on-device Whisper) users can press themselves.
 - `open_panel narration`: cloned-voice generation via their configured CLI; the 🧬 wizard sets up XTTS-v2 (Python) or audio.cpp (no Python, Apache-licensed models) for them.
