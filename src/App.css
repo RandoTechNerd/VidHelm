@@ -1116,7 +1116,12 @@ textarea.duration-input { resize: vertical; font-family: inherit; }
 .m3d-group { display: flex; flex-direction: column; gap: 5px; }
 .m3d-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-dim, #64748b); }
 .m3d-row { display: flex; align-items: center; gap: 8px; }
-.m3d-row label { display: flex; align-items: center; gap: 5px; white-space: nowrap; }
+/* `.modal label` is column-oriented for form fields, which stacked these tickbox captions
+   underneath their boxes; once the controls area became scrollable that second line fell
+   outside it and the boxes read as unlabelled. Caption beside the box, and never shrink. */
+.m3d-row label { display: flex; flex-direction: row; align-items: center; gap: 5px; white-space: nowrap; flex: 0 0 auto; }
+.m3d-row label > span { flex: 0 0 auto; }
+.m3d-row { flex-wrap: wrap; }
 .m3d-rotation { gap: 6px; }
 .m3d-rotation label { flex-direction: row; gap: 3px; }
 .m3d-rotation input[type="number"] { width: 54px; padding: 5px 6px; }
