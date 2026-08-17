@@ -1108,14 +1108,19 @@ textarea.duration-input { resize: vertical; font-family: inherit; }
 
 /* ============ 3D Studio ============ */
 .m3d-modal { max-width: 760px; }
-.m3d-stage { position: relative; width: 100%; aspect-ratio: 16/9; background: #05070d; border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; overflow: hidden; }
+.m3d-modal .modal-body { gap: 10px; min-height: 0; overflow: hidden; }
+.m3d-stage { position: relative; flex: 0 0 auto; width: 100%; aspect-ratio: 16/9; background: #05070d; border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; overflow: hidden; }
 .m3d-canvas { width: 100% !important; height: 100% !important; display: block; }
 .m3d-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--text-dim, #6b7280); font-size: 15px; font-weight: 600; pointer-events: none; }
-.m3d-controls { display: flex; flex-wrap: wrap; gap: 14px 20px; align-items: flex-start; font-size: 12.5px; color: var(--text-muted, #9aa3af); }
+.m3d-controls { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding-right: 4px; display: flex; flex-wrap: wrap; align-content: flex-start; gap: 14px 20px; align-items: flex-start; font-size: 12.5px; color: var(--text-muted, #9aa3af); }
 .m3d-group { display: flex; flex-direction: column; gap: 5px; }
 .m3d-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-dim, #64748b); }
 .m3d-row { display: flex; align-items: center; gap: 8px; }
 .m3d-row label { display: flex; align-items: center; gap: 5px; white-space: nowrap; }
+.m3d-rotation { gap: 6px; }
+.m3d-rotation label { flex-direction: row; gap: 3px; }
+.m3d-rotation input[type="number"] { width: 54px; padding: 5px 6px; }
+.m3d-rotation button { padding: 5px 9px; }
 .m3d-open { min-width: 132px; }
 /* segmented control keeps the backdrop choices on one line instead of stacking */
 .m3d-seg { display: inline-flex; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.12); border-radius: 8px; overflow: hidden; }
@@ -1197,7 +1202,7 @@ textarea.duration-input { resize: vertical; font-family: inherit; }
 .proj-bar button:disabled { opacity: 0.35; cursor: default; }
 .sfx-rec { padding: 8px 12px; border-top: 1px solid rgba(255,255,255,0.08); }
 .sfx-foot button.rec-on { color: #fff; background: #e11d48; border-color: transparent; }
-.m3d-status { margin: 6px 0; min-height: 32px; display: flex; align-items: center; }
+.m3d-status { flex: 0 0 auto; margin: 6px 0; min-height: 32px; display: flex; align-items: center; }
 .m3d-controls input[type="color"].is-idle { opacity: 0.32; cursor: default; }
 .m3d-group { min-height: 52px; }
 .web-banner { flex: none; background: rgba(251,191,36,0.12); border: 1px solid rgba(251,191,36,0.35); color: #fbbf24; border-radius: 8px; padding: 7px 12px; font-size: 12.5px; line-height: 1.5; }
