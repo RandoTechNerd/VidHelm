@@ -18,6 +18,7 @@ const FINISHES = {
 } as const
 type Finish = keyof typeof FINISHES
 type ModelRotation = { x: number; y: number; z: number }
+type CaptureResult = { path?: string; error?: string }
 
 const W = 1600, H = 900   // internal render buffer (downscaled by CSS in the modal)
 const CAPTURE_FPS = 30
@@ -37,8 +38,8 @@ const pickKeyColour = (modelColour: string) => {
 const WEB_ONLY = 'That needs the desktop app. This is the browser preview, which draws the interface but has no file access or FFmpeg behind it.'
 
 export interface Model3DApi {
-  record: (opts?: { seconds?: number; transparent?: boolean }) => Promise<{ path?: string; error?: string }>
-  still: (opts?: { transparent?: boolean }) => Promise<{ path?: string; error?: string }>
+  record: (opts?: { seconds?: number; transparent?: boolean }) => Promise<CaptureResult>
+  still: (opts?: { transparent?: boolean }) => Promise<CaptureResult>
   loaded: () => boolean
 }
 
@@ -74,10 +75,32 @@ export function Model3DModal({ open, onClose, initialPath, onRendered, apiRef, g
   const [status, setStatus] = useState('Drop an STL, 3MF, OBJ, GLB or a 3D web page here, or click Open model.')
   const recState = useRef<{
     start: number; baseRot: number; rec: MediaRecorder; secs: number
-    manual: boolean; timer: number | null
+    manual: boolean; timer: number | null; stopTimer: number | null
+    stream: MediaStream; cancelled: boolean; settled: boolean
+    resolve: (result: CaptureResult) => void
   } | null>(null)
   const spinRef = useRef(spin); spinRef.current = spin
   const zUpRef = useRef(zUp); zUpRef.current = zUp
+
+  const cancelActiveCapture = useCallback(() => {
+    const active = recState.current
+    if (!active || active.settled) return
+    active.cancelled = true
+    if (active.timer !== null) window.clearInterval(active.timer)
+    if (active.stopTimer !== null) window.clearTimeout(active.stopTimer)
+    active.timer = null
+    active.stopTimer = null
+    if (active.rec.state !== 'inactive') {
+      try { active.rec.stop(); return } catch { /* finish synchronously below */ }
+    }
+    active.stream.getTracks().forEach(track => track.stop())
+    active.settled = true
+    if (recState.current === active) recState.current = null
+    setRecording(false)
+    setBusy(false)
+    setStatus('Turntable recording canceled.')
+    active.resolve({ error: 'turntable recording canceled' })
+  }, [])
 
   // ---- scene lifecycle ----
   useEffect(() => {
@@ -122,13 +145,14 @@ export function Model3DModal({ open, onClose, initialPath, onRendered, apiRef, g
     threeRef.current = { renderer, scene, camera, controls, pivot, modelRoot, raf: 0 }
     threeRef.current.raf = requestAnimationFrame(tick)
     return () => {
+      cancelActiveCapture()
       cancelAnimationFrame(threeRef.current?.raf || 0)
       controls.dispose()
       renderer.dispose()
       renderer.domElement.remove()
       threeRef.current = null
     }
-  }, [open])
+  }, [open, cancelActiveCapture])
   const secondsRef = useRef(seconds); secondsRef.current = seconds
 
   // background + material live-apply. Transparent clears the backdrop entirely so the render
@@ -231,7 +255,7 @@ export function Model3DModal({ open, onClose, initialPath, onRendered, apiRef, g
     setBackdrop(t ? 'transparent' : 'color')
   }
 
-  const recordTurntable = (opts?: { seconds?: number; transparent?: boolean }) => new Promise<{ path?: string; error?: string }>(resolve => {
+  const recordTurntable = (opts?: { seconds?: number; transparent?: boolean }) => new Promise<CaptureResult>(resolve => {
     const st = threeRef.current
     if (!st || !modelName) return resolve({ error: 'no model loaded, open one first' })
     if (recState.current) return resolve({ error: 'already recording' })
@@ -255,13 +279,27 @@ export function Model3DModal({ open, onClose, initialPath, onRendered, apiRef, g
     const mime = order.find(m => MediaRecorder.isTypeSupported(m)) || ''
     const rec = new MediaRecorder(stream, { mimeType: mime || undefined, videoBitsPerSecond: 14_000_000 })
     const chunks: Blob[] = []
+    const baseRot = st.pivot.rotation.y
+    const capture = {
+      start: performance.now(), baseRot, rec, secs, manual, timer: null, stopTimer: null,
+      stream, cancelled: false, settled: false, resolve,
+    }
+    recState.current = capture
     rec.ondataavailable = e => { if (e.data.size) chunks.push(e.data) }
     rec.onstop = async () => {
-      const active = recState.current
-      if (active?.timer !== null && active?.timer !== undefined) window.clearInterval(active.timer)
-      stream.getTracks().forEach(track => track.stop())
-      recState.current = null
+      if (capture.settled) return
+      capture.settled = true
+      if (capture.timer !== null) window.clearInterval(capture.timer)
+      if (capture.stopTimer !== null) window.clearTimeout(capture.stopTimer)
+      capture.stream.getTracks().forEach(track => track.stop())
+      if (recState.current === capture) recState.current = null
       setRecording(false)
+      if (capture.cancelled) {
+        setBusy(false)
+        setStatus('Turntable recording canceled.')
+        resolve({ error: 'turntable recording canceled' })
+        return
+      }
       setBusy(true); setStatus(alpha ? 'Encoding transparent overlay…' : 'Encoding mp4…')
       let out: { path?: string; error?: string } = {}
       try {
@@ -281,8 +319,6 @@ export function Model3DModal({ open, onClose, initialPath, onRendered, apiRef, g
       setBusy(false)
       resolve(out)
     }
-    const baseRot = st.pivot.rotation.y
-    recState.current = { start: performance.now(), baseRot, rec, secs, manual, timer: null }
     setRecording(true)
     setStatus(`Recording ${secs}s turntable…`)
     rec.start()
@@ -302,7 +338,7 @@ export function Model3DModal({ open, onClose, initialPath, onRendered, apiRef, g
           active.timer = null
           // Keep the final requested frame on the stream for one frame period
           // before stopping, so MediaRecorder gives it a full 30 fps duration.
-          window.setTimeout(() => { if (rec.state === 'recording') rec.stop() }, FRAME_MS)
+          active.stopTimer = window.setTimeout(() => { if (rec.state === 'recording') rec.stop() }, FRAME_MS)
         }
       }
       paintFrame()
