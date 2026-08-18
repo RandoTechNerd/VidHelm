@@ -1015,12 +1015,14 @@ function App() {
       }
       case 'run_recipe': { await runRecipe(); return { ok: true } }
       case 'sample_frames': {
-        const v = cmd.path ? { path: cmd.path } : firstVideo()
+        const sf = firstVideo()
+        const v = cmd.path ? { path: cmd.path } : (sf && { path: sf.proxyPath || sf.path })
         if (!v) return { error: 'no video on the timeline' }
         return await window.ipcRenderer.sampleFrames({ filePath: v.path, count: cmd.count || 8 })
       }
       case 'compose_thumbnail': {
-        const v = cmd.path ? { path: cmd.path, name: 'video' } : firstVideo()
+        const fv = firstVideo()
+        const v = cmd.path ? { path: cmd.path, name: 'video' } : (fv && { path: fv.proxyPath || fv.path, name: fv.name })
         if (!v) return { error: 'no video on the timeline' }
         if (!cmd.outPath) return { error: 'outPath required' }
         return await window.ipcRenderer.composeThumbnail({ filePath: v.path, t: cmd.t ?? 1, subtitle: cmd.subtitle, logoPath: cmd.logoPath ?? settings.brand.logoPath, outPath: cmd.outPath })
@@ -1330,6 +1332,18 @@ function App() {
         else merged.push({ ...r })
       }
       ranges = merged
+      // Two pauses close together leave an orphan sliver between them: a third of a second of
+      // speech that dissolves in and straight back out, which reads as a stutter rather than an
+      // edit. When a cut would strand a fragment shorter than MIN_KEEP, leave that pause in.
+      // Rhythm beats shaving another half second, and no speech is ever thrown away.
+      const MIN_KEEP = 0.9
+      const spaced: { start: number; end: number }[] = []
+      for (const r of ranges) {
+        const prevEnd = spaced.length ? spaced[spaced.length - 1].end : 0
+        if (r.start - prevEnd < MIN_KEEP) continue
+        spaced.push(r)
+      }
+      ranges = spaced
       if (!ranges.length) return { error: useMotion ? 'No long static stretches found (lower the min length or stillness sensitivity in settings).' : 'No long pauses found (try lowering the minimum pause length in settings).' }
       ranges.sort((a, b) => b.start - a.start) // apply last→first so earlier times stay valid
       let nc = clips, nt = texts, removed = 0
