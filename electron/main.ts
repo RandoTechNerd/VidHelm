@@ -1051,7 +1051,9 @@ const agentServer = http.createServer(async (req, res) => {
       try { cmd = JSON.parse(Buffer.concat(chunks).toString() || '{}') } catch { res.writeHead(400); return res.end(JSON.stringify({ error: 'bad json' })) }
       if (!cmd.action) { res.writeHead(400); return res.end(JSON.stringify({ error: 'missing action' })) }
       const LONG = ['export', 'cut_pauses', 'run_recipe', 'sample_frames', 'compose_thumbnail', 'render_3d', 'prepare_analysis']
-      const timeout = cmd.action === 'export' ? 30 * 60 * 1000 : LONG.includes(cmd.action) ? 5 * 60 * 1000 : 15000
+      // a fourteen minute cut takes about half an hour to render here, so a flat 30 minute cap
+      // reported a timeout on an export that was going perfectly well
+      const timeout = cmd.action === 'export' ? 4 * 60 * 60 * 1000 : LONG.includes(cmd.action) ? 20 * 60 * 1000 : 15000
       return res.end(JSON.stringify(await askRenderer(cmd, timeout)))
     }
     res.writeHead(404); res.end(JSON.stringify({ error: 'not found' }))
@@ -1284,6 +1286,7 @@ ipcMain.handle('voice-clone', async (_event, { command, scriptText }: { command:
 })
 
 ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outputPath, settings }: { clips: any[], texts: any[], brand: any, audio: any, outputPath: string, settings: any }) => {
+  let cleanupGraph = ''   // the filtergraph is written to a file, see below
   return new Promise((resolve, reject) => {
     clips = clips || []
     texts = texts || []
@@ -1316,7 +1319,16 @@ ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outp
       if (clip.type === 'image') {
         command.input(clip.path).inputOptions([`-loop 1`, `-t ${clip.duration}`])
       } else {
-        command.input(clip.path)
+        // Honour the clip's trim window. Without this the export renders every clip from the
+        // START of its source file and only uses the overlay window to decide when it is on
+        // screen, so any trimmed, split or pause-cut timeline exported the wrong footage (and
+        // the wrong audio) while the preview looked right. A little tail past the clip length
+        // keeps fades fed.
+        const ss = Number(clip.sourceStart) || 0
+        const opts: string[] = []
+        if (ss > 0) opts.push(`-ss ${ss.toFixed(3)}`)
+        opts.push(`-t ${(clip.duration + 0.2).toFixed(3)}`)
+        command.input(clip.path).inputOptions(opts)
       }
 
       if (clip.hasVideo || clip.type === 'image') {
@@ -1420,8 +1432,15 @@ ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outp
       filterComplex.push(`[1:a]volume=${master}[aout]`)
     }
 
+    // Windows caps a command line at 32767 characters. A ninety-clip cut builds a filtergraph of
+    // roughly 25k on its own, which on top of the inputs blows straight past that and the process
+    // simply fails to start. Hand ffmpeg the graph as a file instead: same graph, tiny argv.
+    const graph = filterComplex.map(f => (typeof f === 'string' ? f : String(f))).join(';')
+    const graphPath = path.join(app.getPath('temp'), `vidhelm_graph_${Date.now()}.txt`)
+    fs.writeFileSync(graphPath, graph)
+    cleanupGraph = graphPath
     command
-      .complexFilter(filterComplex)
+      .outputOptions(['-filter_complex_script', graphPath])
       .map(`[${currentVOut}]`)
       .map(`[aout]`)
       .videoCodec('libx264')
@@ -1447,8 +1466,8 @@ ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outp
       ])
       .on('start', (cmd) => console.log('FFmpeg started:', cmd))
       .on('progress', (progress) => { if (win) win.webContents.send('export-progress', progress.percent) })
-      .on('end', () => resolve({ success: true }))
-      .on('error', (err) => { console.error('FFmpeg error:', err); reject(err) })
+      .on('end', () => { if (cleanupGraph) { try { fs.unlinkSync(cleanupGraph) } catch { /* already gone */ } } resolve({ success: true }) })
+      .on('error', (err) => { if (cleanupGraph) { try { fs.unlinkSync(cleanupGraph) } catch { /* already gone */ } } console.error('FFmpeg error:', err); reject(err) })
       .save(outputPath)
   })
 })

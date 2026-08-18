@@ -635,7 +635,19 @@ function App() {
     const vids = clips.filter(c => c.trackId === 'v1' && mediaBin.find(m => m.id === c.mediaId)?.type === 'video')
     if (!vids.length) return
     const handle = setTimeout(() => {
-      vids.forEach(c => {
+      // One ffmpeg per clip, all at once, means ninety processes the moment a long video is cut.
+      // That pegs the machine, starves the app's own event loop and stalls anything else running
+      // (an export, for one). Two at a time fills the strip in just as fast in practice.
+      const queue = [...vids]
+      let active = 0
+      const pump = () => {
+        while (active < 2 && queue.length) {
+          const c = queue.shift()!
+          active++
+          void makeStrip(c).finally(() => { active--; pump() })
+        }
+      }
+      const makeStrip = async (c: TimelineClip) => {
         const media = mediaBin.find(m => m.id === c.mediaId)
         if (!media) return
         // While a proxy is building, pulling frames from the 4K HEVC original would queue a dozen
@@ -650,9 +662,11 @@ function App() {
         const sig = `${Math.round(c.sourceStart * 2)}:${Math.round(c.duration * 2)}:${bucket}:${media.proxyPath ? 'p' : 'o'}`
         if (thumbsRef.current[c.id]?.sig === sig) return
         // the proxy is small and h264: far quicker to pull frames from than a 4K HEVC original
-        window.ipcRenderer.makeThumbnails({ filePath: media.proxyPath || media.path, sourceStart: c.sourceStart, duration: c.duration, count: bucket * 4 || 8 })
-          .then(r => { const p = r?.path; if (p) setThumbs(prev => ({ ...prev, [c.id]: { sig, path: p } })) })
-      })
+        const r = await window.ipcRenderer.makeThumbnails({ filePath: media.proxyPath || media.path, sourceStart: c.sourceStart, duration: c.duration, count: bucket * 4 || 8 })
+        const p = r?.path
+        if (p) setThumbs(prev => ({ ...prev, [c.id]: { sig, path: p } }))
+      }
+      pump()
     }, 400)
     return () => clearTimeout(handle)
   }, [clips, mediaBin, pxPerSec])
@@ -1128,7 +1142,7 @@ function App() {
         setExportProgress(0); setEta(null); exportStartRef.current = Date.now()
         try {
           await window.ipcRenderer.exportVideo({
-            clips: clips.map(c => { const m = mediaBin.find(x => x.id === c.mediaId); return { ...c, path: m?.path, hasVideo: m?.hasVideo, hasAudio: m?.hasAudio, hdr: m?.hdr } }),
+            clips: clips.map(c => { const m = mediaBin.find(x => x.id === c.mediaId); const src = exportSource(m, 720); return { ...c, path: src.path, hdr: src.hdr, hasVideo: m?.hasVideo, hasAudio: m?.hasAudio } }),
             texts, brand: { ...settings.brand, enabled: false }, audio: settings.audio, outputPath: out,
             settings: { width: 1280, height: 720, fps: 30, quality: 'analysis', masterVolume },
           })
@@ -1148,7 +1162,7 @@ function App() {
         if (clips.length === 0 && texts.length === 0) return { error: 'timeline is empty' }
         setIsPlaying(false)
         const payload = {
-          clips: clips.map(c => { const media = mediaBin.find(m => m.id === c.mediaId); return { ...c, path: media?.path, hasVideo: media?.hasVideo, hasAudio: media?.hasAudio, hdr: media?.hdr, chromaKey: media?.chromaKey } }),
+          clips: clips.map(c => { const media = mediaBin.find(m => m.id === c.mediaId); const src = exportSource(media, h); return { ...c, path: src.path, hdr: src.hdr, hasVideo: media?.hasVideo, hasAudio: media?.hasAudio, chromaKey: media?.chromaKey } }),
           texts, brand: settings.brand, audio: settings.audio, outputPath: cmd.outputPath,
           settings: { width: w, height: h, fps, quality: exportQuality, masterVolume },
         }
@@ -1245,6 +1259,13 @@ function App() {
     setEditingTextId(null)
   }
 
+  // The exporter opens the source once per clip. On a 90-clip cut of 4K HEVC HDR that means 90
+  // simultaneous heavy decodes plus 90 tone-maps, which takes the whole machine down. When the
+  // export is not bigger than the proxy, render from the proxy instead: it is already the right
+  // size and already SDR, so the graph gets light and the colour is identical to the preview.
+  const exportSource = (m: MediaFile | undefined, outHeight: number) =>
+    m?.proxyPath && outHeight <= 1080 ? { path: m.proxyPath, hdr: false } : { path: m?.path, hdr: m?.hdr }
+
   const addText = () => {
     const t: TextClip = { id: rid(), text: 'New text', start: currentTime, duration: 3, x: 0.5, y: 0.5, fontSize: 64, color: '#ffffff', fadeIn: 0.3, fadeOut: 0.3 }
     setTexts(prev => [...prev, t])
@@ -1259,7 +1280,7 @@ function App() {
     const cs = settings.caption
     setCaptioning('Mixing audio…'); setCaptionPct(null)
     try {
-      const payload = clips.map(c => { const m = mediaBin.find(x => x.id === c.mediaId); return { path: m?.path, hasAudio: m?.hasAudio, start: c.start, duration: c.duration, volume: c.volume } })
+      const payload = clips.map(c => { const m = mediaBin.find(x => x.id === c.mediaId); return { path: m?.proxyPath || m?.path, hasAudio: m?.hasAudio, start: c.start, duration: c.duration, volume: c.volume } })
       const mix = await window.ipcRenderer.renderMixAudio({ clips: payload })
       if (mix.error || !mix.path) { notify('Captions: ' + (mix.error || 'could not prepare audio')); return }
       const res = await window.ipcRenderer.transcribe(mix.path, { model: cs.model, language: cs.language, word: cs.mode === 'word' })
@@ -1283,7 +1304,7 @@ function App() {
     const audioClips = clips.filter(c => c.trackId === 'a1' || mediaBin.find(m => m.id === c.mediaId)?.hasAudio)
     if (!audioClips.length) return null
     try {
-      const payload = clips.map(c => { const m = mediaBin.find(x => x.id === c.mediaId); return { path: m?.path, hasAudio: m?.hasAudio, start: c.start, duration: c.duration, volume: c.volume } })
+      const payload = clips.map(c => { const m = mediaBin.find(x => x.id === c.mediaId); return { path: m?.proxyPath || m?.path, hasAudio: m?.hasAudio, start: c.start, duration: c.duration, volume: c.volume } })
       const mix = await window.ipcRenderer.renderMixAudio({ clips: payload })
       if (mix.error || !mix.path) return null
       const res = await window.ipcRenderer.transcribe(mix.path, { model: settings.caption.model, language: settings.caption.language, word: false })
@@ -1312,7 +1333,7 @@ function App() {
           for (const iv of r.intervals || []) intervals.push({ start: c.start + iv.start, end: c.start + Math.min(iv.end, c.duration) })
         }
       } else {
-        const payload = clips.map(c => { const m = mediaBin.find(x => x.id === c.mediaId); return { path: m?.path, hasAudio: m?.hasAudio, start: c.start, duration: c.duration, sourceStart: c.sourceStart, volume: c.volume } })
+        const payload = clips.map(c => { const m = mediaBin.find(x => x.id === c.mediaId); return { path: m?.proxyPath || m?.path, hasAudio: m?.hasAudio, start: c.start, duration: c.duration, sourceStart: c.sourceStart, volume: c.volume } })
         const mix = await window.ipcRenderer.renderMixAudio({ clips: payload })
         if (mix.error || !mix.path) return { error: 'Cut pauses: ' + (mix.error || 'could not prepare audio') }
         const res = await window.ipcRenderer.detectSilence({ filePath: mix.path, thresholdDb: S.thresholdDb, minPause: S.minPause })
@@ -1369,7 +1390,7 @@ function App() {
     if (!hasAudio) return { error: 'Nothing with speech on the timeline yet.' }
     setTakesBusy('Mixing audio…')
     try {
-      const payload = clips.map(c => { const m = mediaBin.find(x => x.id === c.mediaId); return { path: m?.path, hasAudio: m?.hasAudio, start: c.start, duration: c.duration, sourceStart: c.sourceStart, volume: c.volume } })
+      const payload = clips.map(c => { const m = mediaBin.find(x => x.id === c.mediaId); return { path: m?.proxyPath || m?.path, hasAudio: m?.hasAudio, start: c.start, duration: c.duration, sourceStart: c.sourceStart, volume: c.volume } })
       const mix = await window.ipcRenderer.renderMixAudio({ clips: payload })
       if (mix.error || !mix.path) return { error: 'Takes: ' + (mix.error || 'could not prepare audio') }
       setTakesBusy('Reading speech…')
@@ -1496,7 +1517,8 @@ function App() {
       const payload = {
         clips: clips.map(c => {
           const media = mediaBin.find(m => m.id === c.mediaId)
-          return { ...c, path: media?.path, hasVideo: media?.hasVideo, hasAudio: media?.hasAudio, chromaKey: media?.chromaKey }
+          const src = exportSource(media, h)
+          return { ...c, path: src.path, hdr: src.hdr, hasVideo: media?.hasVideo, hasAudio: media?.hasAudio, chromaKey: media?.chromaKey }
         }),
         texts,
         brand: settings.brand,
