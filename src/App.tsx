@@ -439,7 +439,13 @@ function App() {
   const selClip = clips.find(c => c.id === selectedId) || null
   const selText = texts.find(t => t.id === selectedId) || null
 
-  const activeVideoClips = clips.filter(c => c.trackId === 'v1' && currentTime >= c.start && currentTime < c.start + c.duration)
+  // A clip's <video> used to be created only once the clip was on screen, and then had to seek
+  // into the middle of a long file. Until that seek decodes the element paints nothing, which is
+  // the black flash you see at cuts. Mount them a beat early instead, hidden and silent, so the
+  // frame is ready before it is needed.
+  const PREROLL = 1.2
+  const previewVideoClips = clips.filter(c => c.trackId === 'v1' && currentTime >= c.start - PREROLL && currentTime < c.start + c.duration)
+  const activeVideoClips = previewVideoClips.filter(c => currentTime >= c.start)
   const activeTexts = texts.filter(t => currentTime >= t.start && currentTime < t.start + t.duration)
   const activeKey = activeVideoClips.map(c => c.id).join(',')
 
@@ -496,6 +502,14 @@ function App() {
   useEffect(() => {
     const map = videoEls.current
     map.forEach((el, id) => { if (!activeVideoClips.find(c => c.id === id)) el.pause() })
+    // park the not-yet-visible ones on their first frame so the decoder is warm
+    previewVideoClips.filter(c => currentTime < c.start).forEach(c => {
+      const el = map.get(c.id)
+      if (!el) return
+      el.volume = 0
+      if (!el.paused) el.pause()
+      if (Math.abs(el.currentTime - c.sourceStart) > 0.05) el.currentTime = c.sourceStart
+    })
     activeVideoClips.forEach(c => {
       const media = mediaBin.find(m => m.id === c.mediaId)
       if (media?.type !== 'video') return
@@ -1888,10 +1902,11 @@ function App() {
           <div className="viewer-container">
             <div className="stage" ref={stageRef} style={{ aspectRatio: String(ORIENTATIONS[orientation].ratio) }} onMouseDown={() => setSelectedId(null)}>
               {activeVideoClips.length === 0 && activeTexts.length === 0 && <div className="placeholder">{w}×{h}</div>}
-              {activeVideoClips.map(c => {
+              {previewVideoClips.map(c => {
                 const media = mediaBin.find(m => m.id === c.mediaId)
                 if (!media) return null
-                const op = fadeFactor(c, currentTime)
+                // hidden while it warms up, so it never shows a half-decoded or empty frame
+                const op = currentTime < c.start ? 0 : fadeFactor(c, currentTime)
                 return media.type === 'image'
                   ? <img key={c.id} className="layer" style={{ opacity: op, filter: media.chromaKey ? `url(#${keyFilterFor(media.chromaKey)})` : undefined }} src={fileUrl(media.path)} alt="" />
                   : <video key={c.id} ref={el => { if (el) videoEls.current.set(c.id, el); else videoEls.current.delete(c.id) }} className="layer"
