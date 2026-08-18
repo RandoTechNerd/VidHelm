@@ -116,7 +116,7 @@ rl.on('line', async (line) => {
   try { req = JSON.parse(line) } catch { return }
   const { id, method, params } = req
   if (method === 'initialize') {
-    return send({ jsonrpc: '2.0', id, result: { protocolVersion: params?.protocolVersion || '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'vidhelm', version: '1.5.0' }, instructions: INSTRUCTIONS } })
+    return send({ jsonrpc: '2.0', id, result: { protocolVersion: params?.protocolVersion || '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'vidhelm', version: '1.6.0' }, instructions: INSTRUCTIONS } })
   }
   if (method === 'notifications/initialized' || method?.startsWith('notifications/')) return
   if (method === 'ping') return send({ jsonrpc: '2.0', id, result: {} })

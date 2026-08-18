@@ -44,6 +44,7 @@ Tag points are the backbone of everything else.
   - *Visual stillness* mode for silent screen recordings,
   - *Auto* picks for you. Configure thresholds in Settings → Cut Dead Space.
 - Undo history (Ctrl+Z) covers everything.
+- Cuts **crossfade** rather than cutting to black: the incoming clip overlaps the outgoing one by the transition length set in Settings.
 
 ### 📋 Takes & history (when you said it three times)
 

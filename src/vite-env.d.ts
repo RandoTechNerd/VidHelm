@@ -9,12 +9,12 @@ interface Window {
     log: (...args: any[]) => void
     getPathForFile: (file: File) => string
     selectSavePath: (defaultName: string) => Promise<string | null>
-    getMetadata: (filePath: string) => Promise<{ duration: number; hasVideo: boolean; hasAudio: boolean; ok?: boolean; error?: string; format?: string; videoCodec?: string }>
+    getMetadata: (filePath: string) => Promise<{ duration: number; hasVideo: boolean; hasAudio: boolean; ok?: boolean; error?: string; format?: string; videoCodec?: string; pixFmt?: string; colorTransfer?: string; width?: number; height?: number; fps?: number }>
     saveRecording: (base64: string) => Promise<string>
     saveProject: (data: any) => Promise<string | null>
     loadProject: () => Promise<any | null>
     revealFile: (filePath: string) => Promise<void>
-    makeThumbnails: (data: { filePath: string; sourceStart: number; duration: number }) => Promise<{ path?: string; error?: string }>
+    makeThumbnails: (data: { filePath: string; sourceStart: number; duration: number; count?: number }) => Promise<{ path?: string; error?: string }>
     getSettings: () => Promise<any>
     setSettings: (data: any) => Promise<boolean>
     pickLogo: () => Promise<string | null>
@@ -28,6 +28,7 @@ interface Window {
     pickAudio: () => Promise<string | null>
     openExternal: (url: string) => Promise<void>
     openTerminal: () => Promise<{ ok?: boolean; error?: string }>
+    makeProxy: (data: { filePath: string; info: any }) => Promise<{ ok?: boolean; path?: string; cached?: boolean; skipped?: boolean; reason?: string; encoder?: string; error?: string }>
     sampleFrames: (data: { filePath: string; count?: number; sourceStart?: number; duration?: number }) => Promise<{ frames?: { t: number; path: string }[]; error?: string }>
     composeThumbnail: (data: { filePath: string; t: number; subtitle?: string; logoPath?: string | null; outPath: string }) => Promise<{ ok?: boolean; outPath?: string; error?: string }>
     openSfxFolder: () => Promise<{ ok?: boolean; path?: string; error?: string }>
@@ -57,7 +58,7 @@ interface Window {
       bridge: { listening: boolean; error: string }
       loopback: { ok: boolean; detail: string }
       mcpFile: { ok: boolean; path: string }
-      node: { ok: boolean; version?: string }
+      node: { ok: boolean; version?: string }; cli: { onPath: boolean; path?: string }
     }>
   }
 }

@@ -509,7 +509,6 @@ export function ThumbnailModal({ open, onClose, videoPath, videoName, logoPath }
 // fixes for the usual snags. Agents can open it too (open_panel "connect").
 type AgentStatus = Awaited<ReturnType<Window['ipcRenderer']['agentStatus']>>
 
-const ADVERSAL_SETUP = 'pip install adversal-cli\nclaude mcp add adversal -- adversal-cli'
 
 const CLIENT_DOCS: { id: string; name: string; where: string; kind: 'json' | 'toml' | 'http' | 'auto' }[] = [
   { id: 'claude-code', name: 'Claude Code', where: 'Zero config, open this repo folder and approve the "vidhelm" server when prompted (.mcp.json is auto-discovered). Installed-app users: run the command below once instead.', kind: 'auto' },
@@ -546,8 +545,24 @@ export function ConnectModal({ open, onClose }: { open: boolean; onClose: () => 
   const mcpPath = st?.mcpFile.path ?? '<path to VidHelm>\\agent\\mcp-server.mjs'
   const jsonPath = mcpPath.replace(/\\/g, '\\\\')
   const stdJson = `{\n  "mcpServers": {\n    "vidhelm": {\n      "command": "node",\n      "args": ["${jsonPath}"]\n    }\n  }\n}`
+  const IconCopy = () => (
+    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="9" y="9" width="12" height="12" rx="2.5" /><path d="M5 15V5.5A2.5 2.5 0 0 1 7.5 3H15" />
+    </svg>
+  )
+  const IconCheck = () => (
+    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4 12.5 9.5 18 20 6.5" />
+    </svg>
+  )
+
+  // PowerShell needs & to run a quoted path; plain `claude` when it is on PATH
+  const cliPath = st?.cli?.path
+  const cliCall = st?.cli?.onPath === false && cliPath ? `& "${cliPath}"` : 'claude'
   const SNIPPETS: Record<string, string> = {
-    'claude-code': `claude mcp add vidhelm -- node "${mcpPath}"`,
+    // `claude` on PATH is the happy path; when the installer put the exe somewhere else, a bare
+    // `claude ...` just says "not recognized", so call it by full path instead.
+    'claude-code': `${cliCall} mcp add -s user vidhelm -- node "${mcpPath}"`,
     'claude-desktop': stdJson,
     'cursor': stdJson,
     'vscode': `{\n  "servers": {\n    "vidhelm": {\n      "type": "stdio",\n      "command": "node",\n      "args": ["${jsonPath}"]\n    }\n  }\n}`,
@@ -623,10 +638,17 @@ export function ConnectModal({ open, onClose }: { open: boolean; onClose: () => 
               <p className="hint">Pair Claude with its Chrome extension and your AI can take the finished export all the way: <b>upload it to YouTube for you</b> (title, description, tags, thumbnail) and pause for your OK before publishing. It can also <b>capture websites or your localhost app</b>, screenshots and walkthrough recordings that drop straight into your timeline as footage. Get it at <code>claude.ai/chrome</code>, then just ask: "upload my export to YouTube" or "record my site's landing page for the intro".</p></details>
             <details><summary>🎞 Adversal AI, your agent understands the footage (optional)</summary>
               <p className="hint">Adversal is a third-party video-analysis MCP: your AI sends it a video and gets back Markdown notes, chapters, and extracted stills, perfect for auto-writing chapters, summaries, and finding the best moments in long source footage before cutting in VidHelm. Free tier is 100 minutes/month; needs Python 3.13+. Setup:</p>
-              <pre className="conn-snippet">{ADVERSAL_SETUP}</pre>
+              {/* one line at a time: these are run separately, and the second one waits on the first */}
+              {[`pip install adversal-cli`, `${cliCall} mcp add -s user adversal -- adversal-cli`].map((line, i) => (
+                <div className="conn-line" key={i}>
+                  <span className="conn-step">{i + 1}</span>
+                  <pre className="conn-snippet">{line}</pre>
+                  <button className={`conn-copy ${copied === `adv${i}` ? 'done' : ''}`} title={`Copy line ${i + 1}`}
+                    onClick={() => copy(`adv${i}`, line)}>{copied === `adv${i}` ? <IconCheck /> : <IconCopy />}</button>
+                </div>
+              ))}
               <div className="conn-actions">
-                <button className="primary" onClick={() => { copy('adversal', ADVERSAL_SETUP); window.ipcRenderer.openTerminal() }}>{copied === 'adversal' ? 'Copied ✓, paste in the terminal' : '⌨ Copy & open a terminal'}</button>
-                <button onClick={() => copy('adversal2', ADVERSAL_SETUP)}>{copied === 'adversal2' ? 'Copied ✓' : 'Copy only'}</button>
+                <button className="primary" onClick={() => window.ipcRenderer.openTerminal()}>⌨ Open a terminal</button>
                 <button onClick={() => window.ipcRenderer.openExternal('https://adversal.ai')}>adversal.ai ↗</button>
               </div>
               {copied === 'fail' && <p className="hint">Clipboard is blocked here. Select the two lines above and copy them by hand.</p>}

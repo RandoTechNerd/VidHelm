@@ -1,6 +1,7 @@
 import { app, BrowserWindow, ipcMain, dialog, shell, screen } from 'electron'
 import { restoreDragOffset, plainDragOffset, shouldSnapMaximize } from './dragMath'
 import { findModelInHtml } from './modelSniff'
+import { planProxy, proxyFilter, proxyKey, HDR_TO_SDR, type ProbeInfo } from './playable'
 import path from 'node:path'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -228,12 +229,12 @@ ipcMain.handle('open-terminal', async () => {
 })
 
 // Generate a horizontal filmstrip (tiled frames) for a video clip's source range, for timeline previews
-ipcMain.handle('make-thumbnails', async (_event, { filePath, sourceStart, duration }: { filePath: string; sourceStart: number; duration: number }) => {
+ipcMain.handle('make-thumbnails', async (_event, { filePath, sourceStart, duration, count: want }: { filePath: string; sourceStart: number; duration: number; count?: number }) => {
   if (!filePath || !fs.existsSync(filePath)) return { error: 'no file' }
   const dir = path.join(app.getPath('temp'), 'vidhelm_thumbs')
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
   const out = path.join(dir, `t_${Date.now()}_${Math.random().toString(36).slice(2, 7)}.jpg`)
-  const count = 8
+  const count = Math.max(4, Math.min(120, Math.round(want || 8)))
   const dur = Math.max(0.5, duration)
   const fps = Math.max(0.1, count / dur)
   await new Promise<void>((resolve) => {
@@ -445,6 +446,88 @@ ipcMain.handle('quality-check', async (_event, filePath: string) => {
   }
 })
 
+// "120/1" or "30000/1001" -> a number the proxy planner can compare against
+const fpsOf = (rate?: string): number => {
+  if (!rate) return 0
+  const [n, d] = rate.split('/').map(Number)
+  return d ? +(n / d).toFixed(3) : n || 0
+}
+
+// Hardware encoders turn a 4K phone clip from an afternoon into a few minutes, but `ffmpeg
+// -encoders` lists everything the binary was COMPILED with, not what this machine can run: it
+// happily advertises NVENC on a laptop with Intel graphics, and the proxy then dies with
+// "Cannot load nvcuda.dll". So actually encode a frame with each candidate and keep the first
+// that works.
+let encoderCache: { video: string; hwDecode: boolean } | null = null
+const canEncode = (name: string) => new Promise<boolean>(resolve => {
+  try {
+    const p = spawn(paths.ffmpeg, ['-v', 'error', '-f', 'lavfi', '-i', 'color=black:s=256x144:d=0.1', '-c:v', name, '-f', 'null', '-'])
+    let err = ''
+    p.stderr.on('data', d => { err += d.toString() })
+    p.on('close', code => resolve(code === 0 && !/error|cannot|failed/i.test(err)))
+    p.on('error', () => resolve(false))
+  } catch { resolve(false) }
+})
+const pickEncoder = async (): Promise<{ video: string; hwDecode: boolean }> => {
+  if (encoderCache) return encoderCache
+  for (const name of ['h264_qsv', 'h264_nvenc', 'h264_amf']) {
+    if (await canEncode(name)) { encoderCache = { video: name, hwDecode: true }; return encoderCache }
+  }
+  encoderCache = { video: 'libx264', hwDecode: false }   // always there, just slower
+  return encoderCache
+}
+
+const proxyDir = () => {
+  const dir = path.join(app.getPath('userData'), 'proxies')
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+  return dir
+}
+
+/**
+ * Build (or reuse) a preview proxy: an H.264 8-bit SDR copy the preview can actually decode.
+ * The original file stays the master, exports still read from it, this is only what you watch
+ * while editing. Progress goes back to the renderer so the Media Bin can show it.
+ */
+ipcMain.handle('make-proxy', async (event, { filePath, info }: { filePath: string; info: ProbeInfo }) => {
+  try {
+    if (!filePath || !fs.existsSync(filePath)) return { error: 'file not found' }
+    const plan = planProxy(info || {})
+    if (!plan.needed) return { ok: true, skipped: true }
+    const stat = fs.statSync(filePath)
+    const outPath = path.join(proxyDir(), proxyKey(filePath, stat.size, stat.mtimeMs))
+    if (fs.existsSync(outPath) && fs.statSync(outPath).size > 0) return { ok: true, path: outPath, cached: true, reason: plan.reason }
+
+    const { video, hwDecode } = await pickEncoder()
+    const args = ['-y', '-v', 'error', '-stats']
+    if (hwDecode && video === 'h264_qsv') args.push('-hwaccel', 'qsv')
+    else if (hwDecode && video === 'h264_nvenc') args.push('-hwaccel', 'cuda')
+    args.push('-i', filePath, '-vf', proxyFilter(plan, hwDecode && video === 'h264_qsv'))
+    args.push('-c:v', video)
+    args.push(...(video === 'libx264' ? ['-preset', 'veryfast', '-crf', '24'] : ['-global_quality', '24']))
+    args.push('-c:a', 'aac', '-b:a', '160k', '-movflags', '+faststart', outPath)
+
+    await new Promise<void>((resolve, reject) => {
+      const p = spawn(paths.ffmpeg, args)
+      let err = ''
+      p.stderr.on('data', d => {
+        const line = d.toString()
+        err += line
+        // ffmpeg -stats prints "time=00:01:23.45"; turn that into a percentage of the clip
+        const m = /time=(\d+):(\d+):(\d+\.?\d*)/.exec(line)
+        if (m && info?.duration) {
+          const secs = (+m[1]) * 3600 + (+m[2]) * 60 + (+m[3])
+          const pct = Math.max(0, Math.min(99, Math.round((secs / info.duration) * 100)))
+          event.sender.send('proxy-progress', { filePath, pct })
+        }
+      })
+      p.on('close', code => code === 0 && fs.existsSync(outPath) ? resolve() : reject(new Error(err.slice(-400) || 'proxy failed')))
+      p.on('error', reject)
+    })
+    event.sender.send('proxy-progress', { filePath, pct: 100 })
+    return { ok: true, path: outPath, reason: plan.reason, encoder: video }
+  } catch (e) { return { error: String((e as Error)?.message || e) } }
+})
+
 ipcMain.handle('get-metadata', async (event, filePath: string) => {
   return new Promise((resolve, reject) => {
     if (!filePath) return reject(new Error('No file path provided'))
@@ -457,6 +540,7 @@ ipcMain.handle('get-metadata', async (event, filePath: string) => {
       } else {
         const hasVideo = metadata.streams.some((s: any) => s.codec_type === 'video')
         const hasAudio = metadata.streams.some((s: any) => s.codec_type === 'audio')
+        const v = metadata.streams.find((s: any) => s.codec_type === 'video')
         resolve({
           duration: metadata.format.duration || 5,
           hasVideo,
@@ -464,7 +548,14 @@ ipcMain.handle('get-metadata', async (event, filePath: string) => {
           ok: hasVideo || hasAudio,
           // still images probe as image2/png_pipe/mjpeg_pipe, used to tell photos from video
           format: metadata.format.format_name || '',
-          videoCodec: metadata.streams.find((s: any) => s.codec_type === 'video')?.codec_name || '',
+          videoCodec: v?.codec_name || '',
+          // the preview is a Chromium <video>, which is pickier than FFmpeg: it needs these to
+          // decide whether the file will actually show anything (see electron/playable.ts)
+          pixFmt: v?.pix_fmt || '',
+          colorTransfer: v?.color_transfer || '',
+          width: v?.width || 0,
+          height: v?.height || 0,
+          fps: fpsOf(v?.avg_frame_rate || v?.r_frame_rate),
         })
       }
     })
@@ -1013,6 +1104,38 @@ ipcMain.handle('agent-status', async () => {
       p.on('error', () => resolve({ ok: false }))
     } catch { resolve({ ok: false }) }
   })
+  // Installers routinely drop the Claude CLI somewhere that never made it onto PATH, so
+  // `claude mcp add ...` fails with "not recognized" and the setup line looks broken. Find the
+  // exe ourselves and hand back a command that works either way.
+  const cli = await new Promise<{ onPath: boolean; path?: string }>(resolve => {
+    try {
+      const p = spawn(process.platform === 'win32' ? 'where' : 'which', ['claude'], { shell: true })
+      let out = ''
+      p.stdout.on('data', d => { out += d })
+      p.on('close', code => {
+        const first = out.split(/\r?\n/).map(l => l.trim()).find(Boolean)
+        if (code === 0 && first) return resolve({ onPath: true, path: first })
+        const home = os.homedir()
+        const guesses = [
+          path.join(home, '.local', 'bin', 'claude.exe'),
+          path.join(home, '.local', 'bin', 'claude'),
+          path.join(process.env.APPDATA || '', 'npm', 'claude.cmd'),
+        ]
+        const roots = [path.join(process.env.APPDATA || '', 'Claude', 'claude-code')]
+        for (const root of roots) {
+          try {
+            for (const v of fs.readdirSync(root)) {
+              const exe = path.join(root, v, process.platform === 'win32' ? 'claude.exe' : 'claude')
+              if (fs.existsSync(exe)) guesses.push(exe)
+            }
+          } catch { /* not installed that way */ }
+        }
+        const found = guesses.find(g => g && fs.existsSync(g))
+        resolve({ onPath: false, path: found })
+      })
+      p.on('error', () => resolve({ onPath: false }))
+    } catch { resolve({ onPath: false }) }
+  })
   return {
     appVersion: app.getVersion(),
     port: AGENT_PORT,
@@ -1021,6 +1144,7 @@ ipcMain.handle('agent-status', async () => {
     loopback,
     mcpFile: { ok: fs.existsSync(MCP_SERVER_PATH), path: MCP_SERVER_PATH },
     node,
+    cli,
   }
 })
 
@@ -1205,8 +1329,12 @@ ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outp
         const keyChain = key
           ? `colorkey=0x${key}:0.30:0.10,${/^00e/i.test(key) ? 'despill=type=green:mix=0.5:expand=0,' : ''}`
           : ''
+        // HDR footage (phone HLG, PQ) is graded for a different display: dropped straight into a
+        // bt709 export it comes out grey and flat, so convert it the same way the preview proxy
+        // does. Scaling happens after, since tone mapping at output size is the cheaper order.
+        const hdrChain = clip.hdr ? `${HDR_TO_SDR},` : ''
         // Fit into frame with transparent padding so overlapping clips can crossfade through each other
-        let v = `[${idx}:v]${keyChain}format=yuva420p,scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=0x00000000,setpts=PTS-STARTPTS+${clip.start}/TB`
+        let v = `[${idx}:v]${keyChain}${hdrChain}format=yuva420p,scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=0x00000000,setpts=PTS-STARTPTS+${clip.start}/TB`
         if (clip.fadeIn > 0) v += `,fade=t=in:st=${clip.start}:d=${clip.fadeIn}:alpha=1`
         if (clip.fadeOut > 0) v += `,fade=t=out:st=${(end - clip.fadeOut).toFixed(3)}:d=${clip.fadeOut}:alpha=1`
         filterComplex.push(`${v}[v_scaled_${idx}]`)

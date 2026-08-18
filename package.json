@@ -1,7 +1,7 @@
 {
   "name": "vidhelm",
   "private": true,
-  "version": "1.5.0",
+  "version": "1.6.0",
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "vite",
@@ -12,7 +12,8 @@
     "preview": "vite preview",
     "agent": "node agent/mcp-server.mjs",
     "selftest": "node agent/selftest.mjs",
-    "test:takes": "node scripts/takes.test.mjs"
+    "test:takes": "node scripts/takes.test.mjs",
+    "test:playable": "node scripts/playable.test.mjs"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",

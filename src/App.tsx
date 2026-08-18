@@ -5,6 +5,7 @@ import { Model3DModal, KEY_GREEN, KEY_MAGENTA, type Model3DApi } from './model3d
 import { HelpModal, InfoNote, type HelpPanel } from './help'
 import { TakesModal, takeStats, type TakeAnalysis } from './takes'
 import { groupTakes, removalRanges, removedSeconds, chunksFromWords } from '../electron/takes'
+import { planProxy, isHdr } from '../electron/playable'
 
 interface MediaFile {
   id: string
@@ -15,6 +16,12 @@ interface MediaFile {
   hasVideo: boolean
   hasAudio: boolean
   chromaKey?: string   // 3D renders made on a key colour: removed on export, keyed in preview
+  // A watchable stand-in for footage the preview cannot decode (phone HEVC, 10-bit, HDR, huge
+  // frames). Only the preview uses it; exports always read the original file.
+  proxyPath?: string
+  proxyPct?: number    // 0-100 while it is being made
+  proxyNote?: string   // why it needed one, shown in the bin
+  hdr?: boolean        // HLG/PQ source: export tone-maps it, or the colour comes out flat
 }
 
 interface TimelineClip {
@@ -122,7 +129,7 @@ const WRONG_TYPE: Record<string, string> = {
 // ffprobe is the authority on what can be decoded, with one catch: it cheerfully reads a
 // text file as "ansi video" (the tty demuxer) and subtitles as streams. Those are filtered
 // out here so a stray .txt can't land on the timeline as a 0.04s clip.
-type Probe = { duration: number; hasVideo: boolean; hasAudio: boolean; ok?: boolean; error?: string; format?: string; videoCodec?: string }
+type Probe = { duration: number; hasVideo: boolean; hasAudio: boolean; ok?: boolean; error?: string; format?: string; videoCodec?: string; pixFmt?: string; colorTransfer?: string; width?: number; height?: number; fps?: number }
 const JUNK_FORMAT = /(^|,)(tty|ansi|image2pipe|srt|ass|ssa|webvtt|lrc|microdvd|subviewer|jacosub|mpsub|pjs|realtext|sami|vplayer)(,|$)/
 const classifyMedia = (name: string, meta: Probe | null): { type: 'video' | 'audio' | 'image' } | { reject: string } => {
   const ext = extOf(name)
@@ -293,8 +300,20 @@ function removeRange(clips: TimelineClip[], texts: TextClip[], s: number, e: num
     if (ce <= s) { outClips.push(c); continue }
     if (cs >= e) { outClips.push({ ...c, start: cs - len }); continue }
     const left = s - cs, right = ce - e
-    if (left > 0.05) outClips.push({ ...c, duration: left, fadeOut: td > 0 ? td : c.fadeOut })
-    if (right > 0.05) outClips.push({ ...c, id: rid(), start: s, duration: right, sourceStart: c.sourceStart + (e - cs), fadeIn: td > 0 ? td : c.fadeIn, volumePoints: undefined })
+    // Both halves used to sit end to end, each with its own fade. Video composites over a black
+    // base, so fading A out and B in at the very same instant dips through black: on a talking
+    // head with a hundred pause cuts that reads as the picture blinking at you all the way
+    // through. Overlap them instead and let B dissolve in ON TOP of A, which never sees black.
+    const overlap = Math.max(0, Math.min(td, left - 0.05, e - cs))
+    if (left > 0.05) outClips.push({ ...c, duration: left, fadeOut: overlap > 0 ? 0 : (td > 0 ? td : c.fadeOut) })
+    if (right > 0.05) outClips.push({
+      ...c, id: rid(),
+      start: s - overlap,
+      duration: right + overlap,
+      sourceStart: c.sourceStart + (e - cs) - overlap,   // pull the source back so motion stays continuous
+      fadeIn: overlap > 0 ? overlap : (td > 0 ? td : c.fadeIn),
+      volumePoints: undefined,
+    })
   }
   const outTexts: TextClip[] = []
   for (const t of texts) {
@@ -366,6 +385,11 @@ function App() {
   const [silenceBusy, setSilenceBusy] = useState<string | null>(null)
   // Takes & history: the transcript, the repeat groups, and enough snapshots to let the user
   // change their mind about which take to keep without re-scanning.
+  // Text you can type straight onto the picture. Without this the only way to change the words
+  // was a box far down the right sidebar, which nobody finds.
+  const [editingTextId, setEditingTextId] = useState<string | null>(null)
+  const editRef = useRef<HTMLDivElement | null>(null)
+  const editTextRef = useRef<string>('')   // what to seed the editable div with
   const [showTakes, setShowTakes] = useState(false)
   const [takes, setTakes] = useState<TakeAnalysis | null>(null)
   const [takesBusy, setTakesBusy] = useState<string | null>(null)
@@ -435,7 +459,10 @@ function App() {
       setCaptionPct(p.pct)
     }
     window.ipcRenderer.on('transcribe-progress', handleTranscribe)
-    return () => { window.ipcRenderer.off('export-progress', handleProgress); window.ipcRenderer.off('transcribe-progress', handleTranscribe) }
+    const handleProxy = (_e: unknown, d: { filePath: string; pct: number }) =>
+      setMediaBin(prev => prev.map(m => m.path === d.filePath ? { ...m, proxyPct: d.pct >= 100 ? m.proxyPct : d.pct } : m))
+    window.ipcRenderer.on('proxy-progress', handleProxy)
+    return () => { window.ipcRenderer.off('export-progress', handleProgress); window.ipcRenderer.off('transcribe-progress', handleTranscribe); window.ipcRenderer.off('proxy-progress', handleProxy) }
   }, [])
 
   useEffect(() => {
@@ -551,7 +578,7 @@ function App() {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); return }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') { e.preventDefault(); redo(); return }
       const tag = (e.target as HTMLElement)?.tagName
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (e.target as HTMLElement)?.isContentEditable) return
       if (e.code === 'Space') { e.preventDefault(); if (totalDuration > 0) setIsPlaying(p => !p) }
       else if (e.key === 'Delete' || e.key === 'Backspace') { if (selectedId) { e.preventDefault(); deleteSelected() } }
       else if (e.key.toLowerCase() === 's') { if (selClip) { e.preventDefault(); splitAtPlayhead() } }
@@ -611,18 +638,29 @@ function App() {
       vids.forEach(c => {
         const media = mediaBin.find(m => m.id === c.mediaId)
         if (!media) return
-        const sig = `${Math.round(c.sourceStart * 2)}:${Math.round(c.duration * 2)}`
+        // While a proxy is building, pulling frames from the 4K HEVC original would queue a dozen
+        // slow ffmpeg jobs behind it. Wait: the strip regenerates from the proxy once it lands.
+        if (media.proxyPct !== undefined) return
+        // The strip is stretched across the clip, so a fixed eight frames turn into billboards
+        // once you zoom in. Ask for roughly one frame per 110px of clip instead, bucketed so a
+        // nudge of the zoom slider does not re-render every filmstrip.
+        const widthPx = c.duration * pxPerSec
+        const count = clamp(Math.round(widthPx / 110), 6, 120)
+        const bucket = Math.round(count / 4)
+        const sig = `${Math.round(c.sourceStart * 2)}:${Math.round(c.duration * 2)}:${bucket}:${media.proxyPath ? 'p' : 'o'}`
         if (thumbsRef.current[c.id]?.sig === sig) return
-        window.ipcRenderer.makeThumbnails({ filePath: media.path, sourceStart: c.sourceStart, duration: c.duration })
+        // the proxy is small and h264: far quicker to pull frames from than a 4K HEVC original
+        window.ipcRenderer.makeThumbnails({ filePath: media.proxyPath || media.path, sourceStart: c.sourceStart, duration: c.duration, count: bucket * 4 || 8 })
           .then(r => { const p = r?.path; if (p) setThumbs(prev => ({ ...prev, [c.id]: { sig, path: p } })) })
       })
     }, 400)
     return () => clearTimeout(handle)
-  }, [clips, mediaBin])
+  }, [clips, mediaBin, pxPerSec])
 
   // ---- media import ----
   const importFiles = useCallback(async (files: File[]): Promise<MediaFile[]> => {
     const added: MediaFile[] = []
+    const probes = new Map<string, Probe>()
     const skipped: string[] = []
     for (const file of files) {
       const ext = extOf(file.name)
@@ -644,20 +682,45 @@ function App() {
         if ('reject' in verdict) { skipped.push(`${file.name} - ${verdict.reject}`); continue }
         const { type } = verdict
         const m = meta as Probe   // a non-reject verdict means the probe succeeded
-        added.push({
+        const entry: MediaFile = {
           id: rid(), name: file.name, path, type,
           duration: type === 'image' ? 5 : (m.duration || 5),
           hasVideo: m.hasVideo || type === 'image',
           hasAudio: m.hasAudio,
-        })
+          hdr: isHdr({ colorTransfer: m.colorTransfer }),
+        }
+        probes.set(entry.id, m)
+        added.push(entry)
       } catch (err) {
         console.error(err)
         skipped.push(`${file.name} - ${WRONG_TYPE[ext] || 'could not be imported'}`)
       }
     }
-    if (added.length) setMediaBin(prev => [...prev, ...added])
+    if (added.length) { setMediaBin(prev => [...prev, ...added]); void ensureProxies(added, probes) }
     if (skipped.length) notify(`Skipped ${skipped.length} file${skipped.length > 1 ? 's' : ''}:\n\n${skipped.slice(0, 5).map(s => '• ' + s).join('\n')}${skipped.length > 5 ? `\n• …and ${skipped.length - 5} more` : ''}`, 11000)
     return added
+  }, [])
+
+  // Footage the preview cannot decode (phone HEVC, 10-bit, HDR, very large frames) gets a
+  // watchable stand-in built in the background. The original stays the master: exports read from
+  // it, this is only what plays while you edit. Cached in userData, so it happens once per file.
+  const ensureProxies = useCallback(async (items: MediaFile[], probes: Map<string, Probe>) => {
+    for (const m of items) {
+      if (m.type !== 'video') continue
+      const info = probes.get(m.id)
+      if (!info) continue
+      const plan = planProxy({ ...info, hasVideo: true })
+      if (!plan.needed) continue
+      setMediaBin(prev => prev.map(x => x.id === m.id ? { ...x, proxyPct: 0, proxyNote: plan.reason } : x))
+      const r = await window.ipcRenderer.makeProxy({ filePath: m.path, info: { ...info, hasVideo: true } })
+      if (r.path) {
+        setMediaBin(prev => prev.map(x => x.id === m.id ? { ...x, proxyPath: r.path, proxyPct: undefined } : x))
+        if (!r.cached) notify(`${m.name}: ${plan.reason}, so VidHelm made a preview copy. Your export still uses the original file.`, 9000)
+      } else {
+        setMediaBin(prev => prev.map(x => x.id === m.id ? { ...x, proxyPct: undefined, proxyNote: 'preview unavailable' } : x))
+        notify(`${m.name}: ${plan.reason}, and the preview copy could not be made (${r.error || 'unknown error'}). Editing still works, the preview will stay blank.`, 11000)
+      }
+    }
   }, [])
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -822,8 +885,9 @@ function App() {
         if ('reject' in verdict) return { error: `cannot use ${cmd.path}: ${verdict.reject}` }
         const type: MediaFile['type'] = verdict.type
         const m = meta as Probe   // a non-reject verdict means the probe succeeded
-        const media: MediaFile = { id: rid(), name: cmd.path.split(/[\\/]/).pop() || 'media', path: cmd.path, type, duration: type === 'image' ? (cmd.duration || 5) : (m.duration || 5), hasVideo: m.hasVideo || type === 'image', hasAudio: m.hasAudio, chromaKey: typeof cmd.chromaKey === 'string' ? cmd.chromaKey : undefined }
+        const media: MediaFile = { id: rid(), name: cmd.path.split(/[\\/]/).pop() || 'media', path: cmd.path, type, duration: type === 'image' ? (cmd.duration || 5) : (m.duration || 5), hasVideo: m.hasVideo || type === 'image', hasAudio: m.hasAudio, hdr: isHdr({ colorTransfer: m.colorTransfer }), chromaKey: typeof cmd.chromaKey === 'string' ? cmd.chromaKey : undefined }
         setMediaBin(prev => [...prev, media])
+        void ensureProxies([media], new Map([[media.id, m]]))
         if (cmd.place !== false) {
           const isAudio = media.type === 'audio'
           const track = clips.filter(c => c.trackId === (isAudio ? 'a1' : 'v1'))
@@ -1062,7 +1126,7 @@ function App() {
         setExportProgress(0); setEta(null); exportStartRef.current = Date.now()
         try {
           await window.ipcRenderer.exportVideo({
-            clips: clips.map(c => { const m = mediaBin.find(x => x.id === c.mediaId); return { ...c, path: m?.path, hasVideo: m?.hasVideo, hasAudio: m?.hasAudio } }),
+            clips: clips.map(c => { const m = mediaBin.find(x => x.id === c.mediaId); return { ...c, path: m?.path, hasVideo: m?.hasVideo, hasAudio: m?.hasAudio, hdr: m?.hdr } }),
             texts, brand: { ...settings.brand, enabled: false }, audio: settings.audio, outputPath: out,
             settings: { width: 1280, height: 720, fps: 30, quality: 'analysis', masterVolume },
           })
@@ -1082,7 +1146,7 @@ function App() {
         if (clips.length === 0 && texts.length === 0) return { error: 'timeline is empty' }
         setIsPlaying(false)
         const payload = {
-          clips: clips.map(c => { const media = mediaBin.find(m => m.id === c.mediaId); return { ...c, path: media?.path, hasVideo: media?.hasVideo, hasAudio: media?.hasAudio, chromaKey: media?.chromaKey } }),
+          clips: clips.map(c => { const media = mediaBin.find(m => m.id === c.mediaId); return { ...c, path: media?.path, hasVideo: media?.hasVideo, hasAudio: media?.hasAudio, hdr: media?.hdr, chromaKey: media?.chromaKey } }),
           texts, brand: settings.brand, audio: settings.audio, outputPath: cmd.outputPath,
           settings: { width: w, height: h, fps, quality: exportQuality, masterVolume },
         }
@@ -1151,10 +1215,39 @@ function App() {
     setSelectedId(b.id)
   }
 
+  // Put the caret in the text on the picture, with the placeholder selected so typing replaces it
+  const startTextEdit = (id: string, seed?: string) => {
+    editTextRef.current = seed ?? texts.find(x => x.id === id)?.text ?? ''
+    setSelectedId(id)
+    setIsPlaying(false)
+    setEditingTextId(id)
+    setTimeout(() => {
+      const el = editRef.current
+      if (!el) return
+      const current = editTextRef.current
+      el.innerText = current || ''
+      el.focus()
+      const range = document.createRange()
+      range.selectNodeContents(el)
+      const sel = window.getSelection()
+      sel?.removeAllRanges()
+      sel?.addRange(range)
+    }, 0)
+  }
+  const endTextEdit = () => {
+    const el = editRef.current
+    if (el && editingTextId) {
+      const v = el.innerText.replace(/\n+$/, '')
+      setTexts(prev => prev.map(x => x.id === editingTextId ? { ...x, text: v } : x))
+    }
+    setEditingTextId(null)
+  }
+
   const addText = () => {
     const t: TextClip = { id: rid(), text: 'New text', start: currentTime, duration: 3, x: 0.5, y: 0.5, fontSize: 64, color: '#ffffff', fadeIn: 0.3, fadeOut: 0.3 }
     setTexts(prev => [...prev, t])
     setSelectedId(t.id)
+    startTextEdit(t.id, t.text)   // straight into typing, rather than hunting for a box in the sidebar
   }
 
   // Local Whisper captions for the WHOLE timeline → timed text cues styled by caption settings
@@ -1610,10 +1703,15 @@ function App() {
   const patchText = (patch: Partial<TextClip>) => setTexts(prev => prev.map(t => t.id === selectedId ? { ...t, ...patch } : t))
 
   // ---- render ----
+  // Pick a tick spacing that leaves room for its own label, otherwise zooming out prints every
+  // five seconds on top of itself. Steps climb through the units people actually think in.
+  const TICK_STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600]
+  const tickStep = TICK_STEPS.find(step => step * pxPerSec >= 58) ?? TICK_STEPS[TICK_STEPS.length - 1]
+  // seconds while they fit, m:ss once a tick is a minute or more
+  const tickLabel = (s: number) => s < 60 ? `${s}s` : `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, '0')}`
   const rulerTicks = []
-  const tickStep = pxPerSec < 25 ? 5 : 1
-  for (let s = 0; s <= Math.ceil(totalDuration) + 5; s += tickStep) {
-    rulerTicks.push(<div key={s} className="tick" style={{ left: s * pxPerSec }}><span>{s}s</span></div>)
+  for (let s = 0; s <= Math.ceil(totalDuration) + tickStep; s += tickStep) {
+    rulerTicks.push(<div key={s} className={`tick ${tickStep >= 60 && s % (tickStep * 2) === 0 ? 'major' : ''}`} style={{ left: s * pxPerSec }}><span>{tickLabel(s)}</span></div>)
   }
 
   const renderClip = (c: TimelineClip) => {
@@ -1732,10 +1830,18 @@ function App() {
                     {m.type === 'image'
                       ? <img className="media-still" src={fileUrl(m.path)} alt="" />
                       : m.type === 'video'
-                        ? <video className="media-still" src={`${fileUrl(m.path)}#t=0.5`} muted preload="metadata" />
+                        ? <video className="media-still" src={`${fileUrl(m.proxyPath || m.path)}#t=0.5`} muted preload="metadata" />
                         : <IconAudio/>}
                   </div>
-                  <div className="media-info"><span className="name">{m.name}</span><span className="duration">{m.type === 'image' ? 'Image • 5s' : `${Math.round(m.duration)}s`}</span></div>
+                  <div className="media-info">
+                    <span className="name">{m.name}</span>
+                    <span className="duration">
+                      {m.type === 'image' ? 'Image • 5s' : `${Math.round(m.duration)}s`}
+                      {m.proxyPct !== undefined && <span className="prox building" title={`${m.proxyNote}. Building a preview copy, the original is untouched.`}> · preview copy {m.proxyPct}%</span>}
+                      {m.proxyPct === undefined && m.proxyPath && <span className="prox" title={`${m.proxyNote}. Editing plays a preview copy; your export still uses the original file.`}> · proxy</span>}
+                      {m.proxyPct === undefined && !m.proxyPath && m.proxyNote && <span className="prox warn" title={m.proxyNote}> · no preview</span>}
+                    </span>
+                  </div>
                 </div>
               ))}
             </div>}
@@ -1753,13 +1859,25 @@ function App() {
                 return media.type === 'image'
                   ? <img key={c.id} className="layer" style={{ opacity: op, filter: media.chromaKey ? `url(#${keyFilterFor(media.chromaKey)})` : undefined }} src={fileUrl(media.path)} alt="" />
                   : <video key={c.id} ref={el => { if (el) videoEls.current.set(c.id, el); else videoEls.current.delete(c.id) }} className="layer"
-                      style={{ opacity: op, filter: media.chromaKey ? `url(#${keyFilterFor(media.chromaKey)})` : undefined }} src={fileUrl(media.path)} />
+                      style={{ opacity: op, filter: media.chromaKey ? `url(#${keyFilterFor(media.chromaKey)})` : undefined }} src={fileUrl(media.proxyPath || media.path)} />
               })}
               {activeTexts.map(t => (
-                <div key={t.id} className={`text-layer ${selectedId === t.id && !isPlaying ? 'editing' : ''}`}
+                <div key={t.id} className={`text-layer ${selectedId === t.id && !isPlaying ? 'editing' : ''} ${editingTextId === t.id ? 'typing' : ''}`}
                   style={{ left: `${t.x * 100}%`, top: `${t.y * 100}%`, fontSize: `${t.fontSize / 1080 * stageH}px`, color: t.color, opacity: fadeFactor(t, currentTime), background: t.box ? `rgba(0,0,0,${t.boxOpacity ?? 0.5})` : 'transparent', padding: t.box ? '0.15em 0.4em' : 0, borderRadius: t.box ? '4px' : 0 }}
-                  onMouseDown={(e) => !isPlaying && startTextDrag(e, t)}>
-                  {t.text || ' '}
+                  ref={editingTextId === t.id ? editRef : undefined}
+                  contentEditable={editingTextId === t.id}
+                  suppressContentEditableWarning
+                  spellCheck={false}
+                  title={editingTextId === t.id ? '' : 'Drag to move, double-click to type'}
+                  onMouseDown={(e) => { if (isPlaying) return; if (editingTextId === t.id) { e.stopPropagation(); return } startTextDrag(e, t) }}
+                  onDoubleClick={(e) => { e.stopPropagation(); if (!isPlaying) startTextEdit(t.id) }}
+                  onInput={(e) => { const v = (e.target as HTMLElement).innerText; setTexts(prev => prev.map(x => x.id === t.id ? { ...x, text: v } : x)) }}
+                  onBlur={() => endTextEdit()}
+                  onKeyDown={(e) => {
+                    e.stopPropagation()   // Space and Delete belong to the caret while typing
+                    if (e.key === 'Escape' || (e.key === 'Enter' && !e.shiftKey)) { e.preventDefault(); endTextEdit() }
+                  }}>
+                  {editingTextId === t.id ? undefined : (t.text || ' ')}
                 </div>
               ))}
               {settings.brand.enabled && settings.brand.logoPath && (() => {
@@ -1845,7 +1963,9 @@ function App() {
                 {!collapsed.text && (
                   <div className="track text-track">
                     {texts.map(t => (
-                      <div key={t.id} onMouseDown={(e) => { e.stopPropagation(); setSelectedId(t.id) }} className={`clip text-clip ${selectedId === t.id ? 'selected' : ''}`} style={{ left: t.start * pxPerSec, width: t.duration * pxPerSec }} title={t.text}>
+                      <div key={t.id} onMouseDown={(e) => { e.stopPropagation(); setSelectedId(t.id) }}
+                        onDoubleClick={(e) => { e.stopPropagation(); setCurrentTime(t.start + Math.min(0.2, t.duration / 2)); startTextEdit(t.id) }}
+                        className={`clip text-clip ${selectedId === t.id ? 'selected' : ''}`} style={{ left: t.start * pxPerSec, width: t.duration * pxPerSec }} title={`${t.text}  (double-click to type)`}>
                         <span className="clip-label"><IconText /> {t.text}</span>
                       </div>
                     ))}
