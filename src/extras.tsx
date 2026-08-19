@@ -370,14 +370,22 @@ export const RECIPE_TOGGLES: { key: string; label: string; hint: string }[] = [
 ]
 
 export const DEFAULT_RECIPE = `# ── Start Recipe, runs when you (or your AI) kick off a video ──
-cut-pauses           # tighten dead air before anything else
+cut-pauses           # tighten dead air; never strand a fragment under 1s, it reads as a stutter
 thumbnail            # sample frames, pick one in the picker
 subtitle             # catchy one-liner on the thumbnail
 titles 5             # AI pitches 5 title options, you pick
 logo bottom-right    # brand watermark (set it in Brand Kit above)
 intro-audio          # your intro sting at 0:00 (pick it below)
 # captions           # on-device Whisper captions
-# anything you type here is passed to your AI as standing instructions`
+# ── everything below is passed to your AI as standing instructions ──
+# INTRO: open the video AS its own thumbnail: freeze the hero frame ~2s with the title and logo
+# over it, then wipe those assets off (whoosh) to reveal the same shot already moving. Follow
+# with a cold open at ~1.5x: the 4-5 best moments as jump cuts, nothing over 3s, hard cuts.
+# Under it, an ambient bed lifted from the footage itself; end the open on one clean spoken
+# line and cut right after its last word (transcribe with word timestamps to find it).
+# JOINS: every cut crossfades. The screen never dips to black, ever.
+# SHORTS: make 9:16 by zooming in (centre crop, re-centred per shot on the action), never
+# blurred bars. Logo top-left for the first 5s only. End on the payoff line.`
 
 const lineKey = (line: string) => line.replace(/^#/, '').trim().split(/\s+/)[0] || ''
 export const recipeActive = (text: string): Record<string, boolean> => {
