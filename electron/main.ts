@@ -2,6 +2,8 @@ import { app, BrowserWindow, ipcMain, dialog, shell, screen } from 'electron'
 import { restoreDragOffset, plainDragOffset, shouldSnapMaximize } from './dragMath'
 import { findModelInHtml } from './modelSniff'
 import { planProxy, proxyFilter, proxyKey, HDR_TO_SDR, type ProbeInfo } from './playable'
+import { refineFromEnvelope } from './speech'
+import { planCrop, cropExpr, type Frame as GrayFrame } from './framing'
 import path from 'node:path'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -275,27 +277,344 @@ ipcMain.handle('transcribe', async (_event, filePath: string, opts: any = {}) =>
     const audio = await decodePCM(filePath)
     if (!audio.length) return { error: 'No audio found' }
 
-    // Process in 30s segments (Whisper's window) so we can report real progress
+    // Process in 30s segments (Whisper's window) so we can report real progress.
+    //
+    // The windows OVERLAP. Slicing on an exact 30s boundary lands mid-word roughly every time,
+    // and a word cut in half is either transcribed wrong or lost from both sides, which is
+    // exactly the sort of hole that later makes a cut land in the wrong place. The overlap is
+    // then de-duplicated: the same word spoken once must not come back twice.
     const sr = 16000, chunkSec = 30
-    const nChunks = Math.max(1, Math.ceil(audio.length / (chunkSec * sr)))
+    const overlap = Math.max(0, Math.min(5, opts.overlap ?? 1.5))
+    const stride = chunkSec - overlap
+    const nChunks = Math.max(1, Math.ceil(Math.max(0, audio.length / sr - overlap) / stride))
     const genOpts: any = { return_timestamps: opts.word ? 'word' : true }
     if (!useEn) { genOpts.task = 'transcribe'; if (lang !== 'auto') genOpts.language = lang }
     const results: { start: number; end: number; text: string }[] = []
+    const norm = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '')
     for (let i = 0; i < nChunks; i++) {
-      const seg = audio.subarray(i * chunkSec * sr, Math.min(audio.length, (i + 1) * chunkSec * sr))
+      const from = Math.round(i * stride * sr)
+      const seg = audio.subarray(from, Math.min(audio.length, from + chunkSec * sr))
+      if (seg.length < sr * 0.2) break
       const out = await asr(seg, genOpts)
-      const offset = i * chunkSec
+      const offset = from / sr
       for (const c of (out.chunks || [])) {
         const text = (c.text || '').trim()
         if (!text) continue
-        results.push({ start: (c.timestamp?.[0] ?? 0) + offset, end: (c.timestamp?.[1] ?? c.timestamp?.[0] ?? 0) + offset, text })
+        const start = (c.timestamp?.[0] ?? 0) + offset
+        const end = (c.timestamp?.[1] ?? c.timestamp?.[0] ?? 0) + offset
+        // already heard, in the overlap: same words at nearly the same time
+        const dupe = results.some(r => norm(r.text) === norm(text) && Math.abs(r.start - start) < Math.max(0.8, overlap * 0.6))
+        if (dupe) continue
+        results.push({ start, end, text })
       }
       if (win) win.webContents.send('transcribe-progress', { stage: 'transcribe', pct: Math.round(((i + 1) / nChunks) * 100) })
     }
+    results.sort((a, b) => a.start - b.start)
     return { chunks: results }
   } catch (e: any) {
     console.error('transcribe error', e)
     return { error: e?.message || 'Transcription failed' }
+  }
+})
+
+// ---------------------------------------------------------------------------
+// B-roll: measure a folder of footage, and refine cuts against the waveform
+// ---------------------------------------------------------------------------
+
+/** Labels live next to the footage, so they survive a restart and can be edited by hand. */
+const BROLL_SIDECAR = '.vidhelm-broll.json'
+const readSidecar = (folder: string): Record<string, any> => {
+  try { return JSON.parse(fs.readFileSync(path.join(folder, BROLL_SIDECAR), 'utf8')) || {} } catch { return {} }
+}
+const writeSidecar = (folder: string, data: Record<string, any>) => {
+  fs.writeFileSync(path.join(folder, BROLL_SIDECAR), JSON.stringify(data, null, 2), 'utf8')
+}
+
+/**
+ * Decode a clip to tiny greyscale frames. 64x36 at 4fps is a few hundred kilobytes for a whole
+ * clip and is plenty to answer "where is the subject" and "is anything moving".
+ */
+const decodeGrayFrames = (file: string, opts: { start?: number; duration?: number; fps?: number; w?: number; h?: number } = {}) =>
+  new Promise<GrayFrame[]>(resolve => {
+    const w = opts.w ?? 64, h = opts.h ?? 36, fps = opts.fps ?? 4
+    const args = ['-hide_banner', '-loglevel', 'error']
+    if (opts.start) args.push('-ss', String(opts.start))
+    if (opts.duration) args.push('-t', String(opts.duration))
+    args.push('-i', file, '-an', '-vf', `fps=${fps},scale=${w}:${h}:force_original_aspect_ratio=disable,format=gray`, '-f', 'rawvideo', '-')
+    const p = spawn(paths.ffmpeg, args)
+    const chunks: Buffer[] = []
+    p.stdout.on('data', d => chunks.push(d))
+    p.on('error', () => resolve([]))
+    p.on('close', () => {
+      const buf = Buffer.concat(chunks)
+      const size = w * h
+      const frames: GrayFrame[] = []
+      for (let i = 0; (i + 1) * size <= buf.length; i++) {
+        frames.push({ t: +((opts.start ?? 0) + i / fps).toFixed(3), w, h, gray: buf.subarray(i * size, (i + 1) * size) })
+      }
+      resolve(frames)
+    })
+  })
+
+/**
+ * The part of a clip actually worth cutting to.
+ *
+ * Handheld b-roll starts with a lurch (reaching for record) and ends with another one, and
+ * often has a blown or black frame at each end. This finds the longest stretch that is properly
+ * exposed and not being thrown around, so `place_broll` uses the steady middle.
+ */
+const usableRange = (frames: GrayFrame[], minLen = 1.2): { start: number; end: number } | null => {
+  if (frames.length < 3) return null
+  const step = frames.length > 1 ? frames[1].t - frames[0].t : 0.25
+  const mean = (f: GrayFrame) => { let s = 0; for (let i = 0; i < f.gray.length; i++) s += f.gray[i]; return s / f.gray.length }
+  const motion: number[] = [0]
+  for (let i = 1; i < frames.length; i++) {
+    let d = 0
+    for (let k = 0; k < frames[i].gray.length; k++) d += Math.abs(frames[i].gray[k] - frames[i - 1].gray[k])
+    motion.push(d / frames[i].gray.length)
+  }
+  const sorted = [...motion].sort((a, b) => a - b)
+  const median = sorted[sorted.length >> 1] || 0
+  const chaos = Math.max(12, median * 3.5)      // a whip-pan, not a subject moving
+  const good = frames.map((f, i) => {
+    const b = mean(f)
+    return b > 26 && b < 232 && motion[i] < chaos
+  })
+  let best = { from: -1, to: -1 }, from = -1
+  for (let i = 0; i <= good.length; i++) {
+    if (i < good.length && good[i]) { if (from < 0) from = i }
+    else if (from >= 0) {
+      if (i - from > best.to - best.from) best = { from, to: i }
+      from = -1
+    }
+  }
+  if (best.from < 0) return null
+  // trim a breath off each end so the cut is not sitting on the edge of the good part
+  const pad = Math.min(0.3, step * 2)
+  const start = +(frames[best.from].t + pad).toFixed(2)
+  const end = +(frames[Math.min(frames.length - 1, best.to - 1)].t - pad).toFixed(2)
+  return end - start >= minLen ? { start, end } : null
+}
+
+/**
+ * A contact sheet: one image showing the whole clip, so it can be labelled in a single look.
+ *
+ * Grabs each tile with its own fast seek rather than running `fps=n/duration` over the file.
+ * The single-pass version has to DECODE THE WHOLE CLIP to emit its last tile, which is fine for
+ * a five second cutaway and takes minutes on anything long. This is a handful of seeks.
+ */
+const contactSheet = async (file: string, duration: number, out: string, cols = 3, rows = 2): Promise<boolean> => {
+  const n = cols * rows
+  const dir = path.join(app.getPath('temp'), 'vidhelm_tiles', String(Date.now()))
+  fs.mkdirSync(dir, { recursive: true })
+  const tiles: string[] = []
+  for (let i = 0; i < n; i++) {
+    const t = duration > 0 ? ((i + 0.5) / n) * duration : 0
+    const tile = path.join(dir, `t_${i}.jpg`)
+    await new Promise<void>(res => {
+      const p = spawn(paths.ffmpeg, ['-y', '-hide_banner', '-loglevel', 'error', '-ss', t.toFixed(3),
+        '-i', file, '-an', '-frames:v', '1', '-vf', 'scale=320:-2', '-q:v', '3', tile])
+      p.on('close', () => res()); p.on('error', () => res())
+    })
+    if (fs.existsSync(tile)) tiles.push(tile)
+  }
+  if (!tiles.length) return false
+  const ok = await new Promise<boolean>(res => {
+    const args = ['-y', '-hide_banner', '-loglevel', 'error']
+    for (const t of tiles) args.push('-i', t)
+    // stack whatever came back, in whatever grid actually fits
+    const usedCols = Math.min(cols, tiles.length)
+    const usedRows = Math.ceil(tiles.length / usedCols)
+    const inputs = tiles.map((_, i) => `[${i}:v]`).join('')
+    args.push('-filter_complex', `${inputs}xstack=inputs=${tiles.length}:layout=${
+      tiles.map((_, i) => `${(i % usedCols) === 0 ? '0' : `w0*${i % usedCols}`}_${Math.floor(i / usedCols) === 0 ? '0' : `h0*${Math.floor(i / usedCols)}`}`).join('|')
+    }:fill=black[v]`, '-map', '[v]', '-frames:v', '1', '-q:v', '3', out)
+    void usedRows
+    const p = spawn(paths.ffmpeg, args)
+    p.on('close', () => res(fs.existsSync(out)))
+    p.on('error', () => res(false))
+  })
+  try { fs.rmSync(dir, { recursive: true, force: true }) } catch { /* temp dir, never fatal */ }
+  return ok
+}
+
+const VIDEO_RE = /\.(mp4|m4v|mov|mkv|webm|avi|wmv|mpg|mpeg|ts|m2ts|mts|3gp|ogv|mxf)$/i
+const STILL_RE = /\.(png|jpg|jpeg|jfif|webp|bmp|tif|tiff|avif)$/i
+
+/**
+ * Walk a folder of b-roll and measure every clip: how long, does it have sound, which part is
+ * usable, and a contact sheet to look at. Labels already written for a file are handed back so
+ * a re-scan does not lose them, and `needsLabels` says which ones still have to be looked at.
+ */
+ipcMain.handle('scan-broll', async (_event, { folder, refresh }: { folder: string; refresh?: boolean }) => {
+  if (!folder || !fs.existsSync(folder)) return { error: 'folder not found' }
+  let names: string[] = []
+  try { names = fs.readdirSync(folder) } catch (e: any) { return { error: String(e?.message || e) } }
+  const files = names.filter(n => VIDEO_RE.test(n) || STILL_RE.test(n)).sort()
+  if (!files.length) return { error: `no footage in ${folder}`, assets: [] }
+
+  const side = readSidecar(folder)
+  const sheetDir = path.join(app.getPath('temp'), 'vidhelm_broll')
+  if (!fs.existsSync(sheetDir)) fs.mkdirSync(sheetDir, { recursive: true })
+
+  const assets: any[] = []
+  for (const name of files) {
+    const full = path.join(folder, name)
+    const still = STILL_RE.test(name)
+    const meta: any = await new Promise(res => ffmpeg.ffprobe(full, (e, d) => {
+      if (e || !d) return res(null)
+      const v = d.streams.find((s: any) => s.codec_type === 'video')
+      res({
+        duration: still ? 4 : (d.format.duration || 0),
+        hasAudio: d.streams.some((s: any) => s.codec_type === 'audio'),
+        width: v?.width || 0, height: v?.height || 0,
+        fps: fpsOf(v?.avg_frame_rate || v?.r_frame_rate),
+        pixFmt: v?.pix_fmt || '', colorTransfer: v?.color_transfer || '',
+      })
+    }))
+    if (!meta) { assets.push({ id: name, name, path: full, error: 'unreadable' }); continue }
+
+    const saved = side[name] || {}
+    const sheet = path.join(sheetDir, `${name.replace(/[^\w.-]/g, '_')}.jpg`)
+    if (!still && (refresh || !fs.existsSync(sheet))) await contactSheet(full, meta.duration, sheet)
+
+    let best: { start: number; end: number } | null = null
+    if (!still && (refresh || saved.bestStart == null)) {
+      const frames = await decodeGrayFrames(full, { fps: 4 })
+      best = usableRange(frames)
+    }
+    assets.push({
+      id: name, name, path: full,
+      duration: +(meta.duration || 0).toFixed(2),
+      hasAudio: !!meta.hasAudio, width: meta.width, height: meta.height, fps: meta.fps,
+      hdr: /arib-std-b67|smpte2084/i.test(meta.colorTransfer || ''),
+      still,
+      sheet: fs.existsSync(sheet) ? sheet : null,
+      labels: saved.labels || [],
+      description: saved.description || '',
+      bestStart: saved.bestStart ?? best?.start ?? 0,
+      bestEnd: saved.bestEnd ?? best?.end ?? +(meta.duration || 0).toFixed(2),
+      maxUses: saved.maxUses ?? 2,
+    })
+  }
+  return {
+    folder, assets,
+    needsLabels: assets.filter(a => !a.error && !(a.labels || []).length).map(a => a.name),
+  }
+})
+
+/** Write labels for one clip back to the folder's sidecar. */
+ipcMain.handle('label-broll', async (_event, { folder, id, labels, description, bestStart, bestEnd, maxUses }: any) => {
+  if (!folder || !fs.existsSync(folder)) return { error: 'folder not found' }
+  const side = readSidecar(folder)
+  const cur = side[id] || {}
+  side[id] = {
+    ...cur,
+    ...(labels !== undefined ? { labels: Array.isArray(labels) ? labels : String(labels).split(',').map((s: string) => s.trim()).filter(Boolean) } : {}),
+    ...(description !== undefined ? { description } : {}),
+    ...(bestStart !== undefined ? { bestStart: Number(bestStart) } : {}),
+    ...(bestEnd !== undefined ? { bestEnd: Number(bestEnd) } : {}),
+    ...(maxUses !== undefined ? { maxUses: Number(maxUses) } : {}),
+  }
+  try { writeSidecar(folder, side) } catch (e: any) { return { error: String(e?.message || e) } }
+  return { ok: true, id, saved: side[id] }
+})
+
+/**
+ * Move a proposed cut onto the nearest edge of silence in the real waveform.
+ *
+ * Whisper's word times are good to about a tenth of a second, which is precisely the scale at
+ * which a clipped consonant or a beat of dead air is audible. This decodes a short window
+ * around the estimate and snaps to where speech actually stops or starts.
+ */
+ipcMain.handle('refine-cut', async (_event, { filePath, t, dir = 'after', window = 0.6, floorDb = -34 }: { filePath: string; t: number; dir?: 'after' | 'before'; window?: number; floorDb?: number }) => {
+  if (!filePath || !fs.existsSync(filePath)) return { error: 'no file' }
+  const from = Math.max(0, t - window)
+  const pcm: Float32Array = await new Promise(resolve => {
+    const p = spawn(paths.ffmpeg, ['-hide_banner', '-loglevel', 'error', '-ss', String(from), '-t', String(window * 2),
+      '-i', filePath, '-ac', '1', '-ar', '16000', '-f', 'f32le', 'pipe:1'])
+    const chunks: Buffer[] = []
+    p.stdout.on('data', d => chunks.push(d))
+    p.on('error', () => resolve(new Float32Array(0)))
+    p.on('close', () => { const b = Buffer.concat(chunks); resolve(new Float32Array(b.buffer, b.byteOffset, Math.floor(b.length / 4))) })
+  })
+  if (!pcm.length) return { t, refined: t, moved: 0, note: 'no audio in that window' }
+  const sr = 16000, step = 0.01
+  const per = Math.round(sr * step)
+  const rms: number[] = []
+  for (let i = 0; i + per <= pcm.length; i += per) {
+    let sum = 0
+    for (let k = 0; k < per; k++) sum += pcm[i + k] * pcm[i + k]
+    rms.push(Math.sqrt(sum / per))
+  }
+  const refined = refineFromEnvelope({ rms, step, t0: from }, t, dir, { floorDb, searchSec: window })
+  return { t, refined, moved: +(refined - t).toFixed(3) }
+})
+
+/**
+ * Where a 9:16 crop should point, measured from the footage itself. Slow on purpose: it decodes
+ * the whole clip at 4fps rather than guessing from a handful of stills.
+ */
+ipcMain.handle('plan-framing', async (_event, { filePath, sourceStart = 0, duration, fps = 4, hints, aspect = 9 / 16 }: any) => {
+  if (!filePath || !fs.existsSync(filePath)) return { error: 'no file' }
+  const frames = await decodeGrayFrames(filePath, { start: sourceStart, duration, fps, w: 64, h: 36 })
+  if (!frames.length) return { error: 'could not decode frames' }
+  const meta: any = await new Promise(res => ffmpeg.ffprobe(filePath, (e, d) => {
+    const v = d?.streams?.find((s: any) => s.codec_type === 'video')
+    res(e ? null : { width: v?.width || 1920, height: v?.height || 1080 })
+  }))
+  const srcW = meta?.width || 1920, srcH = meta?.height || 1080
+  const cropWpx = Math.min(srcW, Math.round(srcH * aspect))
+  const plan = planCrop(frames, { cropW: cropWpx / srcW, hints })
+
+  // A proof sheet: the middle frame of each hold with the proposed crop drawn on it.
+  //
+  // This matters more than it sounds. Edge and motion energy find the biggest, busiest thing in
+  // frame, which is not always the SUBJECT: on a coffee review it happily framed a black canister
+  // sitting next to the grinder, because the canister is larger and higher contrast. There is no
+  // way to tell those apart without knowing what the video is about, so the plan is something to
+  // look at and correct with `hints`, not something to trust blind.
+  let proof: string | null = null
+  if (plan.segments.length) {
+    const dir = path.join(app.getPath('temp'), 'vidhelm_framing', String(Date.now()))
+    fs.mkdirSync(dir, { recursive: true })
+    const shots: string[] = []
+    for (const [i, seg] of plan.segments.slice(0, 8).entries()) {
+      const t = seg.start + (seg.end - seg.start) / 2
+      const x = Math.round(Math.min(srcW - cropWpx, Math.max(0, seg.cx * srcW - cropWpx / 2)))
+      const out = path.join(dir, `s_${i}.jpg`)
+      await new Promise<void>(res => {
+        const p = spawn(paths.ffmpeg, ['-y', '-hide_banner', '-loglevel', 'error', '-ss', t.toFixed(3),
+          '-i', filePath, '-an', '-frames:v', '1',
+          '-vf', `drawbox=x=${x}:y=0:w=${cropWpx}:h=${srcH}:color=yellow@0.9:t=8,scale=360:-2`,
+          '-q:v', '3', out])
+        p.on('close', () => res()); p.on('error', () => res())
+      })
+      if (fs.existsSync(out)) shots.push(out)
+    }
+    if (shots.length) {
+      const sheet = path.join(dir, 'framing_proof.jpg')
+      const cols = Math.min(4, shots.length)
+      const layout = shots.map((_, i) => `${(i % cols) === 0 ? '0' : `w0*${i % cols}`}_${Math.floor(i / cols) === 0 ? '0' : `h0*${Math.floor(i / cols)}`}`).join('|')
+      const args = ['-y', '-hide_banner', '-loglevel', 'error']
+      for (const sh of shots) args.push('-i', sh)
+      args.push('-filter_complex', `${shots.map((_, i) => `[${i}:v]`).join('')}xstack=inputs=${shots.length}:layout=${layout}:fill=black[v]`,
+        '-map', '[v]', '-frames:v', '1', '-q:v', '3', sheet)
+      await new Promise<void>(res => { const p = spawn(paths.ffmpeg, args); p.on('close', () => res()); p.on('error', () => res()) })
+      if (fs.existsSync(sheet)) proof = sheet
+    }
+  }
+
+  return {
+    ...plan,
+    track: plan.track.filter((_, i) => i % 4 === 0),      // thin it out: this is only for eyeballing
+    srcW, srcH, cropWpx,
+    expr: cropExpr(plan, srcW, cropWpx),
+    proof,
+    summary: plan.segments.map(s => `${s.start.toFixed(1)}-${s.end.toFixed(1)}s centre ${(s.cx * 100).toFixed(0)}% (${s.reason})`),
+    hint: proof
+      ? 'Open `proof`: each tile is one hold with the crop drawn on it. Anything pointing at the wrong thing, fix with hints ("time@x", x across the frame) and call again. Detail and motion cannot tell the subject from the biggest object near it.'
+      : undefined,
   }
 })
 
@@ -1050,7 +1369,10 @@ const agentServer = http.createServer(async (req, res) => {
       let cmd: any
       try { cmd = JSON.parse(Buffer.concat(chunks).toString() || '{}') } catch { res.writeHead(400); return res.end(JSON.stringify({ error: 'bad json' })) }
       if (!cmd.action) { res.writeHead(400); return res.end(JSON.stringify({ error: 'missing action' })) }
-      const LONG = ['export', 'cut_pauses', 'run_recipe', 'sample_frames', 'compose_thumbnail', 'render_3d', 'prepare_analysis']
+      // b-roll scanning, speech reading and framing analysis are all deliberately slow: they
+      // decode real footage rather than sampling a few frames, so they belong here too
+      const LONG = ['export', 'cut_pauses', 'run_recipe', 'sample_frames', 'compose_thumbnail', 'render_3d', 'prepare_analysis',
+        'scan_broll', 'plan_broll', 'place_broll', 'analyze_speech', 'find_phrase', 'cut_at_phrase', 'plan_framing']
       // a fourteen minute cut takes about half an hour to render here, so a flat 30 minute cap
       // reported a timeout on an export that was going perfectly well
       const timeout = cmd.action === 'export' ? 4 * 60 * 60 * 1000 : LONG.includes(cmd.action) ? 20 * 60 * 1000 : 15000

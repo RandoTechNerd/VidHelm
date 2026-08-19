@@ -12,7 +12,7 @@ You can drive the VidHelm desktop video editor while the user watches. VidHelm e
 - `POST /command` with JSON `{"action": "...", ...params}`: perform an edit
 - `GET /screenshot` → PNG of the app window
 
-**Actions** (params in parentheses): `add_media` (path, place, start) · `add_clip` (media, track v1|a1|a2, start, duration, volume, fadeIn, fadeOut) · `update_clip` (clipId, …) · `split_clip` (clipId, t) · `delete_item` (id) · `add_text` (text, start, duration, x, y 0-1, fontSize, color) · `update_text` (textId, …) · `add_tag` (t, label) · `update_tag` (tagId, …) · `list_sfx` · `place_sfx` (name, t, volume) · `seek` (t) · `play` (playing) · `set_format` (orientation, resolution, fps) · `cut_pauses` · `find_repeats` · `apply_takes` (keep "0:2, 1:0", drop "7") · `run_recipe` · `sample_frames` (count) · `compose_thumbnail` (t, subtitle, outPath) · `ui` (panel: booth|narration|sfx|media|settings|thumbnail|connect|takes) · `export` (outputPath, qualityCheck)
+**Actions** (params in parentheses): `add_media` (path, place, start) · `add_clip` (media, track v1|a1|a2, start, duration, volume, fadeIn, fadeOut) · `update_clip` (clipId, …) · `split_clip` (clipId, t) · `delete_item` (id) · `add_text` (text, start, duration, x, y 0-1, fontSize, color) · `update_text` (textId, …) · `add_tag` (t, label) · `update_tag` (tagId, …) · `list_sfx` · `place_sfx` (name, t, volume) · `seek` (t) · `play` (playing) · `set_format` (orientation, resolution, fps) · `cut_pauses` · `find_repeats` · `apply_takes` (keep "0:2, 1:0", drop "7") · `run_recipe` · `sample_frames` (count) · `compose_thumbnail` (t, subtitle, outPath) · `ui` (panel: booth|narration|sfx|media|settings|thumbnail|connect|takes) · `export` (outputPath, qualityCheck) · `scan_broll` (folder) · `label_broll` (id, labels, description, bestStart, bestEnd, maxUses) · `plan_broll` (coverage, gapBetween, protectStart, minScore, protect "0-12, 300-330") · `place_broll` (drop) · `analyze_speech` (model, refresh) · `find_phrase` (text, after, before) · `cut_at_phrase` (text, mode end|start|split) · `plan_framing` (path, hints "3@0.72")
 
 Example (place a "pop" sound at 3.2 seconds):
 
@@ -23,7 +23,9 @@ curl -X POST http://127.0.0.1:5959/command -H "Content-Type: application/json" -
 **Working style**
 1. `GET /state` first, and again after the user touches the GUI, you are co-editing live.
 2. Tag points are the shared language: the user presses `M` at beats that matter; align SFX, text, and narration to tags instead of hardcoded times.
-3. Tracks: `v1` video, `a1` voice/music, `a2` SFX. Times are in seconds.
+3. Tracks: `v1` video, `v2` b-roll (picture only, over v1), `a1` voice/music, `a2` SFX. Times are in seconds.
+3b. Never read a timestamp off a transcript to place a cut: `find_phrase`/`cut_at_phrase` end on the last word of the thought, drop a dangling "and this...", and snap to the waveform.
+3c. B-roll: `scan_broll`, LOOK at each returned contact sheet, `label_broll` what is in it, `plan_broll` (nothing moves), then `place_broll`. Cutaways never carry their own audio.
 4. `startRecipe` in the state is the user's standing workflow (`#` lines are off). "Run my workflow" = `run_recipe` for the app-native steps, then do the AI steps yourself (pitch 5 titles, propose a thumbnail subtitle, `compose_thumbnail`).
 5. `export` blocks until rendered and returns a quality check (loudness, peaks, black frames), report the verdict.
 6. Built-in SFX names: whoosh, pop, boing, squish, gummy-squish, gloop, poof, spoosh, sparkle, party, riser, ding, thud.

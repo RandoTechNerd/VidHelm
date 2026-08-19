@@ -9,7 +9,7 @@ You are co-editing with a human: they see every change live in the GUI and can m
 
 ## Core loop
 
-1. `get_state`: always first. Returns format, media bin, clips per track (`v1` video, `a1` voice/music, `a2` SFX), texts, **tag points**, and `startRecipe`.
+1. `get_state`: always first. Returns format, media bin, clips per track (`v1` video, `v2` b-roll, `a1` voice/music, `a2` SFX), texts, **tag points**, and `startRecipe`.
 2. Batch a few edits, then `screenshot` to verify what the human sees. Re-read state after they touch anything.
 3. Report progress in chat conversationally; the human is watching the app, not your tool calls.
 
@@ -38,6 +38,31 @@ You are co-editing with a human: they see every change live in the GUI and can m
 - `open_panel narration`: cloned-voice generation via their configured CLI; the 🧬 wizard sets up XTTS-v2 (Python) or audio.cpp (no Python, Apache-licensed models) for them.
 - Keep narration lines as flowing sentences, not ultra-short fragments (short lines make TTS models babble).
 
+## Cutting to a spoken line (do not eyeball timestamps)
+
+Reading a time off a transcript and using it is how a cut ends up in the wrong place. Two tools do it properly:
+
+- `find_phrase {text}` finds where a line was said and returns in/out points, cutting nothing. It is tolerant of transcription slips, and it **trims what dangles**: ask for "check out this portable espresso maker" when the take runs on into "and this…" and the out point lands after *maker*, not after *this*. The point is then snapped to the real waveform, so no consonant is clipped and no dead air is left hanging.
+- `cut_at_phrase {text, mode}` does the same and then cuts: `end` (default) drops everything after the line, `start` drops everything before it, `split` only splits the clips there.
+
+Both read the timeline's speech with word timings (`analyze_speech`, cached until the timeline changes) using the `small` Whisper model by default, because accuracy matters more here than speed. The first use downloads that model once.
+
+## B-roll (the `v2` track)
+
+B-roll is **picture only**. A cutaway covers the video track while the audio underneath keeps playing, and hands the picture back on a word boundary. That is what makes it read as an edit rather than a glitch.
+
+1. `scan_broll` measures the project's `broll` folder (or any `folder` you pass): length, sound, the steady part worth using, and a **contact sheet** image per clip.
+2. **Open every contact sheet and look at it**, then `label_broll {id, labels}` with short concrete nouns for what is actually in the shot: `"coffee beans, pouring, close up"`. Those labels are the only thing matching has to work with, so unlabelled footage is never used. Labels are saved next to the footage in `.vidhelm-broll.json`, so a re-scan keeps them and the user can edit them by hand.
+3. `plan_broll` matches labelled clips to the sentences actually being spoken and returns what it would do, **without touching the timeline**. Read it. A cutaway covers a whole sentence, never the first 8s, keeps ~4s of the speaker between cutaways, and stays under a third of the runtime.
+4. `place_broll` commits it (`drop: "0, 3"` to leave some out).
+
+If nothing matches a line, stay on the speaker. A cutaway to footage that does not match what is being said is worse than no cutaway.
+
+## Vertical crops for Shorts
+
+`plan_framing` decodes the footage and works out where a 9:16 crop should point. It **holds** the crop still inside a shot and only moves when the subject really does, because a crop that drifts reads as a broken gimbal.
+
+It also returns `proof`: one image with the proposed crop drawn on the middle frame of each hold. **Open it.** Detail and motion energy find the biggest, busiest object in frame, which is not always the subject: on a coffee review it framed a black canister sitting next to the grinder. Where it is wrong, pass `hints` (`"3@0.72, 9.5@0.35"`, time@x with x across the frame) and call again.
 ## 3D models and extras
 
 - A dropped/asked-for STL, 3MF, OBJ or GLB goes through the **3D Studio**: `open_panel {panel: "model3d", path}` loads it (an HTML viewer page works too, the model inside gets extracted), then `render_3d` produces the clip.
@@ -58,6 +83,7 @@ Derive final chapter timestamps from `get_state` after the edit is cut, not from
 ## Gotchas
 
 - Times are seconds; text x/y are 0-1 of the frame.
-- `export_video` and `cut_pauses` are long-running: don't parallelize other edits during them.
+- `export_video`, `cut_pauses`, `scan_broll`, `plan_broll` and `plan_framing` are long-running: don't parallelize other edits during them.
+- B-roll on `v2` never contributes audio, by design. Natural sound from a cutaway has to go on `a1`/`a2` as its own clip.
 - If a tool errors "VidHelm is not running": the app must be open. Ask, or run `npm run dev` in the background yourself.
 - Connection problems on the user's side → tell them to click **🤖 AI** in the header (live diagnostics + per-client config) or see docs/CONNECT.md.

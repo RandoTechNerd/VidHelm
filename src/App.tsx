@@ -6,6 +6,8 @@ import { HelpModal, InfoNote, type HelpPanel } from './help'
 import { TakesModal, takeStats, type TakeAnalysis } from './takes'
 import { groupTakes, removalRanges, removedSeconds, chunksFromWords } from '../electron/takes'
 import { planProxy, isHdr } from '../electron/playable'
+import { spanForPhrase, sentenceSpans, type Word as SpeechWord, type Span } from '../electron/speech'
+import { planBroll, snapToWords, describePlan, type BrollAsset, type Placement } from '../electron/broll'
 
 interface MediaFile {
   id: string
@@ -28,7 +30,7 @@ interface TimelineClip {
   id: string
   mediaId: string
   type: 'video' | 'audio' | 'image'
-  trackId: 'v1' | 'a1' | 'a2'   // video · voice/music · SFX
+  trackId: 'v1' | 'v2' | 'a1' | 'a2'   // video · b-roll (picture only, over v1) · voice/music · SFX
   start: number       // seconds on timeline
   duration: number    // seconds
   sourceStart: number // seconds into source
@@ -374,7 +376,7 @@ function App() {
   const [captionPct, setCaptionPct] = useState<number | null>(null)
   const [thumbs, setThumbs] = useState<Record<string, { sig: string; path: string }>>({})
   const thumbsRef = useRef<Record<string, { sig: string; path: string }>>({})
-  const [collapsed, setCollapsed] = useState<{ text: boolean; video: boolean; audio: boolean; sfx: boolean }>({ text: false, video: false, audio: false, sfx: false })
+  const [collapsed, setCollapsed] = useState<{ text: boolean; video: boolean; broll: boolean; audio: boolean; sfx: boolean }>({ text: false, video: false, broll: false, audio: false, sfx: false })
   const [markers, setMarkers] = useState<Marker[]>([])
   const [showBooth, setShowBooth] = useState(false)
   const [showNarration, setShowNarration] = useState(false)
@@ -444,7 +446,12 @@ function App() {
   // the black flash you see at cuts. Mount them a beat early instead, hidden and silent, so the
   // frame is ready before it is needed.
   const PREROLL = 1.2
-  const previewVideoClips = clips.filter(c => c.trackId === 'v1' && currentTime >= c.start - PREROLL && currentTime < c.start + c.duration)
+  // v1 first, then v2, so the DOM stacking order matches the export's overlay order: b-roll
+  // covers the A-roll picture, never the other way round.
+  const TRACK_LAYER: Record<string, number> = { v1: 0, v2: 1, a1: 2, a2: 3 }
+  const previewVideoClips = clips
+    .filter(c => (c.trackId === 'v1' || c.trackId === 'v2') && currentTime >= c.start - PREROLL && currentTime < c.start + c.duration)
+    .sort((a, b) => TRACK_LAYER[a.trackId] - TRACK_LAYER[b.trackId])
   const activeVideoClips = previewVideoClips.filter(c => currentTime >= c.start)
   const activeTexts = texts.filter(t => currentTime >= t.start && currentTime < t.start + t.duration)
   const activeKey = activeVideoClips.map(c => c.id).join(',')
@@ -1041,6 +1048,166 @@ function App() {
         setTakes(next)
         return applyTakes(next)
       }
+      // ---- b-roll ----
+      case 'scan_broll': {
+        // the convention: a `broll` sub-folder inside the open project. Forward slash on purpose,
+        // Node normalises it on Windows and it survives JSON round-trips without escaping.
+        const folder = cmd.folder || (currentProject ? `${currentProject.dir}/broll` : null)
+        if (!folder) return { error: 'pass folder, or open a project first' }
+        const r = await window.ipcRenderer.scanBroll({ folder, refresh: !!cmd.refresh })
+        if (r.error && !r.assets?.length) return { error: r.error }
+        const assets = (r.assets || []).filter((a: any) => !a.error)
+        brollRef.current = { folder, assets: assets as BrollAsset[] }
+        return {
+          ok: true, folder, count: assets.length,
+          assets: assets.map((a: any) => ({ id: a.id, seconds: a.duration, size: `${a.width}x${a.height}`, hasAudio: a.hasAudio, usable: `${a.bestStart}-${a.bestEnd}s`, sheet: a.sheet, labels: a.labels })),
+          needsLabels: r.needsLabels || [],
+          hint: (r.needsLabels || []).length
+            ? 'Open each `sheet` image, then call label_broll with what is actually in it (short nouns: "coffee beans", "grinder", "pouring"). Labels are what plan_broll matches against.'
+            : 'Everything is labelled. plan_broll next.',
+        }
+      }
+      case 'label_broll': {
+        const folder = cmd.folder || brollRef.current?.folder
+        if (!folder) return { error: 'call scan_broll first' }
+        if (!cmd.id) return { error: 'id required (the file name from scan_broll)' }
+        const r = await window.ipcRenderer.labelBroll({ folder, id: cmd.id, labels: cmd.labels, description: cmd.description, bestStart: cmd.bestStart, bestEnd: cmd.bestEnd, maxUses: cmd.maxUses })
+        if (r.error) return r
+        if (brollRef.current) brollRef.current.assets = brollRef.current.assets.map(a => a.id === cmd.id ? { ...a, ...r.saved } : a)
+        return { ok: true, id: cmd.id, saved: r.saved }
+      }
+      case 'plan_broll': {
+        if (!brollRef.current?.assets.length) return { error: 'call scan_broll first' }
+        const labelled = brollRef.current.assets.filter(a => (a.labels || []).length || a.description)
+        if (!labelled.length) return { error: 'none of the b-roll is labelled yet: look at the contact sheets and call label_broll' }
+        const sp = await readSpeech(cmd.model)
+        if (sp.error || !sp.sentences) return { error: sp.error || 'no speech' }
+        // "0-12, 300-330" from an MCP client, or real objects from the plain HTTP bridge
+        const protect: { start: number; end: number }[] = Array.isArray(cmd.protect)
+          ? cmd.protect
+          : typeof cmd.protect === 'string'
+            ? cmd.protect.split(',').map((r: string) => r.split('-').map((n: string) => parseFloat(n.trim())))
+                .filter((r: number[]) => r.length === 2 && r.every(n => Number.isFinite(n)))
+                .map((r: number[]) => ({ start: r[0], end: r[1] }))
+            : []
+        const { placements, skipped } = planBroll(sp.sentences, labelled, {
+          minDuration: cmd.minDuration, maxDuration: cmd.maxDuration, gapBetween: cmd.gapBetween,
+          coverage: cmd.coverage, protectStart: cmd.protectStart, minScore: cmd.minScore,
+          protect, totalDuration,
+        })
+        const snapped = snapToWords(placements, sp.sentences, sp.words || [])
+        brollPlanRef.current = snapped
+        return {
+          ok: true,
+          placements: snapped.map(pl => ({ at: +pl.start.toFixed(2), seconds: +(pl.end - pl.start).toFixed(2), clip: pl.name, on: pl.matched.join(' '), line: pl.text, score: pl.score })),
+          skipped: skipped.slice(0, 8),
+          summary: describePlan(snapped, totalDuration),
+          hint: 'Nothing is on the timeline yet. place_broll puts it there; pass drop:[index] to leave one out.',
+        }
+      }
+      case 'place_broll': {
+        const plan = brollPlanRef.current
+        if (!plan?.length) return { error: 'call plan_broll first' }
+        const drop = new Set<number>(Array.isArray(cmd.drop) ? cmd.drop : typeof cmd.drop === 'string' ? cmd.drop.split(',').map((n: string) => parseInt(n.trim(), 10)) : [])
+        const keep = plan.filter((_, i) => !drop.has(i))
+        const made: any[] = []
+        for (const pl of keep) {
+          const media = await ensureMedia(pl.path)
+          if (!media) { made.push({ clip: pl.name, error: 'could not read that file' }); continue }
+          const dur = +(pl.end - pl.start).toFixed(3)
+          // a couple of frames of dissolve at each end: a hard cut on picture-only b-roll can
+          // strobe, and anything longer starts reading as a transition effect
+          const fade = Math.min(0.12, dur / 6)
+          setClips(prev => [...prev, {
+            id: rid(), mediaId: media.id, type: media.type, trackId: 'v2' as const,
+            start: pl.start, duration: dur, sourceStart: pl.sourceStart,
+            volume: 0, fadeIn: fade, fadeOut: fade,
+          }])
+          made.push({ at: +pl.start.toFixed(2), seconds: dur, clip: pl.name, on: pl.matched.join(' ') })
+        }
+        return { ok: true, placed: made.length, cutaways: made, note: 'b-roll is picture only: the audio underneath is untouched' }
+      }
+
+      // ---- precise speech ----
+      case 'analyze_speech': {
+        const sp = await readSpeech(cmd.model, !!cmd.refresh)
+        if (sp.error) return { error: sp.error }
+        return {
+          ok: true, words: sp.words!.length, sentences: sp.sentences!.length,
+          model: speechRef.current?.model,
+          transcript: sp.sentences!.map((x, i) => `${i}  ${x.start.toFixed(2)}-${x.end.toFixed(2)}  ${x.text}`),
+        }
+      }
+      case 'find_phrase': {
+        if (!cmd.text) return { error: 'text required' }
+        const sp = await readSpeech(cmd.model)
+        if (sp.error || !sp.words) return { error: sp.error || 'no speech' }
+        const hit = spanForPhrase(sp.words, cmd.text, { after: cmd.after, before: cmd.before })
+        if (!hit) return { error: `not found: "${cmd.text}"` }
+        const cutOut = cmd.refine === false ? hit.cutOut : await refine(hit.cutOut, 'after')
+        const cutIn = cmd.refine === false ? hit.cutIn : await refine(hit.cutIn, 'before')
+        return {
+          ok: true, heard: hit.text, kept: hit.trimmed,
+          dropped: hit.text === hit.trimmed ? null : hit.text.slice(hit.trimmed.length).trim(),
+          start: +cutIn.toFixed(3), end: +cutOut.toFixed(3),
+          note: 'end sits past the last word of the thought and before whatever came next, snapped to the waveform',
+        }
+      }
+      case 'cut_at_phrase': {
+        if (!cmd.text) return { error: 'text required' }
+        const sp = await readSpeech(cmd.model)
+        if (sp.error || !sp.words) return { error: sp.error || 'no speech' }
+        const hit = spanForPhrase(sp.words, cmd.text, { after: cmd.after, before: cmd.before })
+        if (!hit) return { error: `not found: "${cmd.text}"` }
+        const mode = cmd.mode || 'end'
+        const at = mode === 'start'
+          ? (cmd.refine === false ? hit.cutIn : await refine(hit.cutIn, 'before'))
+          : (cmd.refine === false ? hit.cutOut : await refine(hit.cutOut, 'after'))
+        if (mode === 'split') {
+          const hits = clips.filter(c => at > c.start && at < c.start + c.duration)
+          if (!hits.length) return { error: `nothing to split at ${at.toFixed(2)}s` }
+          setClips(prev => {
+            const next = [...prev]
+            for (const c0 of hits) {
+              const off = at - c0.start
+              const a = { ...c0, id: rid(), duration: off, fadeOut: 0 }
+              const b = { ...c0, id: rid(), start: at, duration: c0.duration - off, sourceStart: c0.sourceStart + off, fadeIn: 0 }
+              const i = next.findIndex(c => c.id === c0.id)
+              next.splice(i, 1, a, b)
+            }
+            return next
+          })
+          return { ok: true, at: +at.toFixed(3), kept: hit.trimmed, split: hits.length }
+        }
+        const range = mode === 'start' ? { start: 0, end: at } : { start: at, end: totalDuration }
+        if (range.end - range.start <= 0.05) return { error: 'nothing to remove there' }
+        const out = removeRange(clips, texts, range.start, range.end, 0)
+        setClips(out.clips)
+        setTexts(out.texts)
+        return {
+          ok: true, at: +at.toFixed(3), kept: hit.trimmed,
+          dropped: hit.text === hit.trimmed ? null : hit.text.slice(hit.trimmed.length).trim(),
+          removed: +(range.end - range.start).toFixed(2),
+          note: mode === 'start' ? 'everything before the phrase is gone' : 'everything after the phrase is gone',
+        }
+      }
+      case 'plan_framing': {
+        const fv = firstVideo()
+        const v = cmd.path ? { path: cmd.path } : (fv && { path: fv.proxyPath || fv.path })
+        if (!v) return { error: 'no video on the timeline' }
+        // "3@0.72, 9.5@0.35" from an MCP client, or real objects from the plain HTTP bridge
+        const hints: { t: number; cx: number; weight?: number }[] = Array.isArray(cmd.hints)
+          ? cmd.hints
+          : typeof cmd.hints === 'string'
+            ? cmd.hints.split(',').map((h: string) => h.split('@').map((n: string) => parseFloat(n.trim())))
+                .filter((h: number[]) => h.length === 2 && h.every(n => Number.isFinite(n)))
+                .map((h: number[]) => ({ t: h[0], cx: Math.min(1, Math.max(0, h[1])) }))
+            : []
+        return await window.ipcRenderer.planFraming({
+          filePath: v.path, sourceStart: cmd.sourceStart, duration: cmd.duration,
+          fps: cmd.fps, hints, aspect: cmd.aspect,
+        })
+      }
       case 'run_recipe': { await runRecipe(); return { ok: true } }
       case 'sample_frames': {
         const sf = firstVideo()
@@ -1156,7 +1323,7 @@ function App() {
         setExportProgress(0); setEta(null); exportStartRef.current = Date.now()
         try {
           await window.ipcRenderer.exportVideo({
-            clips: clips.map(c => { const m = mediaBin.find(x => x.id === c.mediaId); const src = exportSource(m, 720); return { ...c, path: src.path, hdr: src.hdr, hasVideo: m?.hasVideo, hasAudio: m?.hasAudio } }),
+            clips: exportClips(720),
             texts, brand: { ...settings.brand, enabled: false }, audio: settings.audio, outputPath: out,
             settings: { width: 1280, height: 720, fps: 30, quality: 'analysis', masterVolume },
           })
@@ -1176,7 +1343,7 @@ function App() {
         if (clips.length === 0 && texts.length === 0) return { error: 'timeline is empty' }
         setIsPlaying(false)
         const payload = {
-          clips: clips.map(c => { const media = mediaBin.find(m => m.id === c.mediaId); const src = exportSource(media, h); return { ...c, path: src.path, hdr: src.hdr, hasVideo: media?.hasVideo, hasAudio: media?.hasAudio, chromaKey: media?.chromaKey } }),
+          clips: exportClips(h),
           texts, brand: settings.brand, audio: settings.audio, outputPath: cmd.outputPath,
           settings: { width: w, height: h, fps, quality: exportQuality, masterVolume },
         }
@@ -1277,6 +1444,18 @@ function App() {
   // simultaneous heavy decodes plus 90 tone-maps, which takes the whole machine down. When the
   // export is not bigger than the proxy, render from the proxy instead: it is already the right
   // size and already SDR, so the graph gets light and the colour is identical to the preview.
+  // The export layers clips in array order: each one overlays whatever came before. Sorting by
+  // track before building the payload is what keeps b-roll ON TOP of the A-roll no matter what
+  // order things were added to the timeline in. v2 is picture only, so its own audio is dropped
+  // here rather than mixed in: the A-roll keeps talking underneath the cutaway.
+  const exportClips = (h: number) => [...clips]
+    .sort((a, b) => (TRACK_LAYER[a.trackId] - TRACK_LAYER[b.trackId]) || (a.start - b.start))
+    .map(c => {
+      const media = mediaBin.find(m => m.id === c.mediaId)
+      const src = exportSource(media, h)
+      return { ...c, path: src.path, hdr: src.hdr, hasVideo: media?.hasVideo, hasAudio: c.trackId === 'v2' ? false : media?.hasAudio, chromaKey: media?.chromaKey }
+    })
+
   const exportSource = (m: MediaFile | undefined, outHeight: number) =>
     m?.proxyPath && outHeight <= 1080 ? { path: m.proxyPath, hdr: false } : { path: m?.path, hdr: m?.hdr }
 
@@ -1294,7 +1473,7 @@ function App() {
     const cs = settings.caption
     setCaptioning('Mixing audio…'); setCaptionPct(null)
     try {
-      const payload = clips.map(c => { const m = mediaBin.find(x => x.id === c.mediaId); return { path: m?.proxyPath || m?.path, hasAudio: m?.hasAudio, start: c.start, duration: c.duration, volume: c.volume } })
+      const payload = clips.map(c => { const m = mediaBin.find(x => x.id === c.mediaId); return { path: m?.proxyPath || m?.path, hasAudio: c.trackId === 'v2' ? false : m?.hasAudio, start: c.start, duration: c.duration, volume: c.volume } })
       const mix = await window.ipcRenderer.renderMixAudio({ clips: payload })
       if (mix.error || !mix.path) { notify('Captions: ' + (mix.error || 'could not prepare audio')); return }
       const res = await window.ipcRenderer.transcribe(mix.path, { model: cs.model, language: cs.language, word: cs.mode === 'word' })
@@ -1318,7 +1497,7 @@ function App() {
     const audioClips = clips.filter(c => c.trackId === 'a1' || mediaBin.find(m => m.id === c.mediaId)?.hasAudio)
     if (!audioClips.length) return null
     try {
-      const payload = clips.map(c => { const m = mediaBin.find(x => x.id === c.mediaId); return { path: m?.proxyPath || m?.path, hasAudio: m?.hasAudio, start: c.start, duration: c.duration, volume: c.volume } })
+      const payload = clips.map(c => { const m = mediaBin.find(x => x.id === c.mediaId); return { path: m?.proxyPath || m?.path, hasAudio: c.trackId === 'v2' ? false : m?.hasAudio, start: c.start, duration: c.duration, volume: c.volume } })
       const mix = await window.ipcRenderer.renderMixAudio({ clips: payload })
       if (mix.error || !mix.path) return null
       const res = await window.ipcRenderer.transcribe(mix.path, { model: settings.caption.model, language: settings.caption.language, word: false })
@@ -1331,7 +1510,7 @@ function App() {
   // Core is UI-free so both the toolbar button and the agent bridge can run it.
   const runCutDeadSpace = async (): Promise<{ error?: string; removed?: number; seconds?: number; mode?: string }> => {
     const S = settings.silence
-    const hasAudio = clips.some(c => c.trackId !== 'v1' || mediaBin.find(m => m.id === c.mediaId)?.hasAudio)
+    const hasAudio = clips.some(c => (c.trackId === 'a1' || c.trackId === 'a2') || (c.trackId === 'v1' && mediaBin.find(m => m.id === c.mediaId)?.hasAudio))
     const videoClips = clips.filter(c => c.trackId === 'v1' && mediaBin.find(m => m.id === c.mediaId)?.type === 'video')
     const useMotion = S.detectBy === 'motion' || (S.detectBy === 'auto' && !hasAudio)
     if (useMotion && !videoClips.length) return { error: 'No video clips to scan for still frames.' }
@@ -1347,7 +1526,7 @@ function App() {
           for (const iv of r.intervals || []) intervals.push({ start: c.start + iv.start, end: c.start + Math.min(iv.end, c.duration) })
         }
       } else {
-        const payload = clips.map(c => { const m = mediaBin.find(x => x.id === c.mediaId); return { path: m?.proxyPath || m?.path, hasAudio: m?.hasAudio, start: c.start, duration: c.duration, sourceStart: c.sourceStart, volume: c.volume } })
+        const payload = clips.map(c => { const m = mediaBin.find(x => x.id === c.mediaId); return { path: m?.proxyPath || m?.path, hasAudio: c.trackId === 'v2' ? false : m?.hasAudio, start: c.start, duration: c.duration, sourceStart: c.sourceStart, volume: c.volume } })
         const mix = await window.ipcRenderer.renderMixAudio({ clips: payload })
         if (mix.error || !mix.path) return { error: 'Cut pauses: ' + (mix.error || 'could not prepare audio') }
         const res = await window.ipcRenderer.detectSilence({ filePath: mix.path, thresholdDb: S.thresholdDb, minPause: S.minPause })
@@ -1394,17 +1573,84 @@ function App() {
     else notify(`Removed ${r.removed} ${r.mode === 'stillness' ? 'static stretch(es)' : 'pause(s)'} (~${r.seconds}s). Undo with Ctrl+Z if needed.`)
   }
 
+  // ---- B-roll and precise speech ----
+  // The pieces that let an agent cut away to matching footage without touching the audio:
+  // read the speech once (word by word), keep it, and answer questions against it.
+  const brollRef = useRef<{ folder: string; assets: BrollAsset[] } | null>(null)
+  const speechRef = useRef<{ words: SpeechWord[]; sentences: Span[]; mixPath: string; model: string; at: string } | null>(null)
+  const brollPlanRef = useRef<Placement[] | null>(null)
+
+  /**
+   * Mix the timeline's audio and read every word out of it, with times.
+   *
+   * Defaults to the `small` model rather than `tiny`: this is the pass everything else measures
+   * from, so being right matters more than being quick. The result is cached until the timeline
+   * changes, because it is the slow part.
+   */
+  const readSpeech = async (model?: string, force?: boolean): Promise<{ error?: string; words?: SpeechWord[]; sentences?: Span[] }> => {
+    const want = model || 'small'
+    if (!force && speechRef.current && speechRef.current.model === want && speechRef.current.at === stateKey()) {
+      return { words: speechRef.current.words, sentences: speechRef.current.sentences }
+    }
+    const hasAudio = clips.some(c => (c.trackId === 'a1' || c.trackId === 'a2') || (c.trackId === 'v1' && mediaBin.find(m => m.id === c.mediaId)?.hasAudio))
+    if (!hasAudio) return { error: 'Nothing with speech on the timeline yet.' }
+    setTakesBusy('Mixing audio…')
+    try {
+      const payload = clips.map(c => { const m = mediaBin.find(x => x.id === c.mediaId); return { path: m?.proxyPath || m?.path, hasAudio: c.trackId === 'v2' ? false : m?.hasAudio, start: c.start, duration: c.duration, sourceStart: c.sourceStart, volume: c.volume } })
+      const mix = await window.ipcRenderer.renderMixAudio({ clips: payload })
+      if (mix.error || !mix.path) return { error: mix.error || 'could not prepare audio' }
+      setTakesBusy('Reading speech…')
+      const res = await window.ipcRenderer.transcribe(mix.path, { model: want, language: settings.caption.language, word: true })
+      if (res.error) return { error: res.error }
+      const words: SpeechWord[] = (res.chunks || [])
+        .map(c => ({ start: c.start, end: c.end ?? c.start + 0.25, text: c.text || '' }))
+        .filter(w => w.text.trim() && w.end > w.start)
+      if (!words.length) return { error: 'No speech detected.' }
+      const sentences = sentenceSpans(words)
+      speechRef.current = { words, sentences, mixPath: mix.path, model: want, at: stateKey() }
+      return { words, sentences }
+    } catch (e) { return { error: 'Reading speech failed: ' + String(e) } }
+    finally { setTakesBusy(null) }
+  }
+
+  /** Snap a proposed cut onto the real waveform. Falls back to the estimate if audio is gone. */
+  const refine = async (t: number, dir: 'after' | 'before'): Promise<number> => {
+    const mix = speechRef.current?.mixPath
+    if (!mix) return t
+    const r = await window.ipcRenderer.refineCut({ filePath: mix, t, dir })
+    return typeof r.refined === 'number' ? r.refined : t
+  }
+
+  /** Pull an asset into the bin if it is not there yet, so a cutaway can reference it. */
+  const ensureMedia = async (filePath: string): Promise<MediaFile | null> => {
+    const existing = mediaBin.find(m => m.path === filePath)
+    if (existing) return existing
+    const meta = await window.ipcRenderer.getMetadata(filePath).catch(() => null)
+    const verdict = classifyMedia(filePath, meta)
+    if ('reject' in verdict) return null
+    const m = meta as Probe
+    const media: MediaFile = {
+      id: rid(), name: filePath.split(/[\/]/).pop() || 'broll', path: filePath, type: verdict.type,
+      duration: verdict.type === 'image' ? 5 : (m.duration || 5),
+      hasVideo: m.hasVideo || verdict.type === 'image', hasAudio: m.hasAudio,
+      hdr: isHdr({ colorTransfer: m.colorTransfer }),
+    }
+    setMediaBin(prev => [...prev, media])
+    void ensureProxies([media], new Map([[media.id, m]]))
+    return media
+  }
+
   // ---- Takes & history ----
   // Transcribe the timeline, group the lines that are retakes of each other, and hand the result
   // to the panel. Detection is in electron/takes.ts; nothing is cut until the user applies.
   const stateKey = () => JSON.stringify({ c: clips, t: texts })
 
   const scanTakes = async (): Promise<{ error?: string; groups?: number; lines?: number; analysis?: TakeAnalysis }> => {
-    const hasAudio = clips.some(c => c.trackId !== 'v1' || mediaBin.find(m => m.id === c.mediaId)?.hasAudio)
+    const hasAudio = clips.some(c => (c.trackId === 'a1' || c.trackId === 'a2') || (c.trackId === 'v1' && mediaBin.find(m => m.id === c.mediaId)?.hasAudio))
     if (!hasAudio) return { error: 'Nothing with speech on the timeline yet.' }
     setTakesBusy('Mixing audio…')
     try {
-      const payload = clips.map(c => { const m = mediaBin.find(x => x.id === c.mediaId); return { path: m?.proxyPath || m?.path, hasAudio: m?.hasAudio, start: c.start, duration: c.duration, sourceStart: c.sourceStart, volume: c.volume } })
+      const payload = clips.map(c => { const m = mediaBin.find(x => x.id === c.mediaId); return { path: m?.proxyPath || m?.path, hasAudio: c.trackId === 'v2' ? false : m?.hasAudio, start: c.start, duration: c.duration, sourceStart: c.sourceStart, volume: c.volume } })
       const mix = await window.ipcRenderer.renderMixAudio({ clips: payload })
       if (mix.error || !mix.path) return { error: 'Takes: ' + (mix.error || 'could not prepare audio') }
       setTakesBusy('Reading speech…')
@@ -1529,11 +1775,7 @@ function App() {
         setCustomExportPath(finalPath)
       }
       const payload = {
-        clips: clips.map(c => {
-          const media = mediaBin.find(m => m.id === c.mediaId)
-          const src = exportSource(media, h)
-          return { ...c, path: src.path, hdr: src.hdr, hasVideo: media?.hasVideo, hasAudio: media?.hasAudio, chromaKey: media?.chromaKey }
-        }),
+        clips: exportClips(h),
         texts,
         brand: settings.brand,
         audio: settings.audio,
@@ -1776,7 +2018,7 @@ function App() {
       <div
         key={c.id}
         onMouseDown={(e) => startClipMove(e, c)}
-        className={`clip ${c.trackId !== 'v1' ? 'a-clip' : 'v-clip'} ${c.type} ${bg ? 'has-thumb' : ''} ${selectedId === c.id ? 'selected' : ''}`}
+        className={`clip ${c.trackId === 'v2' ? 'b-clip' : c.trackId !== 'v1' ? 'a-clip' : 'v-clip'} ${c.type} ${bg ? 'has-thumb' : ''} ${selectedId === c.id ? 'selected' : ''}`}
         style={{ left: c.start * pxPerSec, width: c.duration * pxPerSec, backgroundImage: bg, backgroundSize: bgSize, backgroundPosition: 'center', backgroundRepeat: 'no-repeat' }}
         title={media?.name}
       >
@@ -1910,6 +2152,7 @@ function App() {
                 return media.type === 'image'
                   ? <img key={c.id} className="layer" style={{ opacity: op, filter: media.chromaKey ? `url(#${keyFilterFor(media.chromaKey)})` : undefined }} src={fileUrl(media.path)} alt="" />
                   : <video key={c.id} ref={el => { if (el) videoEls.current.set(c.id, el); else videoEls.current.delete(c.id) }} className="layer"
+                      muted={c.trackId === 'v2'}
                       style={{ opacity: op, filter: media.chromaKey ? `url(#${keyFilterFor(media.chromaKey)})` : undefined }} src={fileUrl(media.proxyPath || media.path)} />
               })}
               {activeTexts.map(t => (
@@ -2022,6 +2265,8 @@ function App() {
                     ))}
                   </div>
                 )}
+                <button className="track-label" onClick={() => setCollapsed(c => ({ ...c, broll: !c.broll }))} title="Picture only: cutaways here cover the video track while the audio underneath keeps playing"><IconChevron open={!collapsed.broll} /> B-ROLL</button>
+                {!collapsed.broll && <div className="track v-track broll-track">{clips.filter(c => c.trackId === 'v2').map(renderClip)}</div>}
                 <button className="track-label" onClick={() => setCollapsed(c => ({ ...c, video: !c.video }))}><IconChevron open={!collapsed.video} /> VIDEO</button>
                 {!collapsed.video && <div className="track v-track">{clips.filter(c => c.trackId === 'v1').map(renderClip)}</div>}
                 <button className="track-label" onClick={() => setCollapsed(c => ({ ...c, audio: !c.audio }))}><IconChevron open={!collapsed.audio} /> VOICE / MUSIC</button>

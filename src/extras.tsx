@@ -382,10 +382,20 @@ intro-audio          # your intro sting at 0:00 (pick it below)
 # over it, then wipe those assets off (whoosh) to reveal the same shot already moving. Follow
 # with a cold open at ~1.5x: the 4-5 best moments as jump cuts, nothing over 3s, hard cuts.
 # Under it, an ambient bed lifted from the footage itself; end the open on one clean spoken
-# line and cut right after its last word (transcribe with word timestamps to find it).
+# line and cut right after its last word.
 # JOINS: every cut crossfades. The screen never dips to black, ever.
-# SHORTS: make 9:16 by zooming in (centre crop, re-centred per shot on the action), never
-# blurred bars. Logo top-left for the first 5s only. End on the payoff line.`
+# LOGO: intro only. Never a watermark over the body of a long-form video.
+# CUTTING TO A LINE: never eyeball a timestamp off a transcript. Use find_phrase / cut_at_phrase,
+# which end on the last word of the THOUGHT and drop whatever dangles after it ("...espresso
+# maker" not "...espresso maker and this"), then snap to the waveform so nothing is clipped.
+# B-ROLL: scan_broll the project's broll folder, open every contact sheet and label_broll what is
+# actually in each one, then plan_broll and read the plan before place_broll commits it. Cutaways
+# are picture only: the audio runs straight through underneath and comes back on a word boundary.
+# Cover a whole sentence, never the first 8s, ~4s back on camera between them, under a third of
+# the runtime in total. If nothing matches a line, stay on the speaker.
+# SHORTS: make 9:16 by zooming in (never blurred bars). Use plan_framing to point the crop: it
+# holds still inside a shot and only moves when the subject really does. Logo top-left for the
+# first 5s only. End on the payoff line.`
 
 const lineKey = (line: string) => line.replace(/^#/, '').trim().split(/\s+/)[0] || ''
 export const recipeActive = (text: string): Record<string, boolean> => {

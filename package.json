@@ -1,7 +1,7 @@
 {
   "name": "vidhelm",
   "private": true,
-  "version": "1.6.2",
+  "version": "1.7.0",
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "vite",
@@ -13,7 +13,11 @@
     "agent": "node agent/mcp-server.mjs",
     "selftest": "node agent/selftest.mjs",
     "test:takes": "node scripts/takes.test.mjs",
-    "test:playable": "node scripts/playable.test.mjs"
+    "test:playable": "node scripts/playable.test.mjs",
+    "test:speech": "node scripts/speech.test.mjs",
+    "test:framing": "node scripts/framing.test.mjs",
+    "test:broll": "node scripts/broll.test.mjs",
+    "test": "npm run typecheck && npm run test:takes && npm run test:playable && npm run test:speech && npm run test:framing && npm run test:broll && npm run selftest"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",

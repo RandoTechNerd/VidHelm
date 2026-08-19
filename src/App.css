@@ -1053,6 +1053,10 @@ textarea.duration-input { resize: vertical; font-family: inherit; }
 
 .clone-log { background: #0a0d14; border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 10px; font-size: 11.5px; max-height: 160px; overflow-y: auto; white-space: pre-wrap; word-break: break-word; color: #9aa3af; }
 .sfx-track { min-height: 34px; }
+/* B-roll: picture only, sits over the video track. Amber so a cutaway is obvious at a glance. */
+.broll-track { min-height: 44px; height: 44px; }
+.b-clip { background: #d97706; }
+.b-clip.image { background: #b45309; }
 
 /* ============ Start Recipe + Thumbnail picker ============ */
 .recipe-toggles { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }

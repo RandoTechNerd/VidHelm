@@ -30,6 +30,10 @@ interface Window {
     openTerminal: () => Promise<{ ok?: boolean; error?: string }>
     makeProxy: (data: { filePath: string; info: any }) => Promise<{ ok?: boolean; path?: string; cached?: boolean; skipped?: boolean; reason?: string; encoder?: string; error?: string }>
     sampleFrames: (data: { filePath: string; count?: number; sourceStart?: number; duration?: number }) => Promise<{ frames?: { t: number; path: string }[]; error?: string }>
+    scanBroll: (data: { folder: string; refresh?: boolean }) => Promise<{ folder?: string; assets?: any[]; needsLabels?: string[]; error?: string }>
+    labelBroll: (data: { folder: string; id: string; labels?: string[]; description?: string; bestStart?: number; bestEnd?: number; maxUses?: number }) => Promise<{ ok?: boolean; id?: string; saved?: any; error?: string }>
+    refineCut: (data: { filePath: string; t: number; dir?: 'after' | 'before'; window?: number; floorDb?: number }) => Promise<{ t?: number; refined?: number; moved?: number; note?: string; error?: string }>
+    planFraming: (data: { filePath: string; sourceStart?: number; duration?: number; fps?: number; hints?: { t: number; cx: number; weight?: number }[]; aspect?: number }) => Promise<any>
     composeThumbnail: (data: { filePath: string; t: number; subtitle?: string; logoPath?: string | null; outPath: string }) => Promise<{ ok?: boolean; outPath?: string; error?: string }>
     openSfxFolder: () => Promise<{ ok?: boolean; path?: string; error?: string }>
     saveSfxRecording: (data: { base64: string; name: string }) => Promise<{ path?: string; name?: string; duration?: number; error?: string }>
