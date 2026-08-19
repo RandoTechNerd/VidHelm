@@ -16,9 +16,10 @@ const fileUrl = (p?: string | null) => p
 const fmtT = (s: number) => `${Math.floor(s / 60)}:${(Math.floor(s % 60)).toString().padStart(2, '0')}.${Math.floor((s % 1) * 10)}`
 
 // ---------------- SFX library panel ----------------
-export function SfxPanel({ onPlace, genCommand, onGenCommand }: {
+export function SfxPanel({ onPlace, genCommand, onGenCommand, freesoundToken, onFreesoundToken }: {
   onPlace: (item: SfxItem) => void
   genCommand: string; onGenCommand: (c: string) => void
+  freesoundToken?: string; onFreesoundToken?: (t: string) => void
 }) {
   const [items, setItems] = useState<SfxItem[]>([])
   const [err, setErr] = useState<string | null>(null)
@@ -35,6 +36,14 @@ export function SfxPanel({ onPlace, genCommand, onGenCommand }: {
   const [pending, setPending] = useState<{ base64: string } | null>(null)
   const [recName, setRecName] = useState('')
   const recRef = useRef<{ rec: MediaRecorder; stream: MediaStream; raf: number; timer: number } | null>(null)
+  // finding sounds in the free libraries
+  const [findOpen, setFindOpen] = useState(false)
+  const [findQ, setFindQ] = useState('')
+  const [findBusy, setFindBusy] = useState(false)
+  const [hits, setHits] = useState<any[]>([])
+  const [findNotes, setFindNotes] = useState<string[]>([])
+  const [gettingId, setGettingId] = useState<string | null>(null)
+  const [tokenEdit, setTokenEdit] = useState(false)
 
   useEffect(() => () => {
     const r = recRef.current
@@ -103,6 +112,35 @@ export function SfxPanel({ onPlace, genCommand, onGenCommand }: {
     setGenBusy(false)
   }
 
+  const runSearch = async () => {
+    if (!findQ.trim()) return
+    setFindBusy(true); setHits([]); setFindNotes([])
+    const r = await window.ipcRenderer.sfxSearch({ query: findQ.trim(), token: freesoundToken || undefined })
+    setFindBusy(false)
+    if (r.error) { setFindNotes([r.error]); return }
+    setHits(r.results || [])
+    setFindNotes(r.notes || [])
+  }
+
+  const auditionUrl = (url: string, id: string) => {
+    audioRef.current?.pause()
+    const a = new Audio(url)
+    audioRef.current = a
+    setPlaying(id)
+    a.onended = () => setPlaying(null)
+    a.onerror = () => setPlaying(null)
+    a.play().catch(() => setPlaying(null))
+  }
+
+  const download = async (hit: any) => {
+    setGettingId(hit.provider + hit.id)
+    const r = await window.ipcRenderer.sfxDownload(hit)
+    setGettingId(null)
+    if (r.error) { setFindNotes([`Could not save that one: ${r.error}`]); return }
+    setFindNotes([r.attribution ? `Saved. This one needs crediting, and it is in CREDITS.txt: ${r.attribution}` : 'Saved to your sounds. No credit needed.'])
+    load()
+  }
+
   const load = () => window.ipcRenderer.sfxLibrary()
     .then(r => setItems(r.items || []))
     .catch(e => setErr(String(e)))
@@ -131,6 +169,41 @@ export function SfxPanel({ onPlace, genCommand, onGenCommand }: {
           </div>
         ))}
       </div>
+      {findOpen && <div className="sfx-gen">
+        <input className="duration-input" style={{ width: '100%' }} placeholder='find a sound… e.g. "coffee beans pour", "electronic door"'
+          value={findQ} onChange={e => setFindQ(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') runSearch() }} />
+        <div className="vc-row">
+          <button className="primary" disabled={findBusy || !findQ.trim()} onClick={runSearch}>{findBusy ? 'Searching…' : 'Search'}</button>
+          <button title="Freesound API token" onClick={() => setTokenEdit(v => !v)}>{freesoundToken ? '🔑' : '🔑 add key'}</button>
+        </div>
+        {tokenEdit && <div className="sfx-token">
+          <p className="hint">
+            Wikimedia Commons is searched without any setup, but it is a thin library for sound effects.
+            <b> Freesound</b> is the real one. The token is free: create an account, visit
+            {' '}<a href="#" onClick={e => { e.preventDefault(); window.ipcRenderer.openExternal('https://freesound.org/apiv2/apply/') }}>freesound.org/apiv2/apply</a>,
+            and paste the API key here.
+          </p>
+          <input className="duration-input" style={{ width: '100%' }} placeholder="paste your Freesound API key"
+            value={freesoundToken || ''} onChange={e => onFreesoundToken?.(e.target.value.trim())} />
+        </div>}
+        {findNotes.map((n, i) => <p key={i} className="hint">{n}</p>)}
+        {hits.length > 0 && <div className="sfx-hits">
+          {hits.map(h => (
+            <div key={h.provider + h.id} className="sfx-hit">
+              <button className="sfx-play" title="Audition (streams from the library)"
+                onClick={() => auditionUrl(h.audioUrl, h.provider + h.id)}>{playing === h.provider + h.id ? '◼' : '▶'}</button>
+              <span className="sfx-name" title={`${h.name}\nby ${h.author} · ${h.provider}`}>{h.name}</span>
+              <span className={`sfx-lic ${h.needsAttribution ? 'credit' : 'free'}`} title={h.needsAttribution ? `${h.license}. Credit required, and it goes into CREDITS.txt when you save it.` : `${h.license}. No credit needed.`}>
+                {h.needsAttribution ? 'credit' : 'free'}
+              </span>
+              {h.seconds > 0 && <span className="sfx-dur">{h.seconds > 60 ? `${Math.round(h.seconds / 60)}m` : `${h.seconds.toFixed(1)}s`}</span>}
+              <button className="sfx-add" title="Save into your sounds"
+                disabled={gettingId === h.provider + h.id}
+                onClick={() => download(h)}>{gettingId === h.provider + h.id ? '…' : '↓'}</button>
+            </div>
+          ))}
+        </div>}
+      </div>}
       {genOpen && <div className="sfx-gen">
         <input className="duration-input" style={{ width: '100%' }} placeholder='describe a sound… e.g. "cartoon spring boing, short"' value={genPrompt}
           onChange={e => setGenPrompt(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') generate() }} />
@@ -168,6 +241,8 @@ export function SfxPanel({ onPlace, genCommand, onGenCommand }: {
           onClick={() => recording ? stopRec() : startRec()} disabled={!!pending}>{recording ? '■ Stop' : '🎤 Record'}</button>
         <button onClick={async () => { const r = await window.ipcRenderer.openSfxFolder(); if (r?.error) setGenStatus(`Could not open the folder: ${r.error}`) }}
           title="Open the folder VidHelm scans for your own sounds">📂 Folder</button>
+        <button className={findOpen ? 'rec-on' : ''} onClick={() => setFindOpen(o => !o)}
+          title="Search the free sound libraries (Wikimedia Commons needs no setup; add a free Freesound key for the big one)">🔎 Find</button>
         <button onClick={() => setGenOpen(o => !o)} title="Generate a sound effect from a text description (bring your own local model, e.g. audio.cpp)">✨ AI</button>
         <button onClick={load} title="Rescan the custom folder">↻</button>
       </div>

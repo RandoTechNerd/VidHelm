@@ -1,7 +1,11 @@
 // Browser fallback for the Electron bridge, lets `npm run dev:web` render the full UI in a plain
 // browser for UI work and screenshots. Media import/export need real Electron; everything visual
 // (timeline, tag points, SFX list, booth, panels) works against this mock.
-const demoSfx = ['whoosh', 'pop', 'boing', 'squish', 'gummy-squish', 'gloop', 'poof', 'spoosh', 'sparkle', 'party', 'riser', 'ding', 'thud']
+import { classify, profileFor, benchmark } from '../electron/capability'
+
+const demoSfx = ['whoosh', 'pop', 'boing', 'squish', 'gummy-squish', 'gloop', 'poof', 'spoosh', 'sparkle', 'party', 'riser', 'ding', 'thud',
+  // the modelled ones; the desktop app renders these for real, the preview only lists them
+  'coffee-beans', 'coffee-beans-plastic', 'coffee-beans-glass', 'door-electronic', 'door-electronic-close', 'podracer-start', 'podracer-pass']
 
 export function installIpcMock() {
   if (window.ipcRenderer) return
@@ -34,6 +38,26 @@ export function installIpcMock() {
     openExternal: async (url: string) => { window.open(url, "_blank") },
     openTerminal: async () => ({ error: 'Opening a terminal needs the desktop app' }),
     makeProxy: async () => ({ skipped: true }),
+    // The hardware tiering is genuinely measurable in a browser: the benchmark is plain JS, and
+    // the core count is exposed. Memory is not (deviceMemory is Chrome-only and rounded), so it
+    // is assumed generous rather than guessed low, which would misreport the tier as weak.
+    machineProfile: async () => {
+      const cores = navigator.hardwareConcurrency || 4
+      const memGB = (navigator as unknown as { deviceMemory?: number }).deviceMemory || 16
+      const specs = { cores, memGB, hwEncoder: false, benchMs: benchmark() }
+      const { tier, reasons } = classify(specs)
+      return { specs, cpu: 'browser preview', detected: tier, reasons, profile: profileFor(tier) }
+    },
+    // Search is plain HTTPS, but a browser cannot call either provider directly (CORS), and the
+    // download has to land in the user's sound folder, which only the desktop app has.
+    sfxSearch: async () => ({ error: 'Searching the sound libraries needs the desktop app (npm run dev)' }),
+    sfxDownload: async () => ({ error: 'Saving a sound needs the desktop app (npm run dev)' }),
+    sfxRender: async () => ({ error: 'Rendering a sound effect needs the desktop app (npm run dev)' }),
+    sfxRecipes: async () => ({ recipes: [] }),
+    scanBroll: async () => ({ error: 'Scanning b-roll needs the desktop app (npm run dev)' }),
+    labelBroll: async () => ({ error: 'Labelling b-roll needs the desktop app (npm run dev)' }),
+    refineCut: async ({ t }: { t: number }) => ({ t, refined: t, moved: 0, note: 'waveform snapping needs the desktop app' }),
+    planFraming: async () => ({ error: 'Framing analysis needs the desktop app (npm run dev)' }),
     voiceClone: async () => ({ error: 'Narration needs the desktop app (npm run dev)' }),
     pickModel: async () => null,
     extractModel: async () => ({ error: 'Reading models needs the desktop app (npm run dev)' }),

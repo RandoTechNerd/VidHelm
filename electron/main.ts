@@ -5,10 +5,14 @@ import { planProxy, proxyFilter, proxyKey, HDR_TO_SDR, type ProbeInfo } from './
 import { refineFromEnvelope } from './speech'
 import { planCrop, cropExpr, type Frame as GrayFrame } from './framing'
 import { classify, profileFor, benchmark, type MachineSpecs } from './capability'
+import { REALISTIC_RECIPES } from './sfxrecipes'
+import { toWav } from './sfxsynth'
+import { freesoundUrl, commonsUrl, parseFreesound, parseCommons, collate, attributionLine, safeFilename, classifyLicense } from './sfxsearch'
 import path from 'node:path'
 import fs from 'node:fs'
 import os from 'node:os'
 import { spawn } from 'node:child_process'
+import https from 'node:https'
 import ffmpeg from 'fluent-ffmpeg'
 
 if (!process.env.VH_GPU) app.disableHardwareAcceleration()   // VH_GPU=1 keeps the GPU on (needed for video-layer screenshots)
@@ -1525,6 +1529,128 @@ const SFX_RECIPES: Record<string, { d: number; graph: string }> = {
   thud: { d: 0.4, graph: `aevalsrc='0.8*sin(2*PI*(90-30*t)*t)*exp(-t*11)':d=0.4:s=48000[t];anoisesrc=d=0.4:c=brown:a=0.4,lowpass=f=300,afade=t=out:st=0.05:d=0.3,volume=0.4[n];[t][n]amix=inputs=2:normalize=0,alimiter=limit=0.9[a]` },
 }
 
+// ---------------- realistic SFX, synthesized here rather than with ffmpeg expressions ----------
+// The lavfi recipes above are closed-form formulas, which is fine for a pop and hopeless for a
+// pour: that sound is a couple of hundred separate impacts exciting one resonant container.
+// electron/sfxrecipes.ts renders those as actual samples. See docs/SFX.md.
+
+/** Render one of the modelled effects straight to a WAV. */
+ipcMain.handle('sfx-render', async (_event, { recipe, seed, intensity, duration, outPath }: { recipe: string; seed?: number; intensity?: number; duration?: number; outPath?: string }) => {
+  const entry = REALISTIC_RECIPES[recipe]
+  if (!entry) return { error: `no such sound: ${recipe}`, available: Object.keys(REALISTIC_RECIPES) }
+  try {
+    const stereo = entry.render({ sampleRate: 48000, seed, intensity, duration })
+    const dir = path.join(sfxDir(), 'custom')
+    fs.mkdirSync(dir, { recursive: true })
+    const name = seed === undefined ? `${recipe}.wav` : `${recipe}-${seed}.wav`
+    const out = outPath || path.join(dir, name)
+    fs.writeFileSync(out, Buffer.from(toWav(stereo)))
+    return { ok: true, path: out, seconds: +(stereo.left.length / stereo.sampleRate).toFixed(2), about: entry.about }
+  } catch (e: any) {
+    return { error: String(e?.message || e) }
+  }
+})
+
+ipcMain.handle('sfx-recipes', async () => ({
+  recipes: Object.entries(REALISTIC_RECIPES).map(([name, r]) => ({ name, seconds: r.seconds, about: r.about })),
+}))
+
+// ---------------- searching free sound libraries ----------------
+
+const httpsJson = (url: string): Promise<any> => new Promise((resolve) => {
+  const req = https.request(url, { method: 'GET', headers: { 'User-Agent': 'VidHelm/1.7 (https://vidhelm.com)', 'Accept': 'application/json' } }, res => {
+    const chunks: Buffer[] = []
+    res.on('data', d => chunks.push(d as Buffer))
+    res.on('end', () => {
+      const body = Buffer.concat(chunks).toString('utf8')
+      if ((res.statusCode || 0) >= 400) return resolve({ __error: `HTTP ${res.statusCode}`, __body: body.slice(0, 300) })
+      try { resolve(JSON.parse(body)) } catch { resolve({ __error: 'bad json from provider' }) }
+    })
+  })
+  req.setTimeout(20000, () => { req.destroy(); resolve({ __error: 'timed out' }) })
+  req.on('error', e => resolve({ __error: String(e?.message || e) }))
+  req.end()
+})
+
+/**
+ * Search the free libraries. Wikimedia Commons always runs (no key); Freesound runs as well when
+ * the user has pasted a token, and it is the one that returns the good results.
+ */
+ipcMain.handle('sfx-search', async (_event, { query, token, safeOnly, maxSeconds, pageSize }: { query: string; token?: string; safeOnly?: boolean; maxSeconds?: number; pageSize?: number }) => {
+  if (!query || !query.trim()) return { error: 'nothing to search for' }
+  const opts = { safeOnly, maxSeconds, pageSize }
+  const notes: string[] = []
+  const lists: any[][] = []
+
+  if (token) {
+    const r = await httpsJson(freesoundUrl(query, token, opts))
+    if (r.__error) notes.push(`Freesound: ${r.__error === 'HTTP 401' ? 'that token was rejected' : r.__error}`)
+    else lists.push(parseFreesound(r))
+  } else {
+    notes.push('No Freesound token set, so only Wikimedia Commons was searched. Freesound is much bigger: get a free token at freesound.org/apiv2/apply and paste it in Settings.')
+  }
+
+  const c = await httpsJson(commonsUrl(query, opts))
+  if (c.__error) notes.push(`Wikimedia Commons: ${c.__error}`)
+  else lists.push(parseCommons(c))
+
+  const hits = collate(lists, query, opts)
+  return {
+    ok: true, query, count: hits.length, notes,
+    results: hits.slice(0, Math.min(50, pageSize ?? 20)).map(h => ({
+      provider: h.provider, id: h.id, name: h.name, seconds: h.seconds, author: h.author,
+      license: h.license.name, licenseCode: h.license.code,
+      needsAttribution: h.license.needsAttribution, commercialOk: h.license.commercialOk,
+      audioUrl: h.audioUrl, pageUrl: h.pageUrl, tags: h.tags,
+      attribution: attributionLine(h),
+    })),
+  }
+})
+
+/**
+ * Download one result into the user's own SFX folder, and record the credit it needs.
+ *
+ * Anything requiring attribution is also appended to CREDITS.txt next to the file, because a
+ * credit that only exists in a chat log is a credit that will be missing from the description.
+ */
+ipcMain.handle('sfx-download', async (_event, hit: any) => {
+  if (!hit?.audioUrl) return { error: 'no audio url' }
+  const dir = path.join(sfxDir(), 'custom')
+  fs.mkdirSync(dir, { recursive: true })
+  const name = safeFilename({ ...hit, license: classifyLicense(hit.license) })
+  const out = path.join(dir, name)
+
+  const fetched = await new Promise<{ ok: boolean; error?: string }>((resolve) => {
+    const get = (url: string, redirects = 0) => {
+      https.get(url, { headers: { 'User-Agent': 'VidHelm/1.7 (https://vidhelm.com)' } }, res => {
+        if ([301, 302, 303, 307, 308].includes(res.statusCode || 0) && res.headers.location && redirects < 4) {
+          res.resume()
+          return get(new URL(res.headers.location, url).toString(), redirects + 1)
+        }
+        if ((res.statusCode || 0) >= 400) { res.resume(); return resolve({ ok: false, error: `HTTP ${res.statusCode}` }) }
+        const file = fs.createWriteStream(out)
+        res.pipe(file)
+        file.on('finish', () => file.close(() => resolve({ ok: true })))
+        file.on('error', e => resolve({ ok: false, error: String(e?.message || e) }))
+      }).on('error', e => resolve({ ok: false, error: String(e?.message || e) }))
+    }
+    get(hit.audioUrl)
+  })
+  if (!fetched.ok) { try { fs.unlinkSync(out) } catch { /* nothing to clean up */ } return { error: fetched.error } }
+
+  const credit = hit.attribution || attributionLine({ ...hit, license: classifyLicense(hit.license) })
+  if (credit) {
+    const creditsFile = path.join(dir, 'CREDITS.txt')
+    const line = `${name}\n  ${credit}\n\n`
+    try {
+      const existing = fs.existsSync(creditsFile) ? fs.readFileSync(creditsFile, 'utf8') : 'Sounds used in these videos, and the credit each one needs.\n\n'
+      if (!existing.includes(name)) fs.writeFileSync(creditsFile, existing + line, 'utf8')
+    } catch { /* the file is a convenience, never fail the download over it */ }
+  }
+  const duration: number = await new Promise(res => ffmpeg.ffprobe(out, (e, d) => res(e ? 0 : (d.format.duration || 0))))
+  return { ok: true, path: out, name, seconds: +duration.toFixed(2), attribution: credit || null }
+})
+
 const sfxDir = () => path.join(app.getPath('userData'), 'sfx')
 const genSfx = (name: string, recipe: { d: number; graph: string }) => new Promise<string>((resolve, reject) => {
   const out = path.join(sfxDir(), `${name}.wav`)
@@ -1540,10 +1666,18 @@ ipcMain.handle('sfx-library', async () => {
   const dir = sfxDir()
   const custom = path.join(dir, 'custom')
   fs.mkdirSync(custom, { recursive: true })
-  const items: { name: string; path: string; duration: number; builtin: boolean }[] = []
+  const items: { name: string; path: string; duration: number; builtin: boolean; about?: string }[] = []
   for (const [name, recipe] of Object.entries(SFX_RECIPES)) {
     try { items.push({ name, path: await genSfx(name, recipe), duration: recipe.d, builtin: true }) }
     catch (e) { console.error(e) }
+  }
+  // the modelled ones, rendered by electron/sfxrecipes.ts rather than by an ffmpeg expression
+  for (const [name, r] of Object.entries(REALISTIC_RECIPES)) {
+    try {
+      const out = path.join(dir, `${name}.wav`)
+      if (!fs.existsSync(out)) fs.writeFileSync(out, Buffer.from(toWav(r.render({ sampleRate: 48000 }))))
+      items.push({ name, path: out, duration: r.seconds, builtin: true, about: r.about })
+    } catch (e) { console.error(e) }
   }
   for (const f of fs.readdirSync(custom)) {
     if (!/\.(wav|mp3|ogg|m4a|flac)$/i.test(f)) continue

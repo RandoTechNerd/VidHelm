@@ -80,6 +80,11 @@ Those services take a file and return notes; they never see VidHelm. You are the
 Derive final chapter timestamps from `get_state` after the edit is cut, not from the notes: the notes describe the file you sent, and later cuts move everything.
 - With browser control available, offer to upload the finished export to YouTube (always pause for explicit user confirmation before publishing) or to capture website/localhost footage for the timeline.
 
+## Sound effects
+
+- `search_sfx {query}` searches the free libraries and returns each hit's LICENCE. Wikimedia Commons always works; Freesound needs the user's free token in Settings and is the one worth having. Non-commercial and unlicensed results are hidden by default because they are not safe on a monetised channel. `download_sfx {index}` saves one and writes any required credit into CREDITS.txt: tell the user when a sound needs crediting, because it has to go in the description.
+- `make_sfx {recipe, seed}` synthesizes one instead: coffee beans into a metal, plastic or glass container, a sci-fi door opening or closing, a podracer starting, and one flying past with real Doppler. Change the seed for another take of the same sound. Call it with no recipe to list them. See docs/SFX.md.
+
 ## Gotchas
 
 - **Never edit `vidhelm-settings.json` yourself.** The running app owns it and rewrites it from memory on every change, so an outside edit disappears the next time anything saves. Use `set_recipe` to change the user's Start Recipe; it persists through the same path the GUI uses.

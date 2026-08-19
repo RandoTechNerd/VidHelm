@@ -48,7 +48,7 @@ interface AppSettings {
   caption: { fontSize: number; color: string; position: 'lower' | 'top' | 'center'; box: boolean; boxOpacity: number; model: 'tiny' | 'base' | 'small'; language: string; mode: 'phrase' | 'word' }
   silence: { minPause: number; thresholdDb: number; pad: number; smooth: boolean; transition: number; detectBy: 'auto' | 'audio' | 'motion'; freezeDb: number }
   narration: { command: string }
-  sfxGen: { command: string }
+  sfxGen: { command: string; freesoundToken?: string }
   workspace: { root: string | null; autoLoad: boolean }
   /** how hard to work this machine. 'auto' follows what was detected at startup. */
   performance: { preference: TierPreference }
@@ -1239,6 +1239,55 @@ function App() {
           fps: cmd.fps ?? perf.framingFps, hints, aspect: cmd.aspect,
         })
       }
+      // ---- sound effects: search the free libraries, or model one ----
+      case 'search_sfx': {
+        if (!cmd.query) return { error: 'query required' }
+        const r = await window.ipcRenderer.sfxSearch({
+          query: cmd.query, token: settings.sfxGen.freesoundToken || undefined,
+          safeOnly: cmd.safeOnly, maxSeconds: cmd.maxSeconds, pageSize: cmd.limit,
+        })
+        if (r.error) return r
+        sfxHitsRef.current = r.results || []
+        return {
+          ok: true, query: r.query, found: r.count,
+          results: (r.results || []).map((h: any, i: number) => ({
+            index: i, name: h.name, seconds: h.seconds, from: h.provider, by: h.author,
+            licence: h.license, credit: h.needsAttribution ? 'required' : 'none needed',
+          })),
+          notes: r.notes,
+          hint: 'download_sfx { index } saves one into the user’s sound folder and records any credit it needs.',
+        }
+      }
+      case 'download_sfx': {
+        const hits = sfxHitsRef.current
+        if (!hits?.length) return { error: 'call search_sfx first' }
+        const idx = Number(cmd.index ?? 0)
+        const hit = hits[idx]
+        if (!hit) return { error: `no result ${idx}; there were ${hits.length}` }
+        const r = await window.ipcRenderer.sfxDownload(hit)
+        if (r.error) return r
+        return {
+          ok: true, name: r.name, seconds: r.seconds, path: r.path,
+          attribution: r.attribution,
+          note: r.attribution
+            ? 'This one needs crediting: it has been written into CREDITS.txt next to the file, and belongs in the video description.'
+            : 'No credit required.',
+        }
+      }
+      case 'make_sfx': {
+        if (!cmd.recipe) {
+          const list = await window.ipcRenderer.sfxRecipes()
+          return { error: 'recipe required', available: list.recipes }
+        }
+        const r = await window.ipcRenderer.sfxRender({
+          recipe: cmd.recipe, seed: cmd.seed, intensity: cmd.intensity, duration: cmd.duration,
+        })
+        if (r.error) return r
+        return {
+          ok: true, recipe: cmd.recipe, seconds: r.seconds, path: r.path, about: r.about,
+          note: 'Rendered into the sound library. Pass a different seed for another take of the same sound.',
+        }
+      }
       case 'set_recipe': {
         // The Start Recipe is settings, and settings are owned by the running app: it loads them
         // at startup and writes the whole file back whenever they change. Editing that file from
@@ -1626,6 +1675,7 @@ function App() {
   const brollRef = useRef<{ folder: string; assets: BrollAsset[] } | null>(null)
   const speechRef = useRef<{ words: SpeechWord[]; sentences: Span[]; mixPath: string; model: string; at: string } | null>(null)
   const brollPlanRef = useRef<Placement[] | null>(null)
+  const sfxHitsRef = useRef<any[] | null>(null)
 
   /**
    * Mix the timeline's audio and read every word out of it, with times.
@@ -2139,7 +2189,7 @@ function App() {
               <button className={`tab ${sidebarTab === 'sfx' ? 'active' : ''}`} onClick={() => setSidebarTab('sfx')} title="Sound effects, audition and drop on the SFX track">SFX</button>
               {sidebarTab === 'media' && <label className="add-btn" title="Add video, audio or images, or a 3D model (STL / 3MF / OBJ / GLB)"><IconPlus /><input type="file" accept={ACCEPT_ATTR} multiple onChange={handleFileUpload} hidden /></label>}
             </div>
-            {sidebarTab === 'sfx' && <SfxPanel onPlace={placeSfx} genCommand={settings.sfxGen.command} onGenCommand={c => setSettings(s => ({ ...s, sfxGen: { command: c } }))} />}
+            {sidebarTab === 'sfx' && <SfxPanel onPlace={placeSfx} genCommand={settings.sfxGen.command} onGenCommand={c => setSettings(s => ({ ...s, sfxGen: { ...s.sfxGen, command: c } }))} freesoundToken={settings.sfxGen.freesoundToken} onFreesoundToken={t => setSettings(s => ({ ...s, sfxGen: { ...s.sfxGen, freesoundToken: t } }))} />}
             {sidebarTab === 'media' && settings.workspace.root && (
               <div className="proj-bar">
                 <select value={currentProject?.dir || ''} title="Each sub-folder of your project folder is a project"

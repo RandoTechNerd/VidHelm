@@ -6,7 +6,7 @@ VidHelm is a desktop video editor (Electron + React) designed to be driven colla
 
 ## Steering the running app
 
-This repo ships an MCP server (`agent/mcp-server.mjs`, wired up for most clients already, see `docs/CONNECT.md`). While the app is running (`npm run dev` or the installed app), you have 36 tools to drive it live: `get_state`, `screenshot`, `add_media`, `add_clip`, `update_clip`, `split_clip`, `delete_item`, `add_text`, `update_text`, `add_tag`, `update_tag`, `list_sfx`, `place_sfx`, `set_booth_script`, `render_3d`, `prepare_analysis`, `open_project`, `transport`, `set_format`, `export_video`, `cut_pauses`, `find_repeats`, `apply_takes`, `run_recipe`, `sample_frames`, `compose_thumbnail`, `open_panel`, plus b-roll (`scan_broll`, `label_broll`, `plan_broll`, `place_broll`), precise speech (`analyze_speech`, `find_phrase`, `cut_at_phrase`, `plan_framing`), and `set_recipe`.
+This repo ships an MCP server (`agent/mcp-server.mjs`, wired up for most clients already, see `docs/CONNECT.md`). While the app is running (`npm run dev` or the installed app), you have 39 tools to drive it live: `get_state`, `screenshot`, `add_media`, `add_clip`, `update_clip`, `split_clip`, `delete_item`, `add_text`, `update_text`, `add_tag`, `update_tag`, `list_sfx`, `place_sfx`, `set_booth_script`, `render_3d`, `prepare_analysis`, `open_project`, `transport`, `set_format`, `export_video`, `cut_pauses`, `find_repeats`, `apply_takes`, `run_recipe`, `sample_frames`, `compose_thumbnail`, `open_panel`, plus b-roll (`scan_broll`, `label_broll`, `plan_broll`, `place_broll`), precise speech (`analyze_speech`, `find_phrase`, `cut_at_phrase`, `plan_framing`), sound effects (`search_sfx`, `download_sfx`, `make_sfx`), and `set_recipe`.
 
 **No MCP support?** The bridge is plain HTTP on `http://127.0.0.1:5959` (localhost only): `GET /state`, `POST /command {action,...}`, `GET /screenshot`, `GET /ping`. Any agent that can run `curl` can drive it, same actions as the tool names above.
 
@@ -28,7 +28,7 @@ Panels for `open_panel`: booth, narration, sfx, media, settings, thumbnail, conn
 - `src/extras.tsx`: SfxPanel, MarkerPanel, KaraokeBooth, NarrationModal, ConnectModal (AI setup + troubleshooter)
 - `electron/main.ts`: FFmpeg service + IPC + the HTTP agent bridge (port 5959) + SFX synth recipes
 - `agent/mcp-server.mjs`: dependency-free MCP↔bridge proxy · `agent/clients/`: ready-made configs · `agent/skills/`: portable skill text
-- `docs/`: WORKFLOW (user pipeline), BROLL (cutaways, phrase-accurate cuts, 9:16 framing), CONNECT (hook up any AI), ARCHITECTURE (contributor guide), AGENT (bridge details), VOICE_CLONE (XTTS setup), PROJECT_FORMAT (save-file JSON)
+- `docs/`: WORKFLOW (user pipeline), BROLL (cutaways, phrase-accurate cuts, 9:16 framing), SFX (free-library search + physical sound models), CONNECT (hook up any AI), ARCHITECTURE (contributor guide), AGENT (bridge details), VOICE_CLONE (XTTS setup), PROJECT_FORMAT (save-file JSON)
 
 ## Commands
 
