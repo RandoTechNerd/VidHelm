@@ -8,6 +8,7 @@ import { groupTakes, removalRanges, removedSeconds, chunksFromWords } from '../e
 import { planProxy, isHdr } from '../electron/playable'
 import { spanForPhrase, sentenceSpans, type Word as SpeechWord, type Span } from '../electron/speech'
 import { planBroll, snapToWords, describePlan, type BrollAsset, type Placement } from '../electron/broll'
+import { resolveProfile, describeProfile, type PerfProfile, type Tier, type TierPreference } from '../electron/capability'
 
 interface MediaFile {
   id: string
@@ -49,6 +50,8 @@ interface AppSettings {
   narration: { command: string }
   sfxGen: { command: string }
   workspace: { root: string | null; autoLoad: boolean }
+  /** how hard to work this machine. 'auto' follows what was detected at startup. */
+  performance: { preference: TierPreference }
   recipe: RecipeSettings
 }
 
@@ -60,6 +63,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   silence: { minPause: 0.8, thresholdDb: -30, pad: 0.12, smooth: true, transition: 0.12, detectBy: 'auto', freezeDb: -50 },
   narration: { command: '' },
   sfxGen: { command: '' },
+  performance: { preference: 'auto' },
   workspace: { root: null, autoLoad: true },
   recipe: { text: DEFAULT_RECIPE, introAudioPath: null },
 }
@@ -354,6 +358,10 @@ function App() {
   const [exportQuality, setExportQuality] = useState<'medium' | 'high'>('high')
   const [lastExport, setLastExport] = useState<string | null>(null)
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS)
+  // What the hardware turned out to be, measured once at startup in the main process.
+  const [machine, setMachine] = useState<{ cpu?: string; detected?: Tier; reasons?: string[]; specs?: { cores: number; memGB: number; hwEncoder: boolean; benchMs: number } } | null>(null)
+  // The profile actually in force: the user's choice if they made one, otherwise what was detected.
+  const perf: PerfProfile = resolveProfile(settings.performance?.preference, machine?.detected)
   const [showSettings, setShowSettings] = useState(false)
   const [showConnect, setShowConnect] = useState(false)
   const [showModel3D, setShowModel3D] = useState(false)
@@ -457,6 +465,17 @@ function App() {
   const activeKey = activeVideoClips.map(c => c.id).join(',')
 
   // ---- effects ----
+  // Ask the main process what this machine can take. The heavy defaults (which Whisper model,
+  // how many frames to decode, how many ffmpeg jobs at once) come from the answer, so a thin
+  // laptop is not asked to do the accuracy-first work a workstation was tuned for.
+  useEffect(() => {
+    let alive = true
+    void window.ipcRenderer.machineProfile().then(r => {
+      if (alive && r && !('error' in r)) setMachine({ cpu: r.cpu, detected: r.detected, reasons: r.reasons, specs: r.specs })
+    }).catch(() => { /* detection is a nicety: balanced defaults apply if it fails */ })
+    return () => { alive = false }
+  }, [])
+
   useEffect(() => {
     const handleProgress = (_e: any, percent: number) => {
       const pct = Math.max(0, Math.min(100, percent || 0))
@@ -658,11 +677,12 @@ function App() {
     const handle = setTimeout(() => {
       // One ffmpeg per clip, all at once, means ninety processes the moment a long video is cut.
       // That pegs the machine, starves the app's own event loop and stalls anything else running
-      // (an export, for one). Two at a time fills the strip in just as fast in practice.
+      // (an export, for one). A couple at a time fills the strip in just as fast in practice,
+      // and how many is a couple depends on the machine (see electron/capability.ts).
       const queue = [...vids]
       let active = 0
       const pump = () => {
-        while (active < 2 && queue.length) {
+        while (active < perf.thumbnailWorkers && queue.length) {
           const c = queue.shift()!
           active++
           void makeStrip(c).finally(() => { active--; pump() })
@@ -690,7 +710,7 @@ function App() {
       pump()
     }, 400)
     return () => clearTimeout(handle)
-  }, [clips, mediaBin, pxPerSec])
+  }, [clips, mediaBin, pxPerSec, perf.thumbnailWorkers])
 
   // ---- media import ----
   const importFiles = useCallback(async (files: File[]): Promise<MediaFile[]> => {
@@ -747,7 +767,7 @@ function App() {
       const plan = planProxy({ ...info, hasVideo: true })
       if (!plan.needed) continue
       setMediaBin(prev => prev.map(x => x.id === m.id ? { ...x, proxyPct: 0, proxyNote: plan.reason } : x))
-      const r = await window.ipcRenderer.makeProxy({ filePath: m.path, info: { ...info, hasVideo: true } })
+      const r = await window.ipcRenderer.makeProxy({ filePath: m.path, info: { ...info, hasVideo: true }, maxWidth: perf.proxyMaxWidth, maxFps: perf.proxyMaxFps })
       if (r.path) {
         setMediaBin(prev => prev.map(x => x.id === m.id ? { ...x, proxyPath: r.path, proxyPct: undefined } : x))
         if (!r.cached) notify(`${m.name}: ${plan.reason}, so VidHelm made a preview copy. Your export still uses the original file.`, 9000)
@@ -756,7 +776,7 @@ function App() {
         notify(`${m.name}: ${plan.reason}, and the preview copy could not be made (${r.error || 'unknown error'}). Editing still works, the preview will stay blank.`, 11000)
       }
     }
-  }, [])
+  }, [perf.proxyMaxWidth, perf.proxyMaxFps])
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files) await importFiles(Array.from(e.target.files))
@@ -901,6 +921,17 @@ function App() {
           texts: texts.map(t => ({ id: t.id, text: t.text, start: +t.start.toFixed(3), duration: +t.duration.toFixed(3), x: t.x, y: t.y, fontSize: t.fontSize, color: t.color })),
           tags: [...markers].sort((a, b) => a.t - b.t).map(m => ({ id: m.id, t: +m.t.toFixed(3), label: m.label })),
           startRecipe: { instructions: settings.recipe.text, active: Object.entries(recipeActive(settings.recipe.text)).filter(([, v]) => v).map(([k]) => k), introAudioPath: settings.recipe.introAudioPath, note: "The user's standing workflow (like start G-code). # lines are OFF. Lines like 'titles 5' are for YOU to do in chat." },
+          // so you can see what the heavy jobs will default to before you ask for them
+          machine: {
+            tier: perf.tier,
+            chose: settings.performance?.preference === 'auto' || !settings.performance?.preference ? 'detected' : 'set by the user',
+            cpu: machine?.cpu,
+            summary: describeProfile(perf, machine?.detected, settings.performance?.preference),
+            speechModel: perf.speechModel, framingFps: perf.framingFps,
+            note: perf.tier === 'low'
+              ? 'This machine is on the lighter defaults. Speech is read with the quick model, so double-check anything that hangs on an exact word. The user can raise it in Settings.'
+              : undefined,
+          },
         }
       case 'add_media': {
         const ext = extOf(cmd.path || '')
@@ -1054,7 +1085,7 @@ function App() {
         // Node normalises it on Windows and it survives JSON round-trips without escaping.
         const folder = cmd.folder || (currentProject ? `${currentProject.dir}/broll` : null)
         if (!folder) return { error: 'pass folder, or open a project first' }
-        const r = await window.ipcRenderer.scanBroll({ folder, refresh: !!cmd.refresh })
+        const r = await window.ipcRenderer.scanBroll({ folder, refresh: !!cmd.refresh, tiles: perf.sheetTiles })
         if (r.error && !r.assets?.length) return { error: r.error }
         const assets = (r.assets || []).filter((a: any) => !a.error)
         brollRef.current = { folder, assets: assets as BrollAsset[] }
@@ -1205,8 +1236,24 @@ function App() {
             : []
         return await window.ipcRenderer.planFraming({
           filePath: v.path, sourceStart: cmd.sourceStart, duration: cmd.duration,
-          fps: cmd.fps, hints, aspect: cmd.aspect,
+          fps: cmd.fps ?? perf.framingFps, hints, aspect: cmd.aspect,
         })
+      }
+      case 'set_recipe': {
+        // The Start Recipe is settings, and settings are owned by the running app: it loads them
+        // at startup and writes the whole file back whenever they change. Editing that file from
+        // outside looks like it worked and is then silently overwritten the next time the app
+        // saves, which is exactly how a carefully written workflow went missing. So changes come
+        // through here, and get persisted by the same path the GUI uses.
+        const cur = settings.recipe.text || ''
+        const mode = cmd.mode || 'append'
+        if (!cmd.text && mode !== 'show') return { error: 'text required (or mode: "show")' }
+        if (mode === 'show') return { ok: true, text: cur, lines: cur.split('\n').length }
+        const next = mode === 'replace' ? String(cmd.text)
+          : mode === 'prepend' ? `${cmd.text}\n${cur}`
+          : `${cur}\n${cmd.text}`
+        setSettings(s => ({ ...s, recipe: { ...s.recipe, text: next } }))
+        return { ok: true, mode, lines: next.split('\n').length, note: 'saved into settings the same way the GUI does, so it survives a restart' }
       }
       case 'run_recipe': { await runRecipe(); return { ok: true } }
       case 'sample_frames': {
@@ -1588,7 +1635,7 @@ function App() {
    * changes, because it is the slow part.
    */
   const readSpeech = async (model?: string, force?: boolean): Promise<{ error?: string; words?: SpeechWord[]; sentences?: Span[] }> => {
-    const want = model || 'small'
+    const want = model || perf.speechModel
     if (!force && speechRef.current && speechRef.current.model === want && speechRef.current.at === stateKey()) {
       return { words: speechRef.current.words, sentences: speechRef.current.sentences }
     }
@@ -2563,6 +2610,38 @@ function App() {
                 <p className="hint">The “Captions” button transcribes the whole timeline on-device (Whisper). Non-English languages use a larger multilingual model (bigger first download).</p>
               </section>
 
+              <section>
+                <h3>Performance</h3>
+                <p className="hint">
+                  VidHelm's analysis is deliberately thorough: reading speech word by word, decoding a whole clip to
+                  plan a vertical crop. On a strong machine that is the right trade. On a thin laptop it is the
+                  difference between slow and unusable, so the defaults come from your hardware.
+                </p>
+                <div className="grid2">
+                  <label>Effort
+                    <select value={settings.performance?.preference || 'auto'}
+                      onChange={e => setSettings(s => ({ ...s, performance: { preference: e.target.value as TierPreference } }))}>
+                      <option value="auto">Automatic{machine?.detected ? ` (detected: ${{ low: 'lighter', balanced: 'balanced', best: 'most accurate' }[machine.detected]})` : ''}</option>
+                      <option value="low">Lighter, quicker</option>
+                      <option value="balanced">Balanced</option>
+                      <option value="best">Most accurate, slowest</option>
+                    </select>
+                  </label>
+                  <label>In force now
+                    <input readOnly value={`speech ${perf.speechModel} · framing ${perf.framingFps}fps · ${perf.thumbnailWorkers} job${perf.thumbnailWorkers === 1 ? '' : 's'} · ${perf.exportPreset}`} />
+                  </label>
+                </div>
+                <p className="hint">{perf.note}</p>
+                {machine?.specs && (
+                  <p className="hint">
+                    Detected: {machine.cpu || 'this machine'} · {machine.specs.cores} logical core{machine.specs.cores === 1 ? '' : 's'} ·{' '}
+                    {machine.specs.memGB} GB memory · {machine.specs.hwEncoder ? 'hardware encoder' : 'software encoding'} ·{' '}
+                    processor benchmark {Math.round(machine.specs.benchMs)}ms.
+                    {machine.reasons?.length ? ` Because: ${machine.reasons.join(', ')}.` : ''}
+                  </p>
+                )}
+                {!machine && <p className="hint">Measuring this machine…</p>}
+              </section>
               <section>
                 <h3>Cut Dead Space</h3>
                 <div className="grid2">

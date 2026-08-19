@@ -4,7 +4,7 @@ VidHelm is a desktop video editor (Electron + React) designed to be driven colla
 
 ## Steering the running app (the good part)
 
-This repo ships an MCP server (`.mcp.json`: auto-discovered here; approve it when prompted). While the app is running (`npm run dev` or the installed app), you have 35 tools to drive it live: `get_state`, `screenshot`, `add_media`, `add_clip`, `update_clip`, `split_clip`, `delete_item`, `add_text`, `update_text`, `add_tag`, `update_tag`, `list_sfx`, `place_sfx`, `set_booth_script`, `render_3d`, `prepare_analysis`, `open_project`, `transport`, `set_format`, `export_video`, `cut_pauses`, `find_repeats`, `apply_takes`, `run_recipe`, `sample_frames`, `compose_thumbnail`, `open_panel`, plus b-roll (`scan_broll`, `label_broll`, `plan_broll`, `place_broll`) and precise speech (`analyze_speech`, `find_phrase`, `cut_at_phrase`, `plan_framing`).
+This repo ships an MCP server (`.mcp.json`: auto-discovered here; approve it when prompted). While the app is running (`npm run dev` or the installed app), you have 36 tools to drive it live: `get_state`, `screenshot`, `add_media`, `add_clip`, `update_clip`, `split_clip`, `delete_item`, `add_text`, `update_text`, `add_tag`, `update_tag`, `list_sfx`, `place_sfx`, `set_booth_script`, `render_3d`, `prepare_analysis`, `open_project`, `transport`, `set_format`, `export_video`, `cut_pauses`, `find_repeats`, `apply_takes`, `run_recipe`, `sample_frames`, `compose_thumbnail`, `open_panel`, plus b-roll (`scan_broll`, `label_broll`, `plan_broll`, `place_broll`), precise speech (`analyze_speech`, `find_phrase`, `cut_at_phrase`, `plan_framing`), and `set_recipe`.
 
 Working style that works well:
 1. `get_state` first, it returns the whole timeline (clips per track, texts, tag points, format).
@@ -37,6 +37,8 @@ Panels for `open_panel`: booth, narration, sfx, media, settings, thumbnail, conn
 
 ## Conventions
 
+- **Settings are owned by the running app.** It loads `vidhelm-settings.json` at startup and writes the whole file back whenever anything changes, so editing that file from outside while the app can run looks like it worked and is silently overwritten. Change the Start Recipe with `set_recipe`, not with a text editor. (This is how a carefully written workflow went missing twice.)
+- The machine's tier (`electron/capability.ts`) decides the heavy defaults: Whisper model, framing sample rate, thumbnail concurrency, proxy size, export preset. The renderer resolves it once and passes the values to main, so Settings can override detection.
 - Windows-first (3 known portability points listed in docs/ARCHITECTURE.md)
 - All state lives in App.tsx React state; the export filtergraph in main.ts mirrors the preview math, if you change fades/volume behavior, change both
 - FFmpeg binaries come from `ffmpeg-static` in node_modules; never assume a system install

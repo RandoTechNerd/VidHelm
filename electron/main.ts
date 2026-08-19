@@ -4,6 +4,7 @@ import { findModelInHtml } from './modelSniff'
 import { planProxy, proxyFilter, proxyKey, HDR_TO_SDR, type ProbeInfo } from './playable'
 import { refineFromEnvelope } from './speech'
 import { planCrop, cropExpr, type Frame as GrayFrame } from './framing'
+import { classify, profileFor, benchmark, type MachineSpecs } from './capability'
 import path from 'node:path'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -446,7 +447,7 @@ const STILL_RE = /\.(png|jpg|jpeg|jfif|webp|bmp|tif|tiff|avif)$/i
  * usable, and a contact sheet to look at. Labels already written for a file are handed back so
  * a re-scan does not lose them, and `needsLabels` says which ones still have to be looked at.
  */
-ipcMain.handle('scan-broll', async (_event, { folder, refresh }: { folder: string; refresh?: boolean }) => {
+ipcMain.handle('scan-broll', async (_event, { folder, refresh, tiles }: { folder: string; refresh?: boolean; tiles?: number }) => {
   if (!folder || !fs.existsSync(folder)) return { error: 'folder not found' }
   let names: string[] = []
   try { names = fs.readdirSync(folder) } catch (e: any) { return { error: String(e?.message || e) } }
@@ -476,7 +477,7 @@ ipcMain.handle('scan-broll', async (_event, { folder, refresh }: { folder: strin
 
     const saved = side[name] || {}
     const sheet = path.join(sheetDir, `${name.replace(/[^\w.-]/g, '_')}.jpg`)
-    if (!still && (refresh || !fs.existsSync(sheet))) await contactSheet(full, meta.duration, sheet)
+    if (!still && (refresh || !fs.existsSync(sheet))) await contactSheet(full, meta.duration, sheet, tiles === 4 ? 2 : 3, 2)
 
     let best: { start: number; end: number } | null = null
     if (!still && (refresh || saved.bestStart == null)) {
@@ -555,9 +556,11 @@ ipcMain.handle('refine-cut', async (_event, { filePath, t, dir = 'after', window
  * Where a 9:16 crop should point, measured from the footage itself. Slow on purpose: it decodes
  * the whole clip at 4fps rather than guessing from a handful of stills.
  */
-ipcMain.handle('plan-framing', async (_event, { filePath, sourceStart = 0, duration, fps = 4, hints, aspect = 9 / 16 }: any) => {
+ipcMain.handle('plan-framing', async (_event, { filePath, sourceStart = 0, duration, fps, hints, aspect = 9 / 16 }: any) => {
+  // the renderer passes the tier's rate; 3 is the balanced default if it did not
+  const sampleFps = Math.max(1, Math.min(10, Number(fps) || 3))
   if (!filePath || !fs.existsSync(filePath)) return { error: 'no file' }
-  const frames = await decodeGrayFrames(filePath, { start: sourceStart, duration, fps, w: 64, h: 36 })
+  const frames = await decodeGrayFrames(filePath, { start: sourceStart, duration, fps: sampleFps, w: 64, h: 36 })
   if (!frames.length) return { error: 'could not decode frames' }
   const meta: any = await new Promise(res => ffmpeg.ffprobe(filePath, (e, d) => {
     const v = d?.streams?.find((s: any) => s.codec_type === 'video')
@@ -796,6 +799,36 @@ const pickEncoder = async (): Promise<{ video: string; hwDecode: boolean }> => {
   return encoderCache
 }
 
+/**
+ * What this machine can comfortably do. Measured once per run (the benchmark is ~0.4s), then
+ * cached, because the renderer asks for it on every startup and nothing about it changes while
+ * the app is open.
+ *
+ * The renderer owns the resolved profile and passes the parts main needs (proxy size, framing
+ * fps, export preset) with each call, so there is one source of truth for what tier is in force
+ * and the user's override in Settings always wins.
+ */
+let machineSpecs: MachineSpecs | null = null
+ipcMain.handle('machine-profile', async (_event, { refresh }: { refresh?: boolean } = {}) => {
+  if (!machineSpecs || refresh) {
+    const enc = await pickEncoder()
+    machineSpecs = {
+      cores: os.cpus().length,
+      memGB: os.totalmem() / (1024 ** 3),
+      hwEncoder: enc.video !== 'libx264',
+      benchMs: benchmark(),
+    }
+  }
+  const { tier, reasons } = classify(machineSpecs)
+  return {
+    specs: { ...machineSpecs, memGB: +machineSpecs.memGB.toFixed(1) },
+    cpu: (os.cpus()[0]?.model || '').trim(),
+    detected: tier,
+    reasons,
+    profile: profileFor(tier),
+  }
+})
+
 const proxyDir = () => {
   const dir = path.join(app.getPath('userData'), 'proxies')
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
@@ -807,10 +840,10 @@ const proxyDir = () => {
  * The original file stays the master, exports still read from it, this is only what you watch
  * while editing. Progress goes back to the renderer so the Media Bin can show it.
  */
-ipcMain.handle('make-proxy', async (event, { filePath, info }: { filePath: string; info: ProbeInfo }) => {
+ipcMain.handle('make-proxy', async (event, { filePath, info, maxWidth, maxFps }: { filePath: string; info: ProbeInfo; maxWidth?: number; maxFps?: number }) => {
   try {
     if (!filePath || !fs.existsSync(filePath)) return { error: 'file not found' }
-    const plan = planProxy(info || {})
+    const plan = planProxy(info || {}, { maxWidth, maxFps })
     if (!plan.needed) return { ok: true, skipped: true }
     const stat = fs.statSync(filePath)
     const outPath = path.join(proxyDir(), proxyKey(filePath, stat.size, stat.mtimeMs))

@@ -1,7 +1,7 @@
 {
   "name": "vidhelm",
   "private": true,
-  "version": "1.7.0",
+  "version": "1.7.1",
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "vite",
@@ -17,7 +17,8 @@
     "test:speech": "node scripts/speech.test.mjs",
     "test:framing": "node scripts/framing.test.mjs",
     "test:broll": "node scripts/broll.test.mjs",
-    "test": "npm run typecheck && npm run test:takes && npm run test:playable && npm run test:speech && npm run test:framing && npm run test:broll && npm run selftest"
+    "test:capability": "node scripts/capability.test.mjs",
+    "test": "npm run typecheck && npm run test:takes && npm run test:playable && npm run test:speech && npm run test:framing && npm run test:broll && npm run test:capability && npm run selftest"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",

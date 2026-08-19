@@ -82,6 +82,9 @@ Derive final chapter timestamps from `get_state` after the edit is cut, not from
 
 ## Gotchas
 
+- **Never edit `vidhelm-settings.json` yourself.** The running app owns it and rewrites it from memory on every change, so an outside edit disappears the next time anything saves. Use `set_recipe` to change the user's Start Recipe; it persists through the same path the GUI uses.
+- `get_state.machine` tells you what the hardware was measured as and which defaults are in force. On a `low` tier the speech model is the quick one, so be more careful about anything hanging on an exact word, and say so.
+
 - Times are seconds; text x/y are 0-1 of the frame.
 - `export_video`, `cut_pauses`, `scan_broll`, `plan_broll` and `plan_framing` are long-running: don't parallelize other edits during them.
 - B-roll on `v2` never contributes audio, by design. Natural sound from a cutaway has to go on `a1`/`a2` as its own clip.
