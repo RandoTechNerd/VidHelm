@@ -29,6 +29,22 @@ When you save a sound that needs crediting, the credit line is written into `CRE
 
 Internet Archive was tested and deliberately left out: relevance was poor and most items came back with `licenseurl: null`.
 
+## Favourites
+
+Every sound in the list has a star. Starred sounds sort to the top and stay there, so the handful you actually use stop being buried under thirty you do not. It is stored with your settings, not with the project.
+
+## Describing one (the ✨ AI button)
+
+Type what you want. If it is something the app can model, it says what it is about to make, fills in a name you can edit, and builds it: no generator to install, no command line.
+
+    "coffee beans into a glass jar, lots of them"  ->  coffee beans, into a glass jar, a lot of it
+    "sci-fi door closing"                          ->  electronic door closing
+    "jet zooming past"                             ->  engine flying past
+
+Words like *lots*, *gentle*, *long*, *short* or a number of seconds shape it, and 🎲 rolls another take of the same sound. If the description is not something that can be modelled ("a dog barking"), it says so and points at the 🔎 Find button rather than pretending.
+
+The external text-to-audio generator is still there, moved under "Use an external AI generator instead". It used to be the only option, which meant installing a model and pasting a command line before the feature did anything at all.
+
 ## Making one (`make_sfx`, or the built-in list)
 
 The older built-ins (pop, boing, whoosh, ding) are ffmpeg expressions: one closed-form formula per sample. That is a fine way to make a beep and a hopeless way to make coffee beans hitting a hopper, because that sound is a couple of hundred separate impacts all exciting the same resonant container. You cannot write that as a formula, you have to run the events.
@@ -39,7 +55,7 @@ So `electron/sfxsynth.ts` renders actual samples, and `electron/sfxrecipes.ts` c
 |---|---|
 | `coffee-beans` (+`-plastic`, `-glass`) | A stream of impacts at Poisson-random intervals, a density envelope with stragglers at the end, pile-up as beans start landing on beans, and one shared container resonance |
 | `door-electronic` (+`-close`) | Four beats: latch click, pneumatic release whose noise band falls as pressure drops, servo whine, panel seating |
-| `podracer-start` | Ignition, two failed catches with sputter dropouts, then the shaft spooling up |
+| `podracer-start` | Individual combustion events at a rate that climbs until they fuse into a note: burble, then a deep bass growl powering up |
 | `podracer-pass` | The engine flown past the listener with real Doppler |
 
 Every recipe takes a **seed**, so the same seed is the same take and a different seed is another take of the same idea. `intensity` changes how much of the thing there is (more beans, a bigger door).
@@ -72,6 +88,7 @@ That is also how the tuning got done. Three examples of measurement changing the
 
 - **420 beans/second was a flat "shhhh".** The impacts overlapped fourteen deep. At 150/s individual beans start poking through, which is also roughly what a scoop really is.
 - **The air rush was laid over the top of the pass-by**, so it kept its level while the engine fell away with distance, and the racer ended up *brighter* leaving than passing (measured 754Hz against 1466Hz). It is now part of the source and gets flown past with everything else.
+- **The start and the fly-past want opposite things.** A racer on the line is all chest, and the scream only arrives once it is moving, so the start is modelled an octave down with 83% of its energy under 320Hz while the pass-by keeps the turbine partials.
 - **The podracer sat under 200Hz and rumbled like a tractor.** Turbines scream, so the model gained two high partials of the shaft speed and a filter that opens far enough to let them out.
 
 `node scripts/sfxlab.mjs [outDir]` renders every recipe to WAV and prints the measurements, which is the loop to use when tuning.

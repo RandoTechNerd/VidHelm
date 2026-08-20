@@ -4,7 +4,7 @@ import { useState, useRef, useEffect } from 'react'
 import { InfoNote } from './help'
 
 export interface Marker { id: string; t: number; label: string; color: string }
-export interface SfxItem { name: string; path: string; duration: number; builtin: boolean }
+export interface SfxItem { name: string; path: string; duration: number; builtin: boolean; about?: string }
 
 const rid = () => Math.random().toString(36).substr(2, 9)
 export const MARKER_COLORS = ['#f472b6', '#60a5fa', '#4ade80', '#facc15', '#c084fc', '#fb923c']
@@ -16,10 +16,11 @@ const fileUrl = (p?: string | null) => p
 const fmtT = (s: number) => `${Math.floor(s / 60)}:${(Math.floor(s % 60)).toString().padStart(2, '0')}.${Math.floor((s % 1) * 10)}`
 
 // ---------------- SFX library panel ----------------
-export function SfxPanel({ onPlace, genCommand, onGenCommand, freesoundToken, onFreesoundToken }: {
+export function SfxPanel({ onPlace, genCommand, onGenCommand, freesoundToken, onFreesoundToken, favorites, onToggleFavorite }: {
   onPlace: (item: SfxItem) => void
   genCommand: string; onGenCommand: (c: string) => void
   freesoundToken?: string; onFreesoundToken?: (t: string) => void
+  favorites?: string[]; onToggleFavorite?: (name: string) => void
 }) {
   const [items, setItems] = useState<SfxItem[]>([])
   const [err, setErr] = useState<string | null>(null)
@@ -44,6 +45,10 @@ export function SfxPanel({ onPlace, genCommand, onGenCommand, freesoundToken, on
   const [findNotes, setFindNotes] = useState<string[]>([])
   const [gettingId, setGettingId] = useState<string | null>(null)
   const [tokenEdit, setTokenEdit] = useState(false)
+  // describing a sound and having it built, with no generator to install
+  const [plan, setPlan] = useState<any | null>(null)
+  const [genName, setGenName] = useState('')
+  const planSeq = useRef(0)
 
   useEffect(() => () => {
     const r = recRef.current
@@ -112,6 +117,30 @@ export function SfxPanel({ onPlace, genCommand, onGenCommand, freesoundToken, on
     setGenBusy(false)
   }
 
+  /** Ask what the description would produce, so the user sees it before committing. */
+  const planFor = async (text: string) => {
+    const seq = ++planSeq.current
+    if (!text.trim()) { setPlan(null); setGenName(''); return }
+    const r = await window.ipcRenderer.sfxPlan({ text })
+    if (seq !== planSeq.current) return          // a later keystroke already won
+    setPlan(r)
+    if (r?.canMake) setGenName(prev => prev.trim() ? prev : r.name)
+  }
+
+  const makeIt = async (reroll = false) => {
+    if (!plan?.canMake) return
+    setGenBusy(true); setGenStatus('')
+    const seed = reroll ? Math.floor(Math.random() * 1e6) : plan.options?.seed
+    const r = await window.ipcRenderer.sfxRender({
+      recipe: plan.recipe, ...plan.options, seed,
+      name: genName.trim() || plan.name,
+    })
+    setGenBusy(false)
+    if (r.error) { setGenStatus(r.error); return }
+    setGenStatus(`Added "${r.name}" (${r.seconds}s). Roll the dice for a different take.`)
+    load()
+  }
+
   const runSearch = async () => {
     if (!findQ.trim()) return
     setFindBusy(true); setHits([]); setFindNotes([])
@@ -144,6 +173,11 @@ export function SfxPanel({ onPlace, genCommand, onGenCommand, freesoundToken, on
   const load = () => window.ipcRenderer.sfxLibrary()
     .then(r => setItems(r.items || []))
     .catch(e => setErr(String(e)))
+
+  // Starred sounds float to the top, and keep their order among themselves. Everything else
+  // stays exactly where it was, so the list does not reshuffle itself under your cursor.
+  const favSet = new Set(favorites || [])
+  const shown = [...items].sort((a, b) => (favSet.has(b.name) ? 1 : 0) - (favSet.has(a.name) ? 1 : 0))
   useEffect(() => { load() }, [])
 
   const audition = (item: SfxItem) => {
@@ -160,10 +194,13 @@ export function SfxPanel({ onPlace, genCommand, onGenCommand, freesoundToken, on
       {err && <div className="empty-hint">{err}</div>}
       {!err && items.length === 0 && <div className="empty-hint">Generating sound library…</div>}
       <div className="sfx-list">
-        {items.map(item => (
-          <div key={item.path} className={`sfx-item ${playing === item.path ? 'playing' : ''}`}>
+        {shown.map(item => (
+          <div key={item.path} className={`sfx-item ${playing === item.path ? 'playing' : ''} ${favSet.has(item.name) ? 'fav' : ''}`}>
             <button className="sfx-play" title="Audition" onClick={() => audition(item)}>{playing === item.path ? '◼' : '▶'}</button>
-            <span className="sfx-name" title={item.builtin ? 'Built-in (synthesized)' : 'Custom sound'}>{item.name}</span>
+            <button className={`sfx-star ${favSet.has(item.name) ? 'on' : ''}`}
+              title={favSet.has(item.name) ? 'Remove from favourites' : 'Favourite, keeps it at the top of the list'}
+              onClick={() => onToggleFavorite?.(item.name)}>{favSet.has(item.name) ? '★' : '☆'}</button>
+            <span className="sfx-name" title={item.about || (item.builtin ? 'Built-in (synthesized)' : 'Custom sound')}>{item.name}</span>
             <span className="sfx-dur">{item.duration.toFixed(1)}s</span>
             <button className="sfx-add" title="Place on the SFX track at the playhead" onClick={() => onPlace(item)}>+</button>
           </div>
@@ -205,18 +242,46 @@ export function SfxPanel({ onPlace, genCommand, onGenCommand, freesoundToken, on
         </div>}
       </div>}
       {genOpen && <div className="sfx-gen">
-        <input className="duration-input" style={{ width: '100%' }} placeholder='describe a sound… e.g. "cartoon spring boing, short"' value={genPrompt}
-          onChange={e => setGenPrompt(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') generate() }} />
-        {!genCommand && <>
-          <p className="hint">One-time setup: a text-to-audio command with <b>{'{prompt}'}</b> and <b>{'{out}'}</b>. Free local option: <b>audio.cpp</b> (prebuilt exe + stable_audio model), see docs/VOICE_CLONE.md.</p>
+        <input className="duration-input" style={{ width: '100%' }} placeholder='describe a sound… e.g. "coffee beans into a glass jar", "sci-fi door closing"'
+          value={genPrompt} onChange={e => { setGenPrompt(e.target.value); void planFor(e.target.value) }}
+          onKeyDown={e => { if (e.key === 'Enter' && plan?.canMake) makeIt() }} />
+
+        {plan?.canMake && <div className="sfx-plan">
+          <p className="hint" style={{ margin: '2px 0 6px' }}>Making: <b>{plan.summary}</b></p>
+          <div className="vc-row" style={{ marginTop: 0 }}>
+            <input className="duration-input" style={{ flex: 1 }} value={genName}
+              title="What it will be called in your library, change it to anything you like"
+              onChange={e => setGenName(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') makeIt() }} />
+            <button className="primary" disabled={genBusy} onClick={() => makeIt()}>{genBusy ? 'Making…' : 'Make it'}</button>
+            <button disabled={genBusy} title="Another take of the same sound" onClick={() => makeIt(true)}>🎲</button>
+          </div>
+        </div>}
+
+        {genPrompt.trim() && plan && !plan.canMake && (
+          <p className="hint">
+            That one is not modelled here. Try the 🔎 Find button to search the free libraries, or set up a
+            text-to-audio generator below.
+          </p>
+        )}
+        {!genPrompt.trim() && (
+          <p className="hint">
+            Type what you want and it is built from a physical model, with no setup: beans into a metal, plastic or
+            glass container; a sci-fi door opening or closing; an engine starting; something flying past.
+            Say <i>lots</i>, <i>gentle</i>, <i>long</i>, <i>short</i> or a number of seconds to shape it.
+          </p>
+        )}
+
+        <details className="sfx-advanced">
+          <summary>Use an external AI generator instead</summary>
+          <p className="hint">For sounds that are not modelled. Needs a local text-to-audio command with <b>{'{prompt}'}</b> and <b>{'{out}'}</b>: free option is <b>audio.cpp</b> (prebuilt exe + stable_audio model), see docs/VOICE_CLONE.md.</p>
           <input className="duration-input" style={{ width: '100%' }} placeholder='e.g. "C:\audiocpp\audiocpp_cli.exe" --task gen --family stable_audio --model "C:\models\stable-audio" --text "{prompt}" --out "{out}"'
             value={genCommand} onChange={e => onGenCommand(e.target.value)} />
-        </>}
-        <div className="vc-row">
-          <button className="primary" disabled={genBusy || !genPrompt.trim() || !genCommand.trim()} onClick={generate}>{genBusy ? 'Generating…' : 'Generate'}</button>
-          {genCommand && <button title="Change the generator command" onClick={() => onGenCommand('')}>⚙</button>}
-          {genStatus && <span className="hint" style={{ margin: 0 }}>{genStatus}</span>}
-        </div>
+          <div className="vc-row">
+            <button disabled={genBusy || !genPrompt.trim() || !genCommand.trim()} onClick={generate}>{genBusy ? 'Generating…' : 'Generate with it'}</button>
+          </div>
+        </details>
+
+        {genStatus && <p className="hint">{genStatus}</p>}
       </div>}
       {(recording || pending) && (
         <div className="sfx-rec">

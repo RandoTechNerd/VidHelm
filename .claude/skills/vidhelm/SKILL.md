@@ -83,7 +83,7 @@ Derive final chapter timestamps from `get_state` after the edit is cut, not from
 ## Sound effects
 
 - `search_sfx {query}` searches the free libraries and returns each hit's LICENCE. Wikimedia Commons always works; Freesound needs the user's free token in Settings and is the one worth having. Non-commercial and unlicensed results are hidden by default because they are not safe on a monetised channel. `download_sfx {index}` saves one and writes any required credit into CREDITS.txt: tell the user when a sound needs crediting, because it has to go in the description.
-- `make_sfx {recipe, seed}` synthesizes one instead: coffee beans into a metal, plastic or glass container, a sci-fi door opening or closing, a podracer starting, and one flying past with real Doppler. Change the seed for another take of the same sound. Call it with no recipe to list them. See docs/SFX.md.
+- The ✨ AI button turns a plain description into one of the models with no setup, so tell the user to just type what they want. `make_sfx {recipe, seed}` is the same thing from your side: coffee beans into a metal, plastic or glass container, a sci-fi door opening or closing, a podracer starting, and one flying past with real Doppler. Change the seed for another take of the same sound. Call it with no recipe to list them. See docs/SFX.md.
 
 ## Gotchas
 

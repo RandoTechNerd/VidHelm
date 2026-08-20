@@ -5,9 +5,10 @@ import { planProxy, proxyFilter, proxyKey, HDR_TO_SDR, type ProbeInfo } from './
 import { refineFromEnvelope } from './speech'
 import { planCrop, cropExpr, type Frame as GrayFrame } from './framing'
 import { classify, profileFor, benchmark, type MachineSpecs } from './capability'
-import { REALISTIC_RECIPES } from './sfxrecipes'
+import { REALISTIC_RECIPES, REALISTIC_REV } from './sfxrecipes'
 import { toWav } from './sfxsynth'
 import { freesoundUrl, commonsUrl, parseFreesound, parseCommons, collate, attributionLine, safeFilename, classifyLicense } from './sfxsearch'
+import { matchRecipe, nameToFilename, MIN_CONFIDENCE } from './sfxmatch'
 import path from 'node:path'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -1535,20 +1536,26 @@ const SFX_RECIPES: Record<string, { d: number; graph: string }> = {
 // electron/sfxrecipes.ts renders those as actual samples. See docs/SFX.md.
 
 /** Render one of the modelled effects straight to a WAV. */
-ipcMain.handle('sfx-render', async (_event, { recipe, seed, intensity, duration, outPath }: { recipe: string; seed?: number; intensity?: number; duration?: number; outPath?: string }) => {
+ipcMain.handle('sfx-render', async (_event, { recipe, seed, intensity, duration, outPath, name }: { recipe: string; seed?: number; intensity?: number; duration?: number; outPath?: string; name?: string }) => {
   const entry = REALISTIC_RECIPES[recipe]
   if (!entry) return { error: `no such sound: ${recipe}`, available: Object.keys(REALISTIC_RECIPES) }
   try {
     const stereo = entry.render({ sampleRate: 48000, seed, intensity, duration })
     const dir = path.join(sfxDir(), 'custom')
     fs.mkdirSync(dir, { recursive: true })
-    const name = seed === undefined ? `${recipe}.wav` : `${recipe}-${seed}.wav`
-    const out = outPath || path.join(dir, name)
+    // the user's own wording if they gave one, so the library reads like their library
+    const file = name ? nameToFilename(name) : (seed === undefined ? `${recipe}.wav` : `${recipe}-${seed}.wav`)
+    const out = outPath || path.join(dir, file)
     fs.writeFileSync(out, Buffer.from(toWav(stereo)))
-    return { ok: true, path: out, seconds: +(stereo.left.length / stereo.sampleRate).toFixed(2), about: entry.about }
+    return { ok: true, path: out, name: path.basename(out).replace(/\.wav$/, ''), seconds: +(stereo.left.length / stereo.sampleRate).toFixed(2), about: entry.about }
   } catch (e: any) {
     return { error: String(e?.message || e) }
   }
+})
+
+ipcMain.handle('sfx-plan', async (_event, { text, seed }: { text: string; seed?: number }) => {
+  const m = matchRecipe(text || '', { seed })
+  return { ...m, canMake: !!m.recipe && m.confidence >= MIN_CONFIDENCE }
 })
 
 ipcMain.handle('sfx-recipes', async () => ({
@@ -1671,11 +1678,21 @@ ipcMain.handle('sfx-library', async () => {
     try { items.push({ name, path: await genSfx(name, recipe), duration: recipe.d, builtin: true }) }
     catch (e) { console.error(e) }
   }
-  // the modelled ones, rendered by electron/sfxrecipes.ts rather than by an ffmpeg expression
+  // the modelled ones, rendered by electron/sfxrecipes.ts rather than by an ffmpeg expression.
+  // The revision is part of the file name, so improving a model actually reaches people who have
+  // already generated the old one.
   for (const [name, r] of Object.entries(REALISTIC_RECIPES)) {
     try {
-      const out = path.join(dir, `${name}.wav`)
-      if (!fs.existsSync(out)) fs.writeFileSync(out, Buffer.from(toWav(r.render({ sampleRate: 48000 }))))
+      const out = path.join(dir, `${name}.v${REALISTIC_REV}.wav`)
+      if (!fs.existsSync(out)) {
+        fs.writeFileSync(out, Buffer.from(toWav(r.render({ sampleRate: 48000 }))))
+        // drop any earlier revision of this sound
+        for (const f of fs.readdirSync(dir)) {
+          if (f.startsWith(`${name}.v`) && f !== path.basename(out)) {
+            try { fs.unlinkSync(path.join(dir, f)) } catch { /* it is a cache, never fatal */ }
+          }
+        }
+      }
       items.push({ name, path: out, duration: r.seconds, builtin: true, about: r.about })
     } catch (e) { console.error(e) }
   }

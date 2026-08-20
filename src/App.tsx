@@ -48,7 +48,7 @@ interface AppSettings {
   caption: { fontSize: number; color: string; position: 'lower' | 'top' | 'center'; box: boolean; boxOpacity: number; model: 'tiny' | 'base' | 'small'; language: string; mode: 'phrase' | 'word' }
   silence: { minPause: number; thresholdDb: number; pad: number; smooth: boolean; transition: number; detectBy: 'auto' | 'audio' | 'motion'; freezeDb: number }
   narration: { command: string }
-  sfxGen: { command: string; freesoundToken?: string }
+  sfxGen: { command: string; freesoundToken?: string; favorites?: string[] }
   workspace: { root: string | null; autoLoad: boolean }
   /** how hard to work this machine. 'auto' follows what was detected at startup. */
   performance: { preference: TierPreference }
@@ -2189,7 +2189,14 @@ function App() {
               <button className={`tab ${sidebarTab === 'sfx' ? 'active' : ''}`} onClick={() => setSidebarTab('sfx')} title="Sound effects, audition and drop on the SFX track">SFX</button>
               {sidebarTab === 'media' && <label className="add-btn" title="Add video, audio or images, or a 3D model (STL / 3MF / OBJ / GLB)"><IconPlus /><input type="file" accept={ACCEPT_ATTR} multiple onChange={handleFileUpload} hidden /></label>}
             </div>
-            {sidebarTab === 'sfx' && <SfxPanel onPlace={placeSfx} genCommand={settings.sfxGen.command} onGenCommand={c => setSettings(s => ({ ...s, sfxGen: { ...s.sfxGen, command: c } }))} freesoundToken={settings.sfxGen.freesoundToken} onFreesoundToken={t => setSettings(s => ({ ...s, sfxGen: { ...s.sfxGen, freesoundToken: t } }))} />}
+            {sidebarTab === 'sfx' && <SfxPanel onPlace={placeSfx}
+              genCommand={settings.sfxGen.command} onGenCommand={c => setSettings(s => ({ ...s, sfxGen: { ...s.sfxGen, command: c } }))}
+              freesoundToken={settings.sfxGen.freesoundToken} onFreesoundToken={t => setSettings(s => ({ ...s, sfxGen: { ...s.sfxGen, freesoundToken: t } }))}
+              favorites={settings.sfxGen.favorites}
+              onToggleFavorite={name => setSettings(s => {
+                const cur = s.sfxGen.favorites || []
+                return { ...s, sfxGen: { ...s.sfxGen, favorites: cur.includes(name) ? cur.filter(x => x !== name) : [...cur, name] } }
+              })} />}
             {sidebarTab === 'media' && settings.workspace.root && (
               <div className="proj-bar">
                 <select value={currentProject?.dir || ''} title="Each sub-folder of your project folder is a project"

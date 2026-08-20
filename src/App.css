@@ -1060,6 +1060,13 @@ textarea.duration-input { resize: vertical; font-family: inherit; }
 .sfx-lic { font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 999px; letter-spacing: 0.02em; }
 .sfx-lic.free { background: rgba(34,197,94,0.18); color: #4ade80; }
 .sfx-lic.credit { background: rgba(234,179,8,0.18); color: #facc15; }
+.sfx-plan { margin: 8px 0; padding: 8px; border-radius: 8px; background: rgba(59,130,246,0.10); border: 1px solid rgba(59,130,246,0.25); }
+.sfx-advanced { margin-top: 10px; }
+.sfx-advanced summary { cursor: pointer; font-size: 12px; color: var(--text-secondary, #9aa3af); }
+.sfx-star { background: none; border: none; cursor: pointer; font-size: 14px; line-height: 1; padding: 0 2px; color: var(--text-secondary, #6b7280); }
+.sfx-star:hover { color: #facc15; }
+.sfx-star.on { color: #facc15; }
+.sfx-item.fav { background: rgba(250,204,21,0.06); }
 .sfx-token { margin: 6px 0; padding: 8px; border-radius: 8px; background: rgba(255,255,255,0.04); }
 /* B-roll: picture only, sits over the video track. Amber so a cutaway is obvious at a glance. */
 .broll-track { min-height: 44px; height: 44px; }

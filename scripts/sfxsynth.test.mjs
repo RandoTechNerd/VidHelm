@@ -66,6 +66,19 @@ const centroid = (x, sr, from, to) => {
   return den > 0 ? num / den : 0
 }
 
+/** Total energy in a frequency band, for "is this actually bassy" questions. */
+const bandEnergy = (x, sr, from, loHz, hiHz, n = 2048) => {
+  const start = Math.min(Math.max(0, from), Math.max(0, x.length - n))
+  let total = 0
+  for (let f = loHz; f < hiHz; f *= 1.15) {
+    const w = 2 * Math.PI * f / sr, coeff = 2 * Math.cos(w)
+    let s1 = 0, s2 = 0
+    for (let i = 0; i < n; i++) { const s0 = (x[start + i] ?? 0) + coeff * s1 - s2; s2 = s1; s1 = s0 }
+    total += Math.sqrt(Math.max(0, s1 * s1 + s2 * s2 - coeff * s1 * s2))
+  }
+  return total
+}
+
 /** Fundamental frequency by autocorrelation, on a low-passed copy. Used for the Doppler check. */
 const pitch = (x, sr, from, len, loHz = 60, hiHz = 400) => {
   const seg = x.slice(from, from + len)
@@ -185,18 +198,33 @@ console.log('\n-- electronic door --')
   ok(seat > before * 1.05, `the panel seats with an audible thud at the end (${before.toFixed(4)} -> ${seat.toFixed(4)})`)
 }
 
-console.log('\n-- podracer starting --')
+console.log('\n-- podracer starting: burble, then a deep growl --')
 {
   const sr = 48000
-  const s = R.podracerStart({ sampleRate: sr, seed: 8, duration: 3.2 })
+  const s = R.podracerStart({ sampleRate: sr, seed: 8, duration: 3.6 })
   ok(peak(s.left) <= 0.9001, 'it does not clip')
-  const first = rms(s.left, Math.round(0.4 * sr), Math.round(0.7 * sr))
-  const last = rms(s.left, Math.round(2.6 * sr), Math.round(3.0 * sr))
-  ok(last > first, `it gets louder as it spools up (${first.toFixed(3)} -> ${last.toFixed(3)})`)
 
-  const pEarly = pitch(s.left, sr, Math.round(0.5 * sr), 16384, 30, 400)
-  const pLate = pitch(s.left, sr, Math.round(2.7 * sr), 16384, 30, 400)
-  ok(pLate > pEarly, `the engine note rises (${pEarly.toFixed(0)}Hz -> ${pLate.toFixed(0)}Hz)`)
+  const first = rms(s.left, Math.round(0.4 * sr), Math.round(0.7 * sr))
+  const last = rms(s.left, Math.round(2.9 * sr), Math.round(3.4 * sr))
+  ok(last > first * 1.5, `it powers up rather than just starting loud (${first.toFixed(3)} -> ${last.toFixed(3)})`)
+
+  // the burble: separate combustion events early, fusing into a note as the rate climbs. The
+  // onset count falling WHILE the level rises is the signature of fusing, and is the thing that
+  // distinguishes this from a synth pad being faded in.
+  const early = onsets(s.left.slice(Math.round(0.2 * sr), Math.round(1.0 * sr)), sr, { ratio: 1.5, floor: 0.004 }).count
+  const late = onsets(s.left.slice(Math.round(2.6 * sr), Math.round(3.4 * sr)), sr, { ratio: 1.5, floor: 0.004 }).count
+  ok(early > 4, `it burbles at the start (${early} separate events in the first second)`)
+  ok(late < early / 2, `and the events fuse into a growl (${late} left by the end, while it got louder)`)
+
+  // deep and bassy is the point: most of the energy has to be down low, and it must be
+  // clearly darker than the fly-past, which is the one that screams
+  const lows = bandEnergy(s.left, sr, Math.round(2.6 * sr), 40, 320)
+  const highs = bandEnergy(s.left, sr, Math.round(2.6 * sr), 320, 6000)
+  ok(lows > highs, `the growl is bass-dominant (${(lows / (lows + highs) * 100).toFixed(0)}% of its energy under 320Hz)`)
+
+  const startC = centroid(s.left, sr, Math.round(2.6 * sr))
+  const passC = centroid(R.podracerPassBy({ sampleRate: sr, seed: 12 }).left, sr, Math.round(1.4 * sr))
+  ok(startC < passC, `starting is deeper than flying past (${startC.toFixed(0)}Hz vs ${passC.toFixed(0)}Hz)`)
 }
 
 console.log('\n-- podracer pass-by (the Doppler test) --')

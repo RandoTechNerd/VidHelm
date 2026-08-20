@@ -222,57 +222,114 @@ function engine(n: number, sr: number, rng: Rng, rpmAt: (t: number) => number, t
   return saturate(opened, 1.9)
 }
 
-/** Ignition, catch, rev up to full song. */
+/**
+ * Ignition, burbling, then a deep growl powering up.
+ *
+ * The shape comes from what an engine physically does when it catches. At low shaft speed you
+ * hear INDIVIDUAL COMBUSTION EVENTS: separate thumps, unevenly spaced, some of them misfiring
+ * altogether. That is the "gurble". As the speed rises those events crowd together until the ear
+ * stops hearing them as separate hits and starts hearing them as a PITCH, and the burble becomes
+ * a growl. It is the same mechanism as a playing card in bicycle spokes.
+ *
+ * So the events are actually scheduled, at a rate that climbs, and the continuous engine layer is
+ * faded in underneath as they fuse. Nothing here is a crossfade between two unrelated sounds: the
+ * fusing IS the sound.
+ *
+ * Deliberately bass-heavy, unlike the pass-by. A racer sitting on the line is all chest, and the
+ * scream only arrives once it is moving.
+ */
 export function podracerStart(opts: RecipeOptions = {}): Stereo {
   const sr = opts.sampleRate ?? 48000
-  const dur = Math.max(1.5, Math.min(8, opts.duration ?? 3.2))
+  const dur = Math.max(1.5, Math.min(8, opts.duration ?? 3.6))
   const intensity = Math.max(0.15, Math.min(1, opts.intensity ?? 0.8))
   const rng = new Rng(opts.seed ?? 99)
   const n = Math.round(dur * sr)
-
-  // RPM: a couple of failed catches, then it takes and climbs
-  const idle = 74, full = 210 * (0.8 + 0.4 * intensity)
-  const rpmAt = (t: number) => {
-    const p = t / dur
-    if (p < 0.10) return idle * (0.25 + 2.4 * p)                       // turning over
-    if (p < 0.17) return idle * 0.9                                     // didn't catch
-    if (p < 0.24) return idle * (0.9 + 1.6 * (p - 0.17) / 0.07)         // catches
-    const k = Math.min(1, (p - 0.24) / 0.55)
-    return idle * 1.7 + (full - idle * 1.7) * (1 - Math.exp(-3.2 * k))  // spools up
-  }
-  const throttleAt = (t: number) => {
-    const p = t / dur
-    if (p < 0.10) return 0.08
-    if (p < 0.17) return 0.05
-    const k = Math.min(1, (p - 0.17) / 0.6)
-    return 0.1 + 0.9 * (1 - Math.exp(-2.6 * k))
-  }
-
-  let core = engine(n, sr, rng, rpmAt, throttleAt)
-
-  // sputters while it is trying to catch: brief dropouts, which is what makes it sound
-  // mechanical rather than like a synth pad being faded up
-  const sputter = new Float32Array(n).fill(1)
-  for (let k = 0; k < 7; k++) {
-    const at = Math.round(rng.range(0.04, 0.30) * n)
-    const len = Math.round(rng.range(0.004, 0.02) * sr)
-    for (let i = at; i < Math.min(n, at + len); i++) sputter[i] = 0.18
-  }
-  core = mul(core, sputter)
-
-  // the ignition itself
-  const ign = mul(whiteNoise(Math.round(0.25 * sr), rng), envPerc(Math.round(0.25 * sr), sr, 0.001, 0.05))
   const out = new Float32Array(n)
-  addAt(out, filt(ign, 'bp', 900, 0.6, sr), 0.02 * sr, 0.8)
-  addAt(out, core, 0, 1)
 
-  // whine that arrives once it is really going
-  const whine = mul(
-    osc(n, sr, t => 2400 + 2600 * Math.min(1, Math.max(0, (t / dur - 0.3) / 0.5)), 'sine'),
-    envPoints(n, sr, [{ t: 0, v: 0 }, { t: dur * 0.35, v: 0 }, { t: dur * 0.75, v: 0.1 }, { t: dur, v: 0.08 }]),
+  // ---- the starter turning it over, before anything catches ----
+  const crank = mul(
+    osc(n, sr, t => 42 + 26 * Math.min(1, t / (dur * 0.22)) + 5 * Math.sin(2 * Math.PI * 11 * t), 'saw'),
+    envPoints(n, sr, [{ t: 0, v: 0 }, { t: 0.05, v: 0.5 }, { t: dur * 0.26, v: 0.3 }, { t: dur * 0.42, v: 0 }]),
   )
-  const all = mix(out, whine)
-  return finish(widen(room(all, sr, { size: 0.05, mix: 0.16, damp: 8000 }), sr, 11))
+  addAt(out, filt(crank, 'lp', 420, 1.5, sr), 0, 0.5)
+
+  // ---- the gurble: separate combustion events, speeding up until they fuse ----
+  // rate climbs from a handful a second to a couple of hundred; the ear stops resolving them
+  // somewhere around 30/s, which is exactly where the burble turns into a note
+  const rateAt = (t: number): number => {
+    const p = t / dur
+    if (p < 0.08) return 0
+    if (p < 0.30) return 6 + 26 * ((p - 0.08) / 0.22)          // lumpy, clearly separate
+    if (p < 0.55) return 32 + 80 * ((p - 0.30) / 0.25)         // crowding together
+    return 112 + 130 * Math.min(1, (p - 0.55) / 0.45)          // fused into a growl
+  }
+
+  let t = 0
+  let events = 0
+  while (t < dur) {
+    const rate = rateAt(t)
+    if (rate <= 0) { t += 0.01; continue }
+    // irregular spacing is the whole point: an even pulse train sounds like a machine gun
+    const jitter = 1 + rng.range(-0.45, 0.45) * Math.max(0.25, 1 - t / dur)
+    t += (1 / rate) * jitter
+    if (t >= dur) break
+    const p = t / dur
+
+    // misfires, thick early on and gone once it is running properly
+    if (rng.next() < 0.22 * Math.max(0, 1 - p / 0.5)) { events++; continue }
+
+    // each firing: a low thump with a bit of grit, deeper and softer as they merge
+    const fund = 58 + 34 * Math.min(1, p / 0.6) + rng.range(-9, 9)
+    const len = Math.round(Math.min(0.09, 1 / Math.max(6, rateAt(t)) * 1.6) * sr)
+    const env = envPerc(len, sr, 0.0008, Math.min(0.05, 0.7 / Math.max(8, rateAt(t))))
+    const body = mul(osc(len, sr, tt => fund * (1 - 0.35 * tt / Math.max(0.001, len / sr)), 'saw'), env)
+    const grit = mul(filt(whiteNoise(len, rng), 'bp', 320 + rng.range(-90, 160), 0.8, sr), gain(env, 0.5))
+    const hit = filt(mix(gain(body, 0.9), gain(grit, 0.45)), 'lp', 900, 1.3, sr)
+    // individual hits are loud while you can still hear them apart, then back off so the fused
+    // growl underneath takes over rather than the train just getting louder and louder
+    const level = (1.15 - 0.75 * Math.min(1, p / 0.65)) * (0.7 + rng.next() * 0.6)
+    addAt(out, hit, t * sr, level)
+    events++
+  }
+
+  // ---- the growl the events fuse into ----
+  const idle = 46, full = 104 * (0.7 + 0.5 * intensity)      // an octave under the pass-by: chest, not scream
+  const rpmAt = (tt: number) => {
+    const p = tt / dur
+    const k = Math.min(1, Math.max(0, (p - 0.22) / 0.6))
+    return idle + (full - idle) * (1 - Math.exp(-2.9 * k)) * (1 + 0.05 * Math.sin(2 * Math.PI * 3.3 * tt))
+  }
+  // the filter stays low on purpose: this is the powering-up rumble, not the fly-past
+  const throttleAt = (tt: number) => {
+    const p = tt / dur
+    const k = Math.min(1, Math.max(0, (p - 0.25) / 0.62))
+    return 0.05 + 0.33 * (1 - Math.exp(-2.4 * k))
+  }
+  const growl = engine(n, sr, rng, rpmAt, throttleAt)
+  const growlIn = envPoints(n, sr, [
+    { t: 0, v: 0 }, { t: dur * 0.28, v: 0.12 }, { t: dur * 0.55, v: 0.62 }, { t: dur * 0.8, v: 0.95 }, { t: dur, v: 1 },
+  ])
+  addAt(out, mul(growl, growlIn), 0, 1.0)
+
+  // a sub an octave down, so it is felt as well as heard
+  const sub = mul(
+    osc(n, sr, tt => rpmAt(tt) * 0.5, 'sine'),
+    envPoints(n, sr, [{ t: 0, v: 0 }, { t: dur * 0.3, v: 0.15 }, { t: dur * 0.7, v: 0.5 }, { t: dur, v: 0.6 }]),
+  )
+  addAt(out, sub, 0, 0.55)
+
+  // ignition crack, right at the front
+  const ign = mul(whiteNoise(Math.round(0.25 * sr), rng), envPerc(Math.round(0.25 * sr), sr, 0.001, 0.05))
+  addAt(out, filt(ign, 'bp', 700, 0.6, sr), 0.02 * sr, 0.6)
+
+  // and just a hint of turbine at the very end, promising the scream to come
+  const whine = mul(
+    osc(n, sr, tt => 1500 + 2100 * Math.min(1, Math.max(0, (tt / dur - 0.55) / 0.45)), 'sine'),
+    envPoints(n, sr, [{ t: 0, v: 0 }, { t: dur * 0.6, v: 0 }, { t: dur, v: 0.055 }]),
+  )
+  void events
+  const all = saturate(mix(out, whine), 1.5)
+  return finish(widen(room(all, sr, { size: 0.05, mix: 0.14, damp: 5200 }), sr, 11))
 }
 
 /**
@@ -316,12 +373,21 @@ export function podracerPassBy(opts: RecipeOptions & { speed?: number; closest?:
 // registry
 // ---------------------------------------------------------------------------
 
+/**
+ * Bump this whenever any modelled sound changes.
+ *
+ * The rendered WAVs are cached on disk, and the cache used to be keyed on the file name alone,
+ * so improving a model did nothing for anyone who had already generated it: the app kept serving
+ * the old render forever. The revision goes in the file name, and older revisions are cleaned up.
+ */
+export const REALISTIC_REV = 2
+
 export const REALISTIC_RECIPES: Record<string, { render: (o: RecipeOptions) => Stereo; seconds: number; about: string }> = {
   'coffee-beans': { render: coffeeBeans, seconds: 2.6, about: 'beans poured into a metal hopper, with stragglers at the end' },
   'coffee-beans-plastic': { render: (o) => coffeeBeans({ ...o, container: 'plastic' }), seconds: 2.6, about: 'beans poured into a plastic tub' },
   'coffee-beans-glass': { render: (o) => coffeeBeans({ ...o, container: 'glass' }), seconds: 2.6, about: 'beans poured into a glass jar' },
   'door-electronic': { render: electronicDoor, seconds: 0.92, about: 'sci-fi door: latch, pneumatic release, servo, seat' },
   'door-electronic-close': { render: (o) => electronicDoor({ ...o, closing: true }), seconds: 0.92, about: 'the same door closing' },
-  'podracer-start': { render: podracerStart, seconds: 3.2, about: 'ignition, a couple of failed catches, then it spools up' },
+  'podracer-start': { render: podracerStart, seconds: 3.6, about: 'burbling ignition that fuses into a deep growl as it powers up' },
   'podracer-pass': { render: podracerPassBy, seconds: 2.8, about: 'full throttle past the camera, with real Doppler' },
 }

@@ -2,6 +2,7 @@
 // browser for UI work and screenshots. Media import/export need real Electron; everything visual
 // (timeline, tag points, SFX list, booth, panels) works against this mock.
 import { classify, profileFor, benchmark } from '../electron/capability'
+import { matchRecipe, MIN_CONFIDENCE } from '../electron/sfxmatch'
 
 const demoSfx = ['whoosh', 'pop', 'boing', 'squish', 'gummy-squish', 'gloop', 'poof', 'spoosh', 'sparkle', 'party', 'riser', 'ding', 'thud',
   // the modelled ones; the desktop app renders these for real, the preview only lists them
@@ -54,6 +55,11 @@ export function installIpcMock() {
     sfxDownload: async () => ({ error: 'Saving a sound needs the desktop app (npm run dev)' }),
     sfxRender: async () => ({ error: 'Rendering a sound effect needs the desktop app (npm run dev)' }),
     sfxRecipes: async () => ({ recipes: [] }),
+    // matching is pure, so the browser preview can do it for real; only the render needs Electron
+    sfxPlan: async ({ text, seed }: { text: string; seed?: number }) => {
+      const m = matchRecipe(text || '', { seed })
+      return { ...m, canMake: !!m.recipe && m.confidence >= MIN_CONFIDENCE }
+    },
     scanBroll: async () => ({ error: 'Scanning b-roll needs the desktop app (npm run dev)' }),
     labelBroll: async () => ({ error: 'Labelling b-roll needs the desktop app (npm run dev)' }),
     refineCut: async ({ t }: { t: number }) => ({ t, refined: t, moved: 0, note: 'waveform snapping needs the desktop app' }),
