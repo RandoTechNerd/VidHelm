@@ -56,6 +56,7 @@ contextBridge.exposeInMainWorld('ipcRenderer', {
   sfxRender: (data: { recipe: string; seed?: number; intensity?: number; duration?: number; outPath?: string; name?: string }) => ipcRenderer.invoke('sfx-render', data),
   sfxRecipes: () => ipcRenderer.invoke('sfx-recipes'),
   sfxPlan: (data: { text: string; seed?: number }) => ipcRenderer.invoke('sfx-plan', data),
+  visualIndex: (data: { filePath: string; interval?: number; maxFrames?: number; perSheet?: number; cols?: number; tileWidth?: number; sourceStart?: number; duration?: number }) => ipcRenderer.invoke('visual-index', data),
   scanBroll: (data: { folder: string; refresh?: boolean; tiles?: number }) => ipcRenderer.invoke('scan-broll', data),
   labelBroll: (data: { folder: string; id: string; labels?: string[]; description?: string; bestStart?: number; bestEnd?: number; maxUses?: number }) => ipcRenderer.invoke('label-broll', data),
   refineCut: (data: { filePath: string; t: number; dir?: 'after' | 'before'; window?: number; floorDb?: number }) => ipcRenderer.invoke('refine-cut', data),

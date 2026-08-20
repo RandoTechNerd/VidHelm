@@ -60,6 +60,7 @@ export function installIpcMock() {
       const m = matchRecipe(text || '', { seed })
       return { ...m, canMake: !!m.recipe && m.confidence >= MIN_CONFIDENCE }
     },
+    visualIndex: async () => ({ error: 'Looking through the video needs the desktop app (npm run dev)' }),
     scanBroll: async () => ({ error: 'Scanning b-roll needs the desktop app (npm run dev)' }),
     labelBroll: async () => ({ error: 'Labelling b-roll needs the desktop app (npm run dev)' }),
     refineCut: async ({ t }: { t: number }) => ({ t, refined: t, moved: 0, note: 'waveform snapping needs the desktop app' }),

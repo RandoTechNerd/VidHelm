@@ -1,7 +1,7 @@
 {
   "name": "vidhelm",
   "private": true,
-  "version": "1.8.1",
+  "version": "1.8.2",
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "vite",
@@ -21,7 +21,8 @@
     "test:sfxsynth": "node scripts/sfxsynth.test.mjs",
     "test:sfxsearch": "node scripts/sfxsearch.test.mjs",
     "test:sfxmatch": "node scripts/sfxmatch.test.mjs",
-    "test": "npm run typecheck && npm run test:takes && npm run test:playable && npm run test:speech && npm run test:framing && npm run test:broll && npm run test:capability && npm run test:sfxsynth && npm run test:sfxsearch && npm run test:sfxmatch && npm run selftest"
+    "test:visual": "node scripts/visual.test.mjs",
+    "test": "npm run typecheck && npm run test:takes && npm run test:playable && npm run test:speech && npm run test:framing && npm run test:broll && npm run test:capability && npm run test:sfxsynth && npm run test:sfxsearch && npm run test:sfxmatch && npm run test:visual && npm run selftest"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",

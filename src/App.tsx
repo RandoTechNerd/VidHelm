@@ -1239,6 +1239,17 @@ function App() {
           fps: cmd.fps ?? perf.framingFps, hints, aspect: cmd.aspect,
         })
       }
+      case 'look_through': {
+        const fv = firstVideo()
+        const v = cmd.path ? { path: cmd.path } : (fv && { path: fv.proxyPath || fv.path })
+        if (!v) return { error: 'no video on the timeline' }
+        const r = await window.ipcRenderer.visualIndex({
+          filePath: v.path, interval: cmd.interval, maxFrames: cmd.maxFrames,
+          perSheet: cmd.perSheet, cols: cmd.cols, tileWidth: cmd.tileWidth,
+          sourceStart: cmd.sourceStart, duration: cmd.duration,
+        })
+        return r
+      }
       // ---- sound effects: search the free libraries, or model one ----
       case 'search_sfx': {
         if (!cmd.query) return { error: 'query required' }

@@ -80,6 +80,10 @@ Those services take a file and return notes; they never see VidHelm. You are the
 Derive final chapter timestamps from `get_state` after the edit is cut, not from the notes: the notes describe the file you sent, and later cuts move everything.
 - With browser control available, offer to upload the finished export to YouTube (always pause for explicit user confirmation before publishing) or to capture website/localhost footage for the timeline.
 
+## Seeing the video
+
+`look_through` samples the whole video and returns contact sheets with the **timecode burned into every tile**, so anything you notice can be quoted with the second it happened: read a display, a label, a product name, or find the shot worth cutting to. Long videos widen the interval rather than covering only the start, and any frame that could not be extracted is reported rather than silently missing. Pair it with `analyze_speech` to line up what was seen with what was said. This is the local answer to "send it to a video-analysis service", and it is faster, exact on time, and uploads nothing.
+
 ## Sound effects
 
 - `search_sfx {query}` searches the free libraries and returns each hit's LICENCE. Wikimedia Commons always works; Freesound needs the user's free token in Settings and is the one worth having. Non-commercial and unlicensed results are hidden by default because they are not safe on a monetised channel. `download_sfx {index}` saves one and writes any required credit into CREDITS.txt: tell the user when a sound needs crediting, because it has to go in the description.

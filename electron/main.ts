@@ -9,6 +9,7 @@ import { REALISTIC_RECIPES, REALISTIC_REV } from './sfxrecipes'
 import { toWav } from './sfxsynth'
 import { freesoundUrl, commonsUrl, parseFreesound, parseCommons, collate, attributionLine, safeFilename, classifyLicense } from './sfxsearch'
 import { matchRecipe, nameToFilename, MIN_CONFIDENCE } from './sfxmatch'
+import { planVisualIndex, timecode, stackLayout } from './visual'
 import path from 'node:path'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -433,7 +434,7 @@ const contactSheet = async (file: string, duration: number, out: string, cols = 
     const usedRows = Math.ceil(tiles.length / usedCols)
     const inputs = tiles.map((_, i) => `[${i}:v]`).join('')
     args.push('-filter_complex', `${inputs}xstack=inputs=${tiles.length}:layout=${
-      tiles.map((_, i) => `${(i % usedCols) === 0 ? '0' : `w0*${i % usedCols}`}_${Math.floor(i / usedCols) === 0 ? '0' : `h0*${Math.floor(i / usedCols)}`}`).join('|')
+      stackLayout(tiles.length, usedCols)
     }:fill=black[v]`, '-map', '[v]', '-frames:v', '1', '-q:v', '3', out)
     void usedRows
     const p = spawn(paths.ffmpeg, args)
@@ -506,6 +507,90 @@ ipcMain.handle('scan-broll', async (_event, { folder, refresh, tiles }: { folder
   return {
     folder, assets,
     needsLabels: assets.filter(a => !a.error && !(a.labels || []).length).map(a => a.name),
+  }
+})
+
+/**
+ * Walk a whole video and build contact sheets an agent can actually read, with the TIME BURNED
+ * INTO EVERY TILE.
+ *
+ * The burnt-in timecode is the entire point. A third-party analysis service was trialled for this
+ * job and came back with three hundred lines of description and not one timestamp, which is
+ * useless for cutting. Here, whatever gets said about a tile is anchored to the second it came
+ * from, so "the battery reads 85" arrives as "at 1:20 the battery reads 85".
+ *
+ * Frames are pulled wide enough (default 640px) to read a display or a warning label, which a
+ * 480px filmstrip thumbnail is not.
+ */
+ipcMain.handle('visual-index', async (_event, { filePath, interval, maxFrames, perSheet, cols, tileWidth, sourceStart, duration }: any) => {
+  if (!filePath || !fs.existsSync(filePath)) return { error: 'no file' }
+  const total: number = duration || await new Promise(res => ffmpeg.ffprobe(filePath, (e, d) => res(e ? 0 : (d.format.duration || 0))))
+  if (!total) return { error: 'cannot read the duration of that file' }
+
+  const plan = planVisualIndex(total, { interval, maxFrames, perSheet, cols })
+  const width = Math.max(240, Math.min(960, Math.round(tileWidth || 640)))
+  const dir = path.join(app.getPath('temp'), 'vidhelm_visual', String(Date.now()))
+  fs.mkdirSync(dir, { recursive: true })
+  const font = escFilter(path.join(process.env.WINDIR || 'C:/Windows', 'Fonts', 'arialbd.ttf'))
+  const offset = Number(sourceStart) || 0
+
+  const sheets: any[] = []
+  const missed: { at: string; why: string }[] = []
+  for (const s of plan.sheets) {
+    const tiles: string[] = []
+    for (const t of s.times) {
+      const tile = path.join(dir, `t_${Math.round(t * 100)}.jpg`)
+      // The label goes through a FILE, not through the filter string. A timecode contains a
+      // colon, which is drawtext's own option separator: escaping it inside the argument still
+      // lost everything after it, so "12:50" rendered as "12". textfile= sidesteps the whole
+      // escaping problem, which is why the text overlays in export use it too.
+      const labelFile = path.join(dir, `l_${Math.round(t * 100)}.txt`)
+      fs.writeFileSync(labelFile, timecode(t + offset), 'utf8')
+      const err = await new Promise<string>(res => {
+        let e = ''
+        const p = spawn(paths.ffmpeg, ['-y', '-hide_banner', '-loglevel', 'error', '-ss', String(t), '-i', filePath,
+          '-frames:v', '1', '-vf',
+          `scale=${width}:-2,drawtext=fontfile='${font}':textfile='${escFilter(labelFile)}':x=10:y=10:fontsize=${Math.round(width / 14)}:fontcolor=white:box=1:boxcolor=black@0.7:boxborderw=8`,
+          '-q:v', '3', tile])
+        p.stderr.on('data', d => { e += d.toString() })
+        p.on('close', () => res(e)); p.on('error', ex => res(String(ex)))
+      })
+      try { fs.unlinkSync(labelFile) } catch { /* temp */ }
+      // A frame that quietly vanishes is the worst outcome: the sheet still looks complete and
+      // whatever happened in that stretch of the video is simply never described.
+      if (fs.existsSync(tile)) tiles.push(tile)
+      else missed.push({ at: timecode(t + offset), why: (err.trim().split('\n')[0] || 'no frame produced').slice(0, 160) })
+    }
+    if (!tiles.length) continue
+    const sheetPath = path.join(dir, `sheet_${s.index + 1}.jpg`)
+    if (tiles.length === 1) {
+      // xstack needs two inputs or more, and a remainder sheet with one tile on it is common
+      // enough that this silently lost the last frames of a video
+      fs.copyFileSync(tiles[0], sheetPath)
+    } else {
+      const usedCols = Math.min(s.cols, tiles.length)
+      const args = ['-y', '-hide_banner', '-loglevel', 'error']
+      for (const t of tiles) args.push('-i', t)
+      args.push('-filter_complex',
+        `${tiles.map((_, i) => `[${i}:v]`).join('')}xstack=inputs=${tiles.length}:layout=${stackLayout(tiles.length, usedCols)}:fill=black[v]`,
+        '-map', '[v]', '-frames:v', '1', '-q:v', '3', sheetPath)
+      await new Promise<void>(res => { const p = spawn(paths.ffmpeg, args); p.on('close', () => res()); p.on('error', () => res()) })
+    }
+    if (fs.existsSync(sheetPath)) {
+      sheets.push({
+        sheet: sheetPath, index: s.index + 1,
+        from: timecode(s.from + offset), to: timecode(s.to + offset),
+        times: s.times.map((t: number) => timecode(t + offset)),
+      })
+    }
+    for (const t of tiles) { try { fs.unlinkSync(t) } catch { /* temp */ } }
+  }
+
+  return {
+    ok: true, frames: plan.times.length - missed.length, asked: plan.times.length,
+    interval: plan.interval, sheets, note: plan.note,
+    ...(missed.length ? { missed, missedNote: `${missed.length} frame(s) could not be extracted and are NOT on any sheet` } : {}),
+    hint: 'Open each sheet image. Every tile has its timecode burned into the corner, so describe what you see and quote that time. Pair it with analyze_speech to get the words at the same moments.',
   }
 })
 
@@ -603,7 +688,7 @@ ipcMain.handle('plan-framing', async (_event, { filePath, sourceStart = 0, durat
     if (shots.length) {
       const sheet = path.join(dir, 'framing_proof.jpg')
       const cols = Math.min(4, shots.length)
-      const layout = shots.map((_, i) => `${(i % cols) === 0 ? '0' : `w0*${i % cols}`}_${Math.floor(i / cols) === 0 ? '0' : `h0*${Math.floor(i / cols)}`}`).join('|')
+      const layout = stackLayout(shots.length, cols)
       const args = ['-y', '-hide_banner', '-loglevel', 'error']
       for (const sh of shots) args.push('-i', sh)
       args.push('-filter_complex', `${shots.map((_, i) => `[${i}:v]`).join('')}xstack=inputs=${shots.length}:layout=${layout}:fill=black[v]`,
@@ -1410,7 +1495,7 @@ const agentServer = http.createServer(async (req, res) => {
       // b-roll scanning, speech reading and framing analysis are all deliberately slow: they
       // decode real footage rather than sampling a few frames, so they belong here too
       const LONG = ['export', 'cut_pauses', 'run_recipe', 'sample_frames', 'compose_thumbnail', 'render_3d', 'prepare_analysis',
-        'scan_broll', 'plan_broll', 'place_broll', 'analyze_speech', 'find_phrase', 'cut_at_phrase', 'plan_framing']
+        'scan_broll', 'plan_broll', 'place_broll', 'analyze_speech', 'find_phrase', 'cut_at_phrase', 'plan_framing', 'look_through']
       // a fourteen minute cut takes about half an hour to render here, so a flat 30 minute cap
       // reported a timeout on an export that was going perfectly well
       const timeout = cmd.action === 'export' ? 4 * 60 * 60 * 1000 : LONG.includes(cmd.action) ? 20 * 60 * 1000 : 15000

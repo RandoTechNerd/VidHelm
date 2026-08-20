@@ -36,6 +36,7 @@ interface Window {
     sfxRender: (data: { recipe: string; seed?: number; intensity?: number; duration?: number; outPath?: string; name?: string }) => Promise<{ ok?: boolean; path?: string; name?: string; seconds?: number; about?: string; error?: string; available?: string[] }>
     sfxRecipes: () => Promise<{ recipes?: { name: string; seconds: number; about: string }[] }>
     sfxPlan: (data: { text: string; seed?: number }) => Promise<{ recipe: string; options: any; name: string; summary: string; confidence: number; canMake: boolean }>
+    visualIndex: (data: { filePath: string; interval?: number; maxFrames?: number; perSheet?: number; cols?: number; tileWidth?: number; sourceStart?: number; duration?: number }) => Promise<{ ok?: boolean; frames?: number; interval?: number; sheets?: any[]; note?: string; hint?: string; error?: string }>
     scanBroll: (data: { folder: string; refresh?: boolean; tiles?: number }) => Promise<{ folder?: string; assets?: any[]; needsLabels?: string[]; error?: string }>
     labelBroll: (data: { folder: string; id: string; labels?: string[]; description?: string; bestStart?: number; bestEnd?: number; maxUses?: number }) => Promise<{ ok?: boolean; id?: string; saved?: any; error?: string }>
     refineCut: (data: { filePath: string; t: number; dir?: 'after' | 'before'; window?: number; floorDb?: number }) => Promise<{ t?: number; refined?: number; moved?: number; note?: string; error?: string }>

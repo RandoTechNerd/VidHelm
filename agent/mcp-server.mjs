@@ -9,7 +9,7 @@ const BRIDGE = `http://127.0.0.1:${process.env.VH_AGENT_PORT || 5959}`
 const NOT_RUNNING = 'VidHelm is not running. Start it first: `npm run dev` (or launch the installed app), then retry.'
 
 const call = (method, path, body) => new Promise((resolve) => {
-  const req = http.request(`${BRIDGE}${path}`, { method, headers: { 'Content-Type': 'application/json' }, timeout: method === 'POST' && body?.action === 'export' ? 30 * 60 * 1000 : ['cut_pauses','run_recipe','sample_frames','compose_thumbnail','render_3d','prepare_analysis'].includes(body?.action) ? 5 * 60 * 1000 : ['scan_broll','plan_broll','place_broll','analyze_speech','find_phrase','cut_at_phrase','plan_framing'].includes(body?.action) ? 25 * 60 * 1000 : 20000 }, res => {
+  const req = http.request(`${BRIDGE}${path}`, { method, headers: { 'Content-Type': 'application/json' }, timeout: method === 'POST' && body?.action === 'export' ? 30 * 60 * 1000 : ['cut_pauses','run_recipe','sample_frames','compose_thumbnail','render_3d','prepare_analysis'].includes(body?.action) ? 5 * 60 * 1000 : ['scan_broll','plan_broll','place_broll','analyze_speech','find_phrase','cut_at_phrase','plan_framing','look_through'].includes(body?.action) ? 25 * 60 * 1000 : 20000 }, res => {
     const chunks = []
     res.on('data', c => chunks.push(c))
     res.on('end', () => {
@@ -88,6 +88,7 @@ const TOOLS = [
   { name: 'search_sfx', description: "Search free sound-effect libraries and get results with their LICENCES. Wikimedia Commons is always searched (no key needed); Freesound is searched too when the user has pasted a free token in Settings, and it is far bigger and better tagged. Non-commercial and unlicensed sounds are hidden by default, because they are not safe on a monetised channel. Results are ranked, and each says whether it needs crediting.", inputSchema: { type: 'object', properties: { query: { ...str, description: 'what the sound is, e.g. "coffee beans pour" or "electronic door"' }, limit: num, maxSeconds: { ...num, description: 'default 15, keeps music out' }, safeOnly: { ...bool, description: 'set false to also see non-commercial and unlicensed results' } }, required: ['query'] } },
   { name: 'download_sfx', description: "Save one search result into the user's own sound folder so it can be placed on the timeline. Anything that needs crediting is also written into CREDITS.txt beside the file, and the credit line comes back so it can go in the video description.", inputSchema: { type: 'object', properties: { index: { ...num, description: 'which result from the last search_sfx, starting at 0' } } } },
   { name: 'make_sfx', description: "Synthesize a sound effect from a physical model rather than downloading one: coffee beans poured into a hopper (metal, plastic or glass), a sci-fi door opening or closing, a podracer starting, and one flying past with real Doppler. Call with no recipe to list them. A different seed gives another take of the same sound, and intensity changes how much of it there is.", inputSchema: { type: 'object', properties: { recipe: { ...str, description: 'coffee-beans, coffee-beans-plastic, coffee-beans-glass, door-electronic, door-electronic-close, podracer-start, podracer-pass' }, seed: { ...num, description: 'change it for a different take' }, intensity: { ...num, description: '0-1' }, duration: num } } },
+  { name: 'look_through', description: "Actually SEE the video: samples it end to end and returns contact sheets with the TIMECODE BURNED INTO EVERY TILE, so anything you notice can be quoted with the second it happened. This is how you read a display, a label or a product name, spot what is on screen at a moment, or find the shot worth cutting to. Long videos widen the interval rather than covering only the beginning. Pair it with analyze_speech to line up what was seen with what was said.", inputSchema: { type: 'object', properties: { path: { ...str, description: 'defaults to the first timeline video' }, interval: { ...num, description: 'seconds between frames, default 8' }, maxFrames: { ...num, description: 'cap, default 120; the interval widens to stay under it' }, perSheet: { ...num, description: 'tiles per sheet, default 9' }, tileWidth: { ...num, description: 'pixels per tile, default 640; raise it to read small text' }, sourceStart: { ...num, description: 'add this to every reported timecode' } } } },
 ]
 
 async function runTool(name, args = {}) {
@@ -116,6 +117,7 @@ async function runTool(name, args = {}) {
     case 'open_project': return call('POST', '/command', { action: 'open_project', ...args })
     case 'set_booth_script': return call('POST', '/command', { action: 'booth_script', ...args })
     case 'render_3d': return call('POST', '/command', { action: 'render_3d', ...args })
+    case 'look_through':
     case 'search_sfx': case 'download_sfx': case 'make_sfx':
     case 'set_recipe':
     case 'scan_broll': case 'label_broll': case 'plan_broll': case 'place_broll':
