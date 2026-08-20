@@ -14,7 +14,7 @@ Working style that works well:
 1. `get_state` first, it returns the whole timeline (clips per track, texts, tag points, format).
 2. Make edits in small batches, then `screenshot` to see what the human sees. Your edits appear **instantly in their GUI**, and they can drag things around between your calls, re-read state rather than assuming.
 3. **Tag points are the shared language.** The human taps `M` at beats they care about; you read tags from state and hang SFX (`place_sfx`), text, and narration on them. Prefer editing relative to tags over hardcoded times.
-4. `export_video` blocks until rendered and returns an automatic quality check (loudness/peaks/black frames), report its verdict to the user.
+4. `export_video` blocks until rendered. MP4/WebM can return an automatic quality check (loudness/peaks/black frames); WebP and PNG-frame ZIP exports preserve alpha and contain no audio.
 5. **Start Recipe**: `get_state.startRecipe` is the user's standing workflow (like start G-code; # = off). "Run my workflow" = execute active lines: `cut_pauses`, intro-audio/logo/thumbnail via `run_recipe`, and do the AI lines yourself (`titles 5` → pitch 5 titles in chat, `subtitle` → propose catchy thumbnail one-liners, then `compose_thumbnail`).
 6. If tools fail with "VidHelm is not running", ask the user to start the app (or run `npm run dev` yourself in the background). If the user struggles to connect, point them at the **🤖 AI** button in the app header, it has live diagnostics and per-client configs.
 

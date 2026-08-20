@@ -10,11 +10,16 @@
   "fps": 30,                        // 24 | 30 | 60
   "masterVolume": 1,
   "exportQuality": "high",         // medium | high
+  "exportFormat": "mp4",           // mp4 | webm | webp | png-sequence
+  "exportBackground": "#000000",   // used by opaque MP4/WebM exports
 
   "mediaBin": [
     { "id": "abc123", "name": "clip.mp4", "path": "C:\\videos\\clip.mp4",
       "type": "video",             // video | audio | image
       "duration": 12.4, "hasVideo": true, "hasAudio": true }
+    // Animated WebP / PNG ZIP imports additionally keep sourcePath (the file the
+    // user chose), proxyPath (transparent Chromium preview), and alpha: true.
+    // path points to the cached lossless edit master used by the export engine.
   ],
 
   "clips": [
@@ -46,7 +51,7 @@
 
 Notes for tooling:
 
-- **Media paths are absolute**: projects reference files in place, nothing is copied.
+- **Media paths are absolute**: ordinary media references files in place. Animated WebP and PNG-frame ZIP imports are normalized once into the user-data cache; `sourcePath` retains the chosen original and invalidates the cache when its size or modification time changes.
 - Overlapping `v1` clips composite in array order (later on top); give both fades for a crossfade.
 - All clips with audio are mixed regardless of track; tracks are an organizational convention (`a2` keeps effects out of the voice lane).
 - `markers` don't affect rendering: they're coordination points for humans, the karaoke booth, narration placement, and agents.

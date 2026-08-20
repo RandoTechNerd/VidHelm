@@ -38,8 +38,8 @@ Add to `claude_desktop_config.json`:
 | `add_tag` / `update_tag` | Read/write the beat map you create with `M` |
 | `list_sfx` / `place_sfx` | The sound-effect library, placed on the SFX track |
 | `transport` | Seek / play / pause your window (e.g. "show me the reveal") |
-| `set_format` | Landscape/portrait/square, resolution, fps |
-| `export_video` | Render + automatic quality check (loudness, peaks, black frames) |
+| `set_format` | Landscape/portrait/square, resolution, fps, file format, background color |
+| `export_video` | Render MP4/WebM, alpha WebP, or an alpha PNG-frame ZIP; video outputs support automatic quality checks |
 | `cut_pauses` | Remove silent/static dead space across the timeline, spliced with crossfades |
 | `find_repeats` | Read the timeline's speech on-device and return the spots where a line was said more than once, with every attempt's words, timing, and the default pick. Cuts nothing |
 | `apply_takes` | Cut the rejected takes (`keep` as `"group:member"` pairs, `drop` as line indexes). Ripples and stays undoable; re-running rebuilds from the pre-cut state |

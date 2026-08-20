@@ -9,6 +9,9 @@ import { REALISTIC_RECIPES, REALISTIC_REV } from './sfxrecipes'
 import { toWav } from './sfxsynth'
 import { freesoundUrl, commonsUrl, parseFreesound, parseCommons, collate, attributionLine, safeFilename, classifyLicense } from './sfxsearch'
 import { matchRecipe, nameToFilename, MIN_CONFIDENCE } from './sfxmatch'
+import { EXPORT_FORMATS, resolveExportFormat, safeBackground, webpEncoderOptions } from '../src/exportFormats'
+import { writeStoredZip } from './zip'
+import { normalizeAlphaMedia } from './alphaImport'
 import path from 'node:path'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -154,7 +157,7 @@ ipcMain.handle('select-save-path', async (event, defaultName: string) => {
   if (!win) return null
   const ext = (defaultName.split('.').pop() || 'mp4').toLowerCase()
   const { filePath } = await dialog.showSaveDialog(win, {
-    title: ext === 'png' || ext === 'jpg' ? 'Save Image' : 'Export YouTube Video',
+    title: ext === 'png' || ext === 'jpg' ? 'Save Image' : ext === 'webp' ? 'Export Transparent Animation' : ext === 'zip' ? 'Export Transparent PNG Frames' : 'Export Video',
     defaultPath: defaultName,
     filters: [{ name: ext.toUpperCase() + ' Files', extensions: [ext] }],
   })
@@ -745,10 +748,13 @@ ipcMain.handle('quality-check', async (_event, filePath: string) => {
   checks.push({ label: 'Video codec', status: ['h264', 'hevc', 'vp9', 'av1'].includes(v?.codec_name) ? 'pass' : 'warn', detail: v?.codec_name || ' - ' })
   checks.push({ label: 'Pixel format', status: v?.pix_fmt === 'yuv420p' ? 'pass' : 'warn', detail: v?.pix_fmt || ' - ' })
   checks.push({ label: 'Audio', status: a && ['aac', 'opus', 'mp3'].includes(a.codec_name) ? 'pass' : 'warn', detail: a ? `${a.codec_name} ${a.sample_rate}Hz ${a.channels}ch` : 'no audio' })
-  // faststart
-  let faststart = false
-  try { const head = fs.readFileSync(filePath).slice(0, 200000); faststart = head.indexOf('moov') >= 0 && head.indexOf('moov') < head.indexOf('mdat') } catch {}
-  checks.push({ label: 'Web fast-start', status: faststart ? 'pass' : 'warn', detail: faststart ? 'moov at front' : 'not optimized' })
+  // MP4/MOV need their metadata atom before media bytes for streaming. WebM is a
+  // different container and has no moov atom, so applying this test there is a false warning.
+  if (/\.(mp4|m4v|mov)$/i.test(filePath)) {
+    let faststart = false
+    try { const head = fs.readFileSync(filePath).slice(0, 200000); faststart = head.indexOf('moov') >= 0 && head.indexOf('moov') < head.indexOf('mdat') } catch {}
+    checks.push({ label: 'Web fast-start', status: faststart ? 'pass' : 'warn', detail: faststart ? 'moov at front' : 'not optimized' })
+  }
   // loudness
   if (!isNaN(loudness.integrated)) {
     const I = loudness.integrated
@@ -919,6 +925,20 @@ ipcMain.handle('get-metadata', async (event, filePath: string) => {
   })
 })
 
+ipcMain.handle('normalize-alpha-media', async (event, { filePath, fallbackFps }: { filePath: string; fallbackFps?: number }) => {
+  try {
+    const cacheRoot = path.join(app.getPath('userData'), 'alpha-imports')
+    return await normalizeAlphaMedia({
+      filePath, cacheRoot, ffmpegPath: paths.ffmpeg, fallbackFps,
+      onProgress: (percent, detail) => event.sender.send('alpha-import-progress', { filePath, percent, detail }),
+    })
+  } catch (error) {
+    const message = String((error as Error)?.message || error)
+    event.sender.send('alpha-import-progress', { filePath, percent: -1, detail: message })
+    return { error: message }
+  }
+})
+
 ipcMain.handle('save-recording', async (_event, base64: string) => {
   const dir = path.join(app.getPath('temp'), 'vidhelm_vo')
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
@@ -931,7 +951,7 @@ ipcMain.handle('save-recording', async (_event, base64: string) => {
 // Point VidHelm at one folder; every sub-folder inside it is a project. Opening a project
 // pulls in whatever media is sitting in that folder, so there is no separate import step - 
 // drop files in with Explorer and they are simply there.
-const MEDIA_RE = /\.(mp4|m4v|mov|mkv|webm|avi|wmv|flv|mpg|mpeg|ts|m2ts|mts|3gp|ogv|mxf|mp3|wav|aac|m4a|flac|ogg|oga|opus|wma|aif|aiff|caf|ac3|mka|png|jpg|jpeg|jfif|webp|gif|bmp|tif|tiff|avif)$/i
+const MEDIA_RE = /\.(mp4|m4v|mov|mkv|webm|avi|wmv|flv|mpg|mpeg|ts|m2ts|mts|3gp|ogv|mxf|mp3|wav|aac|m4a|flac|ogg|oga|opus|wma|aif|aiff|caf|ac3|mka|png|jpg|jpeg|jfif|webp|gif|bmp|tif|tiff|avif|zip)$/i
 const PROJECT_FILE = 'project.vidhelm.json'
 
 ipcMain.handle('list-projects', async (_event, root: string) => {
@@ -1793,6 +1813,7 @@ ipcMain.handle('voice-clone', async (_event, { command, scriptText }: { command:
 
 ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outputPath, settings }: { clips: any[], texts: any[], brand: any, audio: any, outputPath: string, settings: any }) => {
   let cleanupGraph = ''   // the filtergraph is written to a file, see below
+  let cleanupFrames = ''
   return new Promise((resolve, reject) => {
     clips = clips || []
     texts = texts || []
@@ -1802,6 +1823,9 @@ ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outp
     const W = Math.round(settings?.width) || 1920
     const H = Math.round(settings?.height) || 1080
     const FPS = [24, 30, 60].includes(settings?.fps) ? settings.fps : 30
+    const exportFormat = resolveExportFormat(settings?.format, outputPath)
+    const formatSpec = EXPORT_FORMATS[exportFormat]
+    const background = formatSpec.alpha ? '000000' : safeBackground(settings?.background)
     const master = typeof settings?.masterVolume === 'number' ? settings.masterVolume : 1
     const fontFile = escFilter(path.join(process.env.WINDIR || 'C:/Windows', 'Fonts', 'arial.ttf'))
     const ends = [...clips.map(c => c.start + c.duration), ...texts.map(t => t.start + t.duration)]
@@ -1810,13 +1834,19 @@ ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outp
     const tmpDir = path.join(app.getPath('temp'), 'vidhelm_text')
     if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true })
 
-    let command = ffmpeg()
-    // 0: black base video at target resolution/fps, 1: silent base audio at 48kHz (YouTube spec)
-    command.input(`color=c=black:s=${W}x${H}:r=${FPS}:d=${totalDuration}`).inputFormat('lavfi')
+    const command = ffmpeg()
+    // 0: target canvas, 1: silent base audio. Alpha formats turn the canvas transparent
+    // in the graph below; opaque formats render the chosen background color.
+    command.input(`color=c=0x${background}:s=${W}x${H}:r=${FPS}:d=${totalDuration}`).inputFormat('lavfi')
     command.input(`anullsrc=channel_layout=stereo:sample_rate=48000:d=${totalDuration}`).inputFormat('lavfi')
 
     const filterComplex: string[] = []
     let currentVOut = '0:v'
+    if (formatSpec.alpha) {
+      filterComplex.push('[0:v]format=rgba,colorchannelmixer=aa=0[v_transparent_base]')
+      currentVOut = 'v_transparent_base'
+    }
+    const alphaOverlay = formatSpec.alpha ? ':format=auto' : ''
     const audioMixInputs: string[] = ['1:a']
 
     clips.forEach((clip, i) => {
@@ -1856,11 +1886,11 @@ ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outp
         if (clip.fadeIn > 0) v += `,fade=t=in:st=${clip.start}:d=${clip.fadeIn}:alpha=1`
         if (clip.fadeOut > 0) v += `,fade=t=out:st=${(end - clip.fadeOut).toFixed(3)}:d=${clip.fadeOut}:alpha=1`
         filterComplex.push(`${v}[v_scaled_${idx}]`)
-        filterComplex.push(`[${currentVOut}][v_scaled_${idx}]overlay=enable='between(t,${clip.start},${end})':eof_action=pass[v_out_${idx}]`)
+        filterComplex.push(`[${currentVOut}][v_scaled_${idx}]overlay=enable='between(t,${clip.start},${end})':eof_action=pass${alphaOverlay}[v_out_${idx}]`)
         currentVOut = `v_out_${idx}`
       }
 
-      if (clip.hasAudio) {
+      if (formatSpec.audio && clip.hasAudio) {
         const vExpr = volumeExpr(clip.volumePoints, clip.start, clip.volume ?? 1.0)
         let a = `[${idx}:a]aresample=48000,adelay=${Math.round(clip.start * 1000)}|${Math.round(clip.start * 1000)}`
         // Volume automation (graph) takes precedence over the flat per-clip volume
@@ -1915,12 +1945,12 @@ ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outp
       let lf = `[${logoIdx}:v]format=rgba,scale=${logoW}:-1,colorchannelmixer=aa=${op}`
       if (fade > 0) { lf += `,fade=t=in:st=${s}:d=${fade}:alpha=1,fade=t=out:st=${(e - fade).toFixed(3)}:d=${fade}:alpha=1` }
       filterComplex.push(`${lf}[logo]`)
-      filterComplex.push(`[${currentVOut}][logo]overlay=${posMap[brand.position] || posMap.br}:enable='between(t,${s},${e})'[v_brand]`)
+      filterComplex.push(`[${currentVOut}][logo]overlay=${posMap[brand.position] || posMap.br}:enable='between(t,${s},${e})'${alphaOverlay}[v_brand]`)
       currentVOut = 'v_brand'
     }
 
     // Audio: mix (normalize=0 so per-clip volumes are honored) → denoise → master gain → loudness optimize
-    if (audioMixInputs.length > 1) {
+    if (formatSpec.audio && audioMixInputs.length > 1) {
       filterComplex.push(`${audioMixInputs.map(a => `[${a}]`).join('')}amix=inputs=${audioMixInputs.length}:duration=first:dropout_transition=0:normalize=0[amixed]`)
       let chain = '[amixed]'
       if (audio.noiseReduction) { filterComplex.push(`${chain}highpass=f=80,afftdn=nf=-25[aclean]`); chain = '[aclean]' }
@@ -1934,7 +1964,7 @@ ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outp
       filterComplex.push(audio.optimize
         ? `[amaster]acompressor=threshold=-18dB:ratio=3:attack=20:release=250:makeup=3,loudnorm=I=-13:LRA=7:TP=-1.5,alimiter=limit=0.85:level=disabled[aout]`
         : `[amaster]alimiter=limit=0.891:level=disabled[aout]`)
-    } else {
+    } else if (formatSpec.audio) {
       filterComplex.push(`[1:a]volume=${master}[aout]`)
     }
 
@@ -1945,16 +1975,19 @@ ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outp
     const graphPath = path.join(app.getPath('temp'), `vidhelm_graph_${Date.now()}.txt`)
     fs.writeFileSync(graphPath, graph)
     cleanupGraph = graphPath
-    command
-      .outputOptions(['-filter_complex_script', graphPath])
-      .map(`[${currentVOut}]`)
-      .map(`[aout]`)
-      .videoCodec('libx264')
-      .audioCodec('aac')
-      .audioBitrate('384k')
-      .audioFrequency(48000)
-      .audioChannels(2)
-      .outputOptions([
+    command.outputOptions(['-filter_complex_script', graphPath]).map(`[${currentVOut}]`)
+
+    if (formatSpec.audio) command.map('[aout]')
+    else command.noAudio()
+
+    if (exportFormat === 'mp4') {
+      command
+        .videoCodec('libx264')
+        .audioCodec('aac')
+        .audioBitrate('384k')
+        .audioFrequency(48000)
+        .audioChannels(2)
+        .outputOptions([
         // x264 tuned for YouTube: High profile, fixed 2s closed GOP, BT.709 SDR color.
         // 'analysis' is the exception: a throwaway render for a video-analysis service, where
         // speed and upload size matter and picture quality does not.
@@ -1970,10 +2003,80 @@ ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outp
         '-movflags', '+faststart',
         '-t', totalDuration.toString(),
       ])
+    } else if (exportFormat === 'webm') {
+      command
+        .videoCodec('libvpx-vp9')
+        .audioCodec('libopus')
+        .audioBitrate('192k')
+        .audioFrequency(48000)
+        .audioChannels(2)
+        .outputOptions([
+          '-deadline', 'good',
+          '-cpu-used', settings?.quality === 'high' ? '2' : '4',
+          '-crf', settings?.quality === 'high' ? '18' : '28',
+          '-b:v', '0',
+          '-pix_fmt', 'yuv420p',
+          '-r', String(FPS),
+          '-g', String(FPS * 2),
+          '-colorspace', 'bt709', '-color_primaries', 'bt709', '-color_trc', 'bt709',
+          '-t', totalDuration.toString(),
+        ])
+        .format('webm')
+    } else if (exportFormat === 'webp') {
+      command
+        .videoCodec('libwebp_anim')
+        .outputOptions(webpEncoderOptions(settings?.quality === 'high' ? 'high' : 'medium', FPS, totalDuration))
+        .format('webp')
+    } else {
+      cleanupFrames = fs.mkdtempSync(path.join(app.getPath('temp'), 'vidhelm_png_frames_'))
+      command
+        .videoCodec('png')
+        .outputOptions([
+          '-pix_fmt', 'rgba',
+          '-r', String(FPS),
+          '-frames:v', String(Math.max(1, Math.ceil(totalDuration * FPS))),
+        ])
+        .format('image2')
+    }
+
+    const cleanup = () => {
+      if (cleanupGraph) { try { fs.unlinkSync(cleanupGraph) } catch { /* already gone */ } }
+      if (cleanupFrames) { try { fs.rmSync(cleanupFrames, { recursive: true, force: true }) } catch { /* already gone */ } }
+    }
+    const saveTarget = exportFormat === 'png-sequence'
+      ? path.join(cleanupFrames, 'frame_%06d.png')
+      : outputPath
+
+    command
       .on('start', (cmd) => console.log('FFmpeg started:', cmd))
-      .on('progress', (progress) => { if (win) win.webContents.send('export-progress', progress.percent) })
-      .on('end', () => { if (cleanupGraph) { try { fs.unlinkSync(cleanupGraph) } catch { /* already gone */ } } resolve({ success: true }) })
-      .on('error', (err) => { if (cleanupGraph) { try { fs.unlinkSync(cleanupGraph) } catch { /* already gone */ } } console.error('FFmpeg error:', err); reject(err) })
-      .save(outputPath)
+      .on('progress', (progress) => {
+        const percent = exportFormat === 'png-sequence' ? Math.min(98, progress.percent || 0) : progress.percent
+        if (win) win.webContents.send('export-progress', percent)
+      })
+      .on('end', async () => {
+        try {
+          let frames: number | undefined
+          if (exportFormat === 'png-sequence') {
+            const files = fs.readdirSync(cleanupFrames).filter(name => /^frame_\d+\.png$/i.test(name)).sort().map(name => path.join(cleanupFrames, name))
+            if (!files.length) throw new Error('FFmpeg produced no PNG frames')
+            if (win) win.webContents.send('export-progress', 99)
+            const manifestPath = path.join(cleanupFrames, 'vidhelm-sequence.json')
+            fs.writeFileSync(manifestPath, JSON.stringify({
+              version: 1, fps: FPS, width: W, height: H, alpha: true,
+              frames: files.map(file => ({ name: path.basename(file), durationMs: 1000 / FPS })),
+            }, null, 2), 'utf8')
+            await writeStoredZip(outputPath, [manifestPath, ...files])
+            frames = files.length
+          }
+          cleanup()
+          resolve({ success: true, outputPath, format: exportFormat, alpha: formatSpec.alpha, frames })
+        } catch (err) {
+          cleanup()
+          console.error('Export packaging error:', err)
+          reject(err)
+        }
+      })
+      .on('error', (err) => { cleanup(); console.error('FFmpeg error:', err); reject(err) })
+      .save(saveTarget)
   })
 })

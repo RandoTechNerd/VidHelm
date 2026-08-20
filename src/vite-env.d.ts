@@ -10,6 +10,7 @@ interface Window {
     getPathForFile: (file: File) => string
     selectSavePath: (defaultName: string) => Promise<string | null>
     getMetadata: (filePath: string) => Promise<{ duration: number; hasVideo: boolean; hasAudio: boolean; ok?: boolean; error?: string; format?: string; videoCodec?: string; pixFmt?: string; colorTransfer?: string; width?: number; height?: number; fps?: number }>
+    normalizeAlphaMedia: (data: { filePath: string; fallbackFps?: number }) => Promise<{ normalized?: boolean; cached?: boolean; path?: string; previewPath?: string; duration?: number; fps?: number; frames?: number; width?: number; height?: number; alpha?: boolean; sourceType?: 'webp' | 'png-sequence'; error?: string }>
     saveRecording: (base64: string) => Promise<string>
     saveProject: (data: any) => Promise<string | null>
     loadProject: () => Promise<any | null>
@@ -23,7 +24,7 @@ interface Window {
     renderMixAudio: (data: { clips: any[] }) => Promise<{ path?: string; error?: string }>
     detectSilence: (data: { filePath: string; thresholdDb: number; minPause: number }) => Promise<{ intervals?: { start: number; end: number }[]; error?: string }>
     detectFreeze: (data: { filePath: string; sourceStart: number; duration: number; freezeDb: number; minDur: number }) => Promise<{ intervals?: { start: number; end: number }[]; error?: string }>
-    exportVideo: (data: { clips: any[], texts: any[], brand: any, audio: any, outputPath: string, settings: any }) => Promise<{ success: boolean }>
+    exportVideo: (data: { clips: any[], texts: any[], brand: any, audio: any, outputPath: string, settings: any }) => Promise<{ success: boolean; outputPath: string; format: string; alpha: boolean; frames?: number }>
     sfxLibrary: () => Promise<{ dir: string; items: { name: string; path: string; duration: number; builtin: boolean }[] }>
     pickAudio: () => Promise<string | null>
     openExternal: (url: string) => Promise<void>

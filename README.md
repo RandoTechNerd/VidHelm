@@ -59,7 +59,9 @@ Your footage never leaves your machine: FFmpeg does the rendering, Whisper runs 
 
 **2. Make something.** Drag a video onto the timeline. Play it, tap `M` at moments that matter, and press **Cut Pauses** to strip dead air. Open the **SFX** tab and drop a whoosh on a tag point.
 
-**3. Export.** Hit **Export Video**, pick a location, and let **Watch & Verify** confirm it's upload-ready (resolution, loudness, true peak, black frames).
+**3. Export.** Choose MP4 or WebM for a finished video, animated WebP or a PNG-frame ZIP for a transparent overlay, then pick a location. **Watch & Verify** checks video outputs for resolution, loudness, true peak, and black frames.
+
+Animated WebP and PNG frame-sequence ZIPs can also be imported. VidHelm keeps their alpha channel in a lossless edit master and makes a transparent preview for smooth timeline playback; exported PNG ZIPs include timing metadata for an exact round trip.
 
 **4. Add your AI (optional, and the fun part).** Click **🤖 AI** in the header. It health-checks everything and gives you the exact setup line for your assistant, for Claude Code that's one command:
 

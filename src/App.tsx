@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react'
 import './App.css'
 import { SfxPanel, MarkerPanel, KaraokeBooth, NarrationModal, RecipeSection, ThumbnailModal, ConnectModal, DEFAULT_RECIPE, recipeActive, newMarker, type Marker, type SfxItem, type RecipeSettings } from './extras'
 import { Model3DModal, KEY_GREEN, KEY_MAGENTA, type Model3DApi } from './model3d'
@@ -9,6 +9,8 @@ import { planProxy, isHdr } from '../electron/playable'
 import { spanForPhrase, sentenceSpans, type Word as SpeechWord, type Span } from '../electron/speech'
 import { planBroll, snapToWords, describePlan, type BrollAsset, type Placement } from '../electron/broll'
 import { resolveProfile, describeProfile, type PerfProfile, type Tier, type TierPreference } from '../electron/capability'
+import { EXPORT_FORMATS, defaultExportName, isExportFormat, resolveExportFormat, resolveMediaExportSource, type ExportFormat } from './exportFormats'
+import { fadeFactor, textResizeFontSize, timelineBlockLayout, timelineDragStart, timelineResize } from './timelineGeometry'
 
 interface MediaFile {
   id: string
@@ -22,6 +24,8 @@ interface MediaFile {
   // A watchable stand-in for footage the preview cannot decode (phone HEVC, 10-bit, HDR, huge
   // frames). Only the preview uses it; exports always read the original file.
   proxyPath?: string
+  sourcePath?: string // original animated WebP / PNG ZIP when path is the normalized alpha master
+  alpha?: boolean
   proxyPct?: number    // 0-100 while it is being made
   proxyNote?: string   // why it needed one, shown in the bin
   hdr?: boolean        // HLG/PQ source: export tone-maps it, or the colour comes out flat
@@ -107,7 +111,8 @@ const AUDIO_EXT = new Set(['mp3', 'wav', 'wave', 'aac', 'm4a', 'm4b', 'flac', 'o
 const IMAGE_EXT = new Set(['png', 'jpg', 'jpeg', 'jfif', 'webp', 'gif', 'bmp', 'tif', 'tiff', 'avif', 'heic', 'heif', 'ico', 'ppm', 'pgm', 'tga', 'dds', 'exr'])
 const MODEL_EXT = new Set(['stl', '3mf', 'obj', 'glb', 'gltf'])
 const PAGE_EXT = new Set(['html', 'htm'])
-const ACCEPT_ATTR = [...VIDEO_EXT, ...AUDIO_EXT, ...IMAGE_EXT, ...MODEL_EXT, ...PAGE_EXT].map(e => '.' + e).join(',')
+const SEQUENCE_EXT = new Set(['zip'])
+const ACCEPT_ATTR = [...VIDEO_EXT, ...AUDIO_EXT, ...IMAGE_EXT, ...MODEL_EXT, ...PAGE_EXT, ...SEQUENCE_EXT].map(e => '.' + e).join(',')
 const extOf = (name: string) => (name.split('.').pop() || '').toLowerCase()
 
 // Friendlier explanations for things people drop by mistake
@@ -116,7 +121,7 @@ const WRONG_TYPE: Record<string, string> = {
   pdf: 'PDFs aren’t media, export the page as a PNG or MP4 first.',
   psd: 'Photoshop files aren’t supported, export a flattened PNG or JPG.',
   ai: 'Illustrator files aren’t supported, export a PNG.',
-  zip: 'That’s an archive, unzip it and drop the media inside.',
+  zip: 'Only PNG frame-sequence ZIPs can be imported (one numbered PNG per frame).',
   rar: 'That’s an archive, unpack it and drop the media inside.',
   '7z': 'That’s an archive, unpack it and drop the media inside.',
   txt: 'That’s a text file, not media.',
@@ -151,6 +156,61 @@ const classifyMedia = (name: string, meta: Probe | null): { type: 'video' | 'aud
   const isStill = knownImage || /image2|_pipe/.test(meta.format || '')
   if (!isStill && !knownAV && !meta.hasAudio && (meta.duration || 0) < 0.1) return { reject: 'not a video, audio, image or 3D file' }
   return { type: isStill ? 'image' : meta.hasVideo ? 'video' : 'audio' }
+}
+
+type PreparedMediaImport = {
+  path: string
+  sourcePath?: string
+  proxyPath?: string
+  meta: Probe
+  type?: MediaFile['type']
+  duration?: number
+  alpha?: boolean
+  note?: string
+}
+
+const prepareMediaImport = async (sourcePath: string, name: string, fallbackFps: number): Promise<PreparedMediaImport> => {
+  const ext = extOf(name)
+  if (ext === 'webp' || ext === 'zip') {
+    const normalized = await window.ipcRenderer.normalizeAlphaMedia({ filePath: sourcePath, fallbackFps })
+    if (normalized.error) throw new Error(normalized.error)
+    if (normalized.normalized && normalized.path && normalized.previewPath) {
+      const meta = await window.ipcRenderer.getMetadata(normalized.path) as Probe
+      if (meta.ok === false) throw new Error(meta.error || 'normalized animation could not be read')
+      return {
+        path: normalized.path, sourcePath, proxyPath: normalized.previewPath,
+        meta: { ...meta, duration: normalized.duration || meta.duration, hasVideo: true, hasAudio: false },
+        type: 'video', duration: normalized.duration, alpha: true,
+        note: normalized.cached ? 'transparent animation cache' : 'transparent animation preview',
+      }
+    }
+  }
+  const meta = await window.ipcRenderer.getMetadata(sourcePath).catch(() => null)
+  if (!meta) throw new Error('could not be read')
+  return { path: sourcePath, meta }
+}
+
+const rehydrateMediaImports = async (items: MediaFile[], fallbackFps: number) => {
+  const media: MediaFile[] = []
+  const failed: string[] = []
+  for (const item of items) {
+    if (!item.sourcePath) { media.push(item); continue }
+    try {
+      const prepared = await prepareMediaImport(item.sourcePath, item.name, fallbackFps)
+      if (!prepared.sourcePath || !prepared.proxyPath || !prepared.alpha) throw new Error('source is no longer an alpha animation')
+      media.push({
+        ...item, path: prepared.path, sourcePath: prepared.sourcePath, proxyPath: prepared.proxyPath,
+        type: 'video', duration: prepared.duration || item.duration, hasVideo: true, hasAudio: false,
+        alpha: true, hdr: false, proxyNote: prepared.note,
+      })
+    } catch {
+      // The saved cache may still be usable when a removable drive is offline. Keep it
+      // in the project, but tell the user it could not be refreshed from the source.
+      media.push(item)
+      failed.push(item.name)
+    }
+  }
+  return { media, failed }
 }
 
 const CAPTION_LANGS: [string, string][] = [['en', 'English (fast)'], ['auto', 'Auto-detect'], ['es', 'Spanish'], ['fr', 'French'], ['de', 'German'], ['pt', 'Portuguese'], ['hi', 'Hindi'], ['ja', 'Japanese'], ['zh', 'Chinese'], ['ko', 'Korean'], ['it', 'Italian']]
@@ -271,16 +331,6 @@ const fileUrl = (p?: string | null) => p
 const fmt = (s: number) => `${Math.floor(s / 60)}:${Math.floor(s % 60).toString().padStart(2, '0')}.${Math.floor((s % 1) * 10)}`
 const fmtEta = (s: number) => s >= 60 ? `${Math.floor(s / 60)}:${Math.floor(s % 60).toString().padStart(2, '0')}` : `${Math.ceil(s)}s`
 
-// Opacity of a clip at time t given its fades (used for preview + mirrors export)
-function fadeFactor(c: { start: number; duration: number; fadeIn: number; fadeOut: number }, t: number) {
-  const into = t - c.start
-  const toEnd = c.start + c.duration - t
-  let o = 1
-  if (c.fadeIn > 0) o = Math.min(o, into / c.fadeIn)
-  if (c.fadeOut > 0) o = Math.min(o, toEnd / c.fadeOut)
-  return clamp(o, 0, 1)
-}
-
 // Interpolated gain at an absolute time, following the clip's volume automation line.
 function gainAt(c: TimelineClip, tAbs: number) {
   const pts = c.volumePoints
@@ -356,6 +406,8 @@ function App() {
   const [masterVolume, setMasterVolume] = useState(1)
   const [customExportPath, setCustomExportPath] = useState<string | null>(null)
   const [exportQuality, setExportQuality] = useState<'medium' | 'high'>('high')
+  const [exportFormat, setExportFormat] = useState<ExportFormat>('mp4')
+  const [exportBackground, setExportBackground] = useState('#000000')
   const [lastExport, setLastExport] = useState<string | null>(null)
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS)
   // What the hardware turned out to be, measured once at startup in the main process.
@@ -391,15 +443,28 @@ function App() {
   const [showThumbnail, setShowThumbnail] = useState(false)
   const [toasts, setToasts] = useState<{ id: string; text: string }[]>([])
   const notify = (text: string, ms = 7000) => { const id = rid(); setToasts(t => [...t, { id, text }]); setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), ms) }
+  const [alphaImportProgress, setAlphaImportProgress] = useState<{ percent: number; detail: string } | null>(null)
+  useEffect(() => {
+    const onProgress = (_event: unknown, data: { percent?: number; detail?: string }) => {
+      const percent = Number(data?.percent)
+      if (percent < 0) { setAlphaImportProgress(null); return }
+      setAlphaImportProgress({ percent: Math.max(0, Math.min(100, percent || 0)), detail: data?.detail || 'Preparing alpha animation' })
+      if (percent >= 100) setTimeout(() => setAlphaImportProgress(null), 1200)
+    }
+    window.ipcRenderer.on('alpha-import-progress', onProgress)
+    return () => window.ipcRenderer.off('alpha-import-progress', onProgress)
+  }, [])
   const [sidebarTab, setSidebarTab] = useState<'media' | 'sfx'>('media')
+  const [rightSidebarTab, setRightSidebarTab] = useState<'properties' | 'export'>('properties')
   const [silenceBusy, setSilenceBusy] = useState<string | null>(null)
   // Takes & history: the transcript, the repeat groups, and enough snapshots to let the user
   // change their mind about which take to keep without re-scanning.
   // Text you can type straight onto the picture. Without this the only way to change the words
   // was a box far down the right sidebar, which nobody finds.
   const [editingTextId, setEditingTextId] = useState<string | null>(null)
+  const editingTextIdRef = useRef<string | null>(null)
   const editRef = useRef<HTMLDivElement | null>(null)
-  const editTextRef = useRef<string>('')   // what to seed the editable div with
+  const editTextRef = useRef<string>('')   // live draft and the value used to seed the editable div
   const [showTakes, setShowTakes] = useState(false)
   const [takes, setTakes] = useState<TakeAnalysis | null>(null)
   const [takesBusy, setTakesBusy] = useState<string | null>(null)
@@ -462,9 +527,35 @@ function App() {
     .sort((a, b) => TRACK_LAYER[a.trackId] - TRACK_LAYER[b.trackId])
   const activeVideoClips = previewVideoClips.filter(c => currentTime >= c.start)
   const activeTexts = texts.filter(t => currentTime >= t.start && currentTime < t.start + t.duration)
+  const editingTextVisible = editingTextId !== null && activeTexts.some(t => t.id === editingTextId)
   const activeKey = activeVideoClips.map(c => c.id).join(',')
 
   // ---- effects ----
+
+  // contentEditable is intentionally left uncontrolled while typing. Seed and focus it only
+  // after React has committed the selected text node; a zero-delay timer can beat that commit
+  // under batching and leave the editor (and then the saved text) blank.
+  useLayoutEffect(() => {
+    if (!editingTextId || !editingTextVisible) return
+    const el = editRef.current
+    if (!el) return
+    const draft = editTextRef.current
+    if (el.innerText !== draft) el.innerText = draft
+    el.focus()
+    const range = document.createRange()
+    range.selectNodeContents(el)
+    const selection = window.getSelection()
+    selection?.removeAllRanges()
+    selection?.addRange(range)
+  }, [editingTextId, editingTextVisible])
+
+  // Project loads, undo, or deletion can remove the item while it owns the editable ref.
+  useEffect(() => {
+    if (!editingTextId || texts.some(text => text.id === editingTextId)) return
+    editingTextIdRef.current = null
+    editTextRef.current = ''
+    setEditingTextId(null)
+  }, [editingTextId, texts])
   // Ask the main process what this machine can take. The heavy defaults (which Whisper model,
   // how many frames to decode, how many ffmpeg jobs at once) come from the answer, so a thin
   // laptop is not asked to do the accuracy-first work a workstation was tuned for.
@@ -720,31 +811,35 @@ function App() {
     for (const file of files) {
       const ext = extOf(file.name)
       try {
-        const path = window.ipcRenderer.getPathForFile(file)
+        const sourcePath = window.ipcRenderer.getPathForFile(file)
 
         // 3D models open in the studio instead of landing on the timeline
-        if (MODEL_EXT.has(ext)) { setModel3DPath(path); setShowModel3D(true); continue }
+        if (MODEL_EXT.has(ext)) { setModel3DPath(sourcePath); setShowModel3D(true); continue }
         if (PAGE_EXT.has(ext)) {
-          const r = await window.ipcRenderer.extractModel(path)
+          const r = await window.ipcRenderer.extractModel(sourcePath)
           if (r.path) { setModel3DPath(r.path); setShowModel3D(true); notify(`Found a 3D model in ${file.name} (${r.how}), opening the 3D Studio.`) }
           else skipped.push(`${file.name} - ${r.error || 'no 3D model inside that page'}`)
           continue
         }
 
-        // ffprobe decides: it reads far more formats than any extension list knows about
-        const meta = await window.ipcRenderer.getMetadata(path).catch(() => null)
-        const verdict = classifyMedia(file.name, meta)
+        // Animated WebP and PNG-frame ZIPs are normalized to an alpha-safe edit master;
+        // everything else still goes straight to ffprobe as before.
+        const prepared = await prepareMediaImport(sourcePath, file.name, fps)
+        const meta = prepared.meta
+        const verdict = prepared.type ? { type: prepared.type } as const : classifyMedia(file.name, meta)
         if ('reject' in verdict) { skipped.push(`${file.name} - ${verdict.reject}`); continue }
         const { type } = verdict
         const m = meta as Probe   // a non-reject verdict means the probe succeeded
         const entry: MediaFile = {
-          id: rid(), name: file.name, path, type,
-          duration: type === 'image' ? 5 : (m.duration || 5),
+          id: rid(), name: file.name, path: prepared.path, sourcePath: prepared.sourcePath, proxyPath: prepared.proxyPath, type,
+          duration: prepared.duration || (type === 'image' ? 5 : (m.duration || 5)),
           hasVideo: m.hasVideo || type === 'image',
           hasAudio: m.hasAudio,
           hdr: isHdr({ colorTransfer: m.colorTransfer }),
+          alpha: prepared.alpha,
+          proxyNote: prepared.note,
         }
-        probes.set(entry.id, m)
+        if (!entry.proxyPath) probes.set(entry.id, m)
         added.push(entry)
       } catch (err) {
         console.error(err)
@@ -754,7 +849,7 @@ function App() {
     if (added.length) { setMediaBin(prev => [...prev, ...added]); void ensureProxies(added, probes) }
     if (skipped.length) notify(`Skipped ${skipped.length} file${skipped.length > 1 ? 's' : ''}:\n\n${skipped.slice(0, 5).map(s => '• ' + s).join('\n')}${skipped.length > 5 ? `\n• …and ${skipped.length - 5} more` : ''}`, 11000)
     return added
-  }, [])
+  }, [fps])
 
   // Footage the preview cannot decode (phone HEVC, 10-bit, HDR, very large frames) gets a
   // watchable stand-in built in the background. The original stays the master: exports read from
@@ -762,6 +857,7 @@ function App() {
   const ensureProxies = useCallback(async (items: MediaFile[], probes: Map<string, Probe>) => {
     for (const m of items) {
       if (m.type !== 'video') continue
+      if (m.proxyPath) continue
       const info = probes.get(m.id)
       if (!info) continue
       const plan = planProxy({ ...info, hasVideo: true })
@@ -914,9 +1010,9 @@ function App() {
     switch (cmd.action) {
       case 'get_state':
         return {
-          format: { orientation, resolution, fps, width: w, height: h },
+          format: { orientation, resolution, fps, width: w, height: h, fileFormat: exportFormat, background: exportBackground },
           duration: totalDuration, currentTime, isPlaying,
-          mediaBin: mediaBin.map(m => ({ id: m.id, name: m.name, type: m.type, duration: m.duration, path: m.path, chromaKey: m.chromaKey })),
+          mediaBin: mediaBin.map(m => ({ id: m.id, name: m.name, type: m.type, duration: m.duration, path: m.sourcePath || m.path, renderPath: m.sourcePath ? m.path : undefined, alpha: m.alpha, chromaKey: m.chromaKey })),
           clips: clips.map(c => ({ id: c.id, track: c.trackId, media: mediaBin.find(m => m.id === c.mediaId)?.name, start: +c.start.toFixed(3), duration: +c.duration.toFixed(3), sourceStart: +c.sourceStart.toFixed(3), volume: c.volume, fadeIn: c.fadeIn, fadeOut: c.fadeOut, automationPoints: c.volumePoints?.length || 0 })),
           texts: texts.map(t => ({ id: t.id, text: t.text, start: +t.start.toFixed(3), duration: +t.duration.toFixed(3), x: t.x, y: t.y, fontSize: t.fontSize, color: t.color })),
           tags: [...markers].sort((a, b) => a.t - b.t).map(m => ({ id: m.id, t: +m.t.toFixed(3), label: m.label })),
@@ -946,14 +1042,24 @@ function App() {
           setModel3DPath(p); setShowModel3D(true)
           return { ok: true, opened: '3D Studio', path: p, note: 'the human poses it there and renders a turntable clip into the bin' }
         }
-        const meta = await window.ipcRenderer.getMetadata(cmd.path).catch(() => null)
-        const verdict = classifyMedia(cmd.path, meta)
+        let prepared: PreparedMediaImport
+        try { prepared = await prepareMediaImport(cmd.path, cmd.path, fps) }
+        catch (error) { return { error: `cannot use ${cmd.path}: ${String((error as Error)?.message || error)}` } }
+        const meta = prepared.meta
+        const verdict = prepared.type ? { type: prepared.type } as const : classifyMedia(cmd.path, meta)
         if ('reject' in verdict) return { error: `cannot use ${cmd.path}: ${verdict.reject}` }
         const type: MediaFile['type'] = verdict.type
         const m = meta as Probe   // a non-reject verdict means the probe succeeded
-        const media: MediaFile = { id: rid(), name: cmd.path.split(/[\\/]/).pop() || 'media', path: cmd.path, type, duration: type === 'image' ? (cmd.duration || 5) : (m.duration || 5), hasVideo: m.hasVideo || type === 'image', hasAudio: m.hasAudio, hdr: isHdr({ colorTransfer: m.colorTransfer }), chromaKey: typeof cmd.chromaKey === 'string' ? cmd.chromaKey : undefined }
+        const media: MediaFile = {
+          id: rid(), name: cmd.path.split(/[\\/]/).pop() || 'media', path: prepared.path,
+          sourcePath: prepared.sourcePath, proxyPath: prepared.proxyPath, type,
+          duration: prepared.duration || (type === 'image' ? (cmd.duration || 5) : (m.duration || 5)),
+          hasVideo: m.hasVideo || type === 'image', hasAudio: m.hasAudio,
+          hdr: isHdr({ colorTransfer: m.colorTransfer }), chromaKey: typeof cmd.chromaKey === 'string' ? cmd.chromaKey : undefined,
+          alpha: prepared.alpha, proxyNote: prepared.note,
+        }
         setMediaBin(prev => [...prev, media])
-        void ensureProxies([media], new Map([[media.id, m]]))
+        if (!media.proxyPath) void ensureProxies([media], new Map([[media.id, m]]))
         if (cmd.place !== false) {
           const isAudio = media.type === 'audio'
           const track = clips.filter(c => c.trackId === (isAudio ? 'a1' : 'v1'))
@@ -1366,6 +1472,8 @@ function App() {
         if (cmd.orientation && ORIENTATIONS[cmd.orientation as OrientationKey]) setOrientation(cmd.orientation)
         if (cmd.resolution) setResolution(cmd.resolution)
         if (cmd.fps) setFps(cmd.fps)
+        if (cmd.fileFormat && isExportFormat(cmd.fileFormat)) { setExportFormat(cmd.fileFormat); setCustomExportPath(null); setLastExport(null) }
+        if (typeof cmd.background === 'string' && /^#[0-9a-f]{6}$/i.test(cmd.background)) setExportBackground(cmd.background)
         return { ok: true }
       }
       case 'prepare_analysis': {
@@ -1437,11 +1545,14 @@ function App() {
       case 'export': {
         if (!cmd.outputPath) return { error: 'outputPath required' }
         if (clips.length === 0 && texts.length === 0) return { error: 'timeline is empty' }
+        let requestedFormat: ExportFormat
+        try { requestedFormat = resolveExportFormat(cmd.format, cmd.outputPath) }
+        catch (e) { return { error: String(e) } }
         setIsPlaying(false)
         const payload = {
           clips: exportClips(h),
           texts, brand: settings.brand, audio: settings.audio, outputPath: cmd.outputPath,
-          settings: { width: w, height: h, fps, quality: exportQuality, masterVolume },
+          settings: { width: w, height: h, fps, quality: exportQuality, masterVolume, format: requestedFormat, background: cmd.background || exportBackground },
         }
         // Drive the same progress state the button uses: the human watches it render, and
         // the button re-enables afterwards (it stayed stuck and disabled before).
@@ -1451,8 +1562,8 @@ function App() {
         setExportProgress(100); setEta(null)
         setTimeout(() => setExportProgress(null), 3000)
         setLastExport(cmd.outputPath)
-        const qc = cmd.qualityCheck === false ? null : await window.ipcRenderer.qualityCheck(cmd.outputPath).catch(() => null)
-        return { ok: true, outputPath: cmd.outputPath, qualityCheck: qc ? { verdict: qc.verdict, checks: qc.checks?.map((c: any) => `${c.status}: ${c.label} - ${c.detail}`) } : undefined }
+        const qc = cmd.qualityCheck === false || !EXPORT_FORMATS[requestedFormat].qualityCheck ? null : await window.ipcRenderer.qualityCheck(cmd.outputPath).catch(() => null)
+        return { ok: true, outputPath: cmd.outputPath, format: requestedFormat, alpha: EXPORT_FORMATS[requestedFormat].alpha, qualityCheck: qc ? { verdict: qc.verdict, checks: qc.checks?.map((c: any) => `${c.status}: ${c.label} - ${c.detail}`) } : undefined }
       }
       default:
         return { error: `unknown action: ${cmd.action}` }
@@ -1493,6 +1604,11 @@ function App() {
   // ---- editing actions ----
   const deleteSelected = () => {
     if (!selectedId) return
+    if (editingTextIdRef.current === selectedId) {
+      editingTextIdRef.current = null
+      editTextRef.current = ''
+      setEditingTextId(null)
+    }
     setClips(c => c.filter(x => x.id !== selectedId))
     setTexts(t => t.filter(x => x.id !== selectedId))
     setSelectedId(null)
@@ -1510,30 +1626,25 @@ function App() {
 
   // Put the caret in the text on the picture, with the placeholder selected so typing replaces it
   const startTextEdit = (id: string, seed?: string) => {
-    editTextRef.current = seed ?? texts.find(x => x.id === id)?.text ?? ''
+    const previousId = editingTextIdRef.current
+    if (previousId && previousId !== id) {
+      const previousValue = (editRef.current?.innerText ?? editTextRef.current).replace(/\n+$/, '')
+      setTexts(prev => prev.map(text => text.id === previousId ? { ...text, text: previousValue } : text))
+    }
+    editTextRef.current = seed ?? texts.find(text => text.id === id)?.text ?? ''
+    editingTextIdRef.current = id
     setSelectedId(id)
     setIsPlaying(false)
     setEditingTextId(id)
-    setTimeout(() => {
-      const el = editRef.current
-      if (!el) return
-      const current = editTextRef.current
-      el.innerText = current || ''
-      el.focus()
-      const range = document.createRange()
-      range.selectNodeContents(el)
-      const sel = window.getSelection()
-      sel?.removeAllRanges()
-      sel?.addRange(range)
-    }, 0)
   }
-  const endTextEdit = () => {
-    const el = editRef.current
-    if (el && editingTextId) {
-      const v = el.innerText.replace(/\n+$/, '')
-      setTexts(prev => prev.map(x => x.id === editingTextId ? { ...x, text: v } : x))
+  const endTextEdit = (id: string, rawValue: string) => {
+    const value = rawValue.replace(/\n+$/, '')
+    setTexts(prev => prev.map(text => text.id === id ? { ...text, text: value } : text))
+    if (editingTextIdRef.current === id) {
+      editTextRef.current = value
+      editingTextIdRef.current = null
+      setEditingTextId(null)
     }
-    setEditingTextId(null)
   }
 
   // The exporter opens the source once per clip. On a 90-clip cut of 4K HEVC HDR that means 90
@@ -1548,17 +1659,13 @@ function App() {
     .sort((a, b) => (TRACK_LAYER[a.trackId] - TRACK_LAYER[b.trackId]) || (a.start - b.start))
     .map(c => {
       const media = mediaBin.find(m => m.id === c.mediaId)
-      const src = exportSource(media, h)
+      const src = resolveMediaExportSource(media, h)
       return { ...c, path: src.path, hdr: src.hdr, hasVideo: media?.hasVideo, hasAudio: c.trackId === 'v2' ? false : media?.hasAudio, chromaKey: media?.chromaKey }
     })
-
-  const exportSource = (m: MediaFile | undefined, outHeight: number) =>
-    m?.proxyPath && outHeight <= 1080 ? { path: m.proxyPath, hdr: false } : { path: m?.path, hdr: m?.hdr }
 
   const addText = () => {
     const t: TextClip = { id: rid(), text: 'New text', start: currentTime, duration: 3, x: 0.5, y: 0.5, fontSize: 64, color: '#ffffff', fadeIn: 0.3, fadeOut: 0.3 }
     setTexts(prev => [...prev, t])
-    setSelectedId(t.id)
     startTextEdit(t.id, t.text)   // straight into typing, rather than hunting for a box in the sidebar
   }
 
@@ -1855,7 +1962,7 @@ function App() {
 
   // ---- export ----
   const pickExportPath = async () => {
-    try { const p = await window.ipcRenderer.selectSavePath('vidhelm_export.mp4'); if (p) setCustomExportPath(p) } catch (e) { console.error(e) }
+    try { const p = await window.ipcRenderer.selectSavePath(defaultExportName(exportFormat)); if (p) setCustomExportPath(p) } catch (e) { console.error(e) }
   }
 
   const handleExport = async () => {
@@ -1867,7 +1974,7 @@ function App() {
     try {
       let finalPath = customExportPath
       if (!finalPath) {
-        finalPath = await window.ipcRenderer.selectSavePath('vidhelm_export.mp4')
+        finalPath = await window.ipcRenderer.selectSavePath(defaultExportName(exportFormat))
         if (!finalPath) { setExportProgress(null); return }
         setCustomExportPath(finalPath)
       }
@@ -1877,20 +1984,20 @@ function App() {
         brand: settings.brand,
         audio: settings.audio,
         outputPath: finalPath,
-        settings: { width: w, height: h, fps, quality: exportQuality, masterVolume },
+        settings: { width: w, height: h, fps, quality: exportQuality, masterVolume, format: exportFormat, background: exportBackground },
       }
       await window.ipcRenderer.exportVideo(payload)
       setExportProgress(100)
       setLastExport(finalPath)
       setTimeout(() => setExportProgress(null), 3000)
-      runQualityCheck(finalPath) // auto "watch & verify" the result
-    } catch (err) { console.error('Export failed', err); setExportProgress(null) }
+      if (EXPORT_FORMATS[exportFormat].qualityCheck) runQualityCheck(finalPath) // image animations have no YouTube/audio checks
+    } catch (err) { console.error('Export failed', err); notify(`Export failed: ${String(err)}`); setExportProgress(null) }
   }
 
   // ---- project folders ----
   // A workspace root holds one sub-folder per project. Opening a project pulls in whatever
   // media is sitting in that folder, so dropping files in with Explorer is the "import".
-  const projectData = () => ({ version: 2, mediaBin, clips, texts, markers, orientation, resolution, fps, masterVolume, exportQuality })
+  const projectData = () => ({ version: 2, mediaBin, clips, texts, markers, orientation, resolution, fps, masterVolume, exportQuality, exportFormat, exportBackground })
 
   const refreshProjects = async (root: string | null) => {
     if (!root) { setProjects([]); return }
@@ -1905,10 +2012,12 @@ function App() {
     if (r.error) { notify(`Could not open ${name}: ${r.error}`); return }
     setIsPlaying(false)
     setCurrentProject({ dir, name })
+    const restored = await rehydrateMediaImports(r.project?.mediaBin || [], r.project?.fps || fps)
 
     // a saved timeline in the folder wins; otherwise start clean with the folder's media
     if (r.project) {
-      setMediaBin(r.project.mediaBin || [])
+      setCustomExportPath(null); setLastExport(null)
+      setMediaBin(restored.media)
       setClips(r.project.clips || [])
       setTexts(r.project.texts || [])
       setMarkers(r.project.markers || [])
@@ -1916,25 +2025,32 @@ function App() {
       if (r.project.resolution) setResolution(r.project.resolution)
       if (r.project.fps) setFps(r.project.fps)
       if (typeof r.project.masterVolume === 'number') setMasterVolume(r.project.masterVolume)
+      if (r.project.exportQuality) setExportQuality(r.project.exportQuality)
+      if (isExportFormat(r.project.exportFormat)) setExportFormat(r.project.exportFormat)
+      if (typeof r.project.exportBackground === 'string') setExportBackground(r.project.exportBackground)
     } else {
       setClips([]); setTexts([]); setMarkers([]); setMediaBin([])
     }
     setSelectedId(null); setCurrentTime(0)
+    if (restored.failed.length) notify(`Using the saved preview for ${restored.failed.join(', ')} because the original alpha animation could not be refreshed.`, 10000)
 
     if (!settings.workspace.autoLoad) { notify(`Opened ${name}.`); return }
     // pull in everything in the folder that isn't already in the bin
-    const known = new Set((r.project?.mediaBin || []).map((m: MediaFile) => m.path))
+    const known = new Set(restored.media.map((m: MediaFile) => m.sourcePath || m.path))
     const fresh = (r.files || []).filter(f => !known.has(f.path))
     const added: MediaFile[] = []
     for (const f of fresh) {
-      const meta = await window.ipcRenderer.getMetadata(f.path).catch(() => null)
-      const verdict = classifyMedia(f.name, meta)
+      let prepared: PreparedMediaImport
+      try { prepared = await prepareMediaImport(f.path, f.name, r.project?.fps || fps) } catch { continue }
+      const meta = prepared.meta
+      const verdict = prepared.type ? { type: prepared.type } as const : classifyMedia(f.name, meta)
       if ('reject' in verdict) continue
       const m = meta as Probe
       added.push({
-        id: rid(), name: f.name, path: f.path, type: verdict.type,
-        duration: verdict.type === 'image' ? 5 : (m.duration || 5),
+        id: rid(), name: f.name, path: prepared.path, sourcePath: prepared.sourcePath, proxyPath: prepared.proxyPath, type: verdict.type,
+        duration: prepared.duration || (verdict.type === 'image' ? 5 : (m.duration || 5)),
         hasVideo: m.hasVideo || verdict.type === 'image', hasAudio: m.hasAudio,
+        alpha: prepared.alpha, proxyNote: prepared.note,
       })
     }
     if (added.length) setMediaBin(prev => [...prev, ...added])
@@ -1949,6 +2065,7 @@ function App() {
     if (r.error || !r.path) { notify(`Could not create the project: ${r.error || 'unknown error'}`); return }
     await refreshProjects(root)
     setCurrentProject({ dir: r.path, name: r.name || name })
+    setCustomExportPath(null); setLastExport(null)
     setMediaBin([]); setClips([]); setTexts([]); setMarkers([]); setCurrentTime(0)
     notify(`Created ${r.name}. Drop footage into that folder and hit ↻, no import needed.`)
     window.ipcRenderer.revealFolder(r.path)
@@ -1972,7 +2089,9 @@ function App() {
       const data = await window.ipcRenderer.loadProject()
       if (!data) return
       setIsPlaying(false)
-      setMediaBin(data.mediaBin || [])
+      setCustomExportPath(null); setLastExport(null)
+      const restored = await rehydrateMediaImports(data.mediaBin || [], data.fps || fps)
+      setMediaBin(restored.media)
       setClips(data.clips || [])
       setTexts(data.texts || [])
       setMarkers(data.markers || [])
@@ -1981,6 +2100,8 @@ function App() {
       if (data.fps) setFps(data.fps)
       if (typeof data.masterVolume === 'number') setMasterVolume(data.masterVolume)
       if (data.exportQuality) setExportQuality(data.exportQuality)
+      if (isExportFormat(data.exportFormat)) setExportFormat(data.exportFormat)
+      if (typeof data.exportBackground === 'string') setExportBackground(data.exportBackground)
       setSelectedId(null)
       setCurrentTime(0)
       // reset history to the loaded state
@@ -1988,11 +2109,14 @@ function App() {
       history.current = [{ clips: data.clips || [], texts: data.texts || [] }]
       histIndex.current = 0
       setCanUndo(false); setCanRedo(false)
+      if (restored.failed.length) notify(`Using the saved preview for ${restored.failed.join(', ')} because the original alpha animation could not be refreshed.`, 10000)
     } catch (e) { console.error(e) }
   }
 
   // ---- generic drags on timeline ----
   const startClipMove = (e: React.MouseEvent, clip: TimelineClip) => {
+    if (e.button !== 0) return
+    e.preventDefault()
     e.stopPropagation()
     setSelectedId(clip.id)
     const startX = e.clientX
@@ -2002,14 +2126,62 @@ function App() {
     const move = (m: MouseEvent) => {
       const dx = m.clientX - startX
       if (Math.abs(dx) > 3) draggingRef.current = true
-      let ns = Math.max(0, origStart + dx / pxPerSec)
       // snap to 0, playhead, tag points and neighbour edges
       const snaps = [0, currentTime, ...markers.map(mk => mk.t), ...others.flatMap(o => [o.start, o.start + o.duration])]
-      for (const s of snaps) { if (Math.abs(ns - s) < 6 / pxPerSec) { ns = s; break } }
+      const ns = timelineDragStart(origStart, dx, pxPerSec, snaps)
       setClips(prev => prev.map(c => c.id === clip.id ? { ...c, start: ns } : c))
     }
     const up = () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); setTimeout(() => { draggingRef.current = false }, 0) }
     window.addEventListener('mousemove', move); window.addEventListener('mouseup', up)
+  }
+
+  const startTextMove = (e: React.MouseEvent, text: TextClip) => {
+    if (e.button !== 0) return
+    e.preventDefault()
+    e.stopPropagation()
+    setSelectedId(text.id)
+    const startX = e.clientX
+    const originalStart = text.start
+    draggingRef.current = false
+    const others = texts.filter(item => item.id !== text.id)
+    const move = (event: MouseEvent) => {
+      const dx = event.clientX - startX
+      if (Math.abs(dx) > 3) draggingRef.current = true
+      const snaps = [
+        0,
+        currentTime,
+        ...markers.map(marker => marker.t),
+        ...others.flatMap(item => [item.start, item.start + item.duration]),
+      ]
+      const start = timelineDragStart(originalStart, dx, pxPerSec, snaps)
+      setTexts(prev => prev.map(item => item.id === text.id ? { ...item, start } : item))
+    }
+    const up = () => {
+      window.removeEventListener('mousemove', move)
+      window.removeEventListener('mouseup', up)
+      setTimeout(() => { draggingRef.current = false }, 0)
+    }
+    window.addEventListener('mousemove', move)
+    window.addEventListener('mouseup', up)
+  }
+
+  const startTextTrim = (e: React.MouseEvent, text: TextClip, side: 'left' | 'right') => {
+    if (e.button !== 0) return
+    e.preventDefault()
+    e.stopPropagation()
+    setSelectedId(text.id)
+    const startX = e.clientX
+    const original = { start: text.start, duration: text.duration }
+    const move = (event: MouseEvent) => {
+      const resized = timelineResize(original, event.clientX - startX, pxPerSec, side)
+      setTexts(prev => prev.map(item => item.id === text.id ? { ...item, ...resized } : item))
+    }
+    const up = () => {
+      window.removeEventListener('mousemove', move)
+      window.removeEventListener('mouseup', up)
+    }
+    window.addEventListener('mousemove', move)
+    window.addEventListener('mouseup', up)
   }
 
   const startTrim = (e: React.MouseEvent, clip: TimelineClip, side: 'left' | 'right') => {
@@ -2053,6 +2225,31 @@ function App() {
     }
     const up = () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up) }
     window.addEventListener('mousemove', move); window.addEventListener('mouseup', up)
+  }
+
+  const startTextResize = (e: React.MouseEvent, t: TextClip) => {
+    if (e.button !== 0) return
+    e.preventDefault()
+    e.stopPropagation()
+    setSelectedId(t.id)
+    const layer = (e.currentTarget as HTMLElement).closest('.text-layer') as HTMLElement | null
+    if (!layer) return
+    const bounds = layer.getBoundingClientRect()
+    const centerX = bounds.left + bounds.width / 2
+    const centerY = bounds.top + bounds.height / 2
+    const originalDistance = Math.hypot(e.clientX - centerX, e.clientY - centerY)
+    const originalFontSize = t.fontSize
+    const move = (event: MouseEvent) => {
+      const distance = Math.hypot(event.clientX - centerX, event.clientY - centerY)
+      const fontSize = textResizeFontSize(originalFontSize, originalDistance, distance)
+      setTexts(prev => prev.map(item => item.id === t.id ? { ...item, fontSize } : item))
+    }
+    const up = () => {
+      window.removeEventListener('mousemove', move)
+      window.removeEventListener('mouseup', up)
+    }
+    window.addEventListener('mousemove', move)
+    window.addEventListener('mouseup', up)
   }
 
   const onTimelineClick = (e: React.MouseEvent) => {
@@ -2105,6 +2302,7 @@ function App() {
 
   const renderClip = (c: TimelineClip) => {
     const media = mediaBin.find(m => m.id === c.mediaId)
+    const layout = timelineBlockLayout(c, pxPerSec)
     let bg: string | undefined
     let bgSize = '100% 100%'
     if (c.trackId === 'v1' && media) {
@@ -2115,14 +2313,15 @@ function App() {
       <div
         key={c.id}
         onMouseDown={(e) => startClipMove(e, c)}
+        onClick={(e) => e.stopPropagation()}
         className={`clip ${c.trackId === 'v2' ? 'b-clip' : c.trackId !== 'v1' ? 'a-clip' : 'v-clip'} ${c.type} ${bg ? 'has-thumb' : ''} ${selectedId === c.id ? 'selected' : ''}`}
-        style={{ left: c.start * pxPerSec, width: c.duration * pxPerSec, backgroundImage: bg, backgroundSize: bgSize, backgroundPosition: 'center', backgroundRepeat: 'no-repeat' }}
+        style={{ left: layout.left, width: layout.width, backgroundImage: bg, backgroundSize: bgSize, backgroundPosition: 'center', backgroundRepeat: 'no-repeat' }}
         title={media?.name}
       >
         <div className="trim-handle left" onMouseDown={(e) => startTrim(e, c, 'left')} />
-        {c.fadeIn > 0 && <div className="fade-tri in" style={{ width: c.fadeIn * pxPerSec }} />}
+        {layout.fadeInWidth > 0 && <div className="fade-tri in" style={{ width: layout.fadeInWidth }} />}
         <span className="clip-label">{media?.name}</span>
-        {c.fadeOut > 0 && <div className="fade-tri out" style={{ width: c.fadeOut * pxPerSec }} />}
+        {layout.fadeOutWidth > 0 && <div className="fade-tri out" style={{ width: layout.fadeOutWidth }} />}
         <div className="trim-handle right" onMouseDown={(e) => startTrim(e, c, 'right')} />
       </div>
     )
@@ -2211,12 +2410,13 @@ function App() {
                   onClick={() => currentProject && window.ipcRenderer.revealFolder(currentProject.dir)}>📂</button>
               </div>
             )}
+            {sidebarTab === 'media' && alphaImportProgress && <div className="alpha-import-progress"><span>{alphaImportProgress.detail}</span><div><i style={{ width: `${alphaImportProgress.percent}%` }} /></div></div>}
             {sidebarTab === 'media' && <div className="media-list" onDrop={async (e) => { e.preventDefault(); await importFiles(Array.from(e.dataTransfer.files)) }} onDragOver={(e) => e.preventDefault()}>
               {mediaBin.length === 0 && <div className="empty-hint">
                 Click <IconPlus /> or drag files here.
                 <InfoNote label="What can I add?">
                   Double-click an item, or drop files straight onto the timeline, to use it.<br /><br />
-                  Video, audio and images in just about any format, plus 3D models (STL · 3MF · OBJ · GLB), which open in the 3D Studio instead of the timeline.<br /><br />
+                  Video, audio and images in just about any format, plus animated WebP and PNG frame-sequence ZIPs with transparency. 3D models (STL · 3MF · OBJ · GLB) open in the 3D Studio instead of the timeline.<br /><br />
                   New here? The <b>?</b> button up top walks you through a first video.
                 </InfoNote>
               </div>}
@@ -2234,7 +2434,7 @@ function App() {
                     <span className="duration">
                       {m.type === 'image' ? 'Image • 5s' : `${Math.round(m.duration)}s`}
                       {m.proxyPct !== undefined && <span className="prox building" title={`${m.proxyNote}. Building a preview copy, the original is untouched.`}> · preview copy {m.proxyPct}%</span>}
-                      {m.proxyPct === undefined && m.proxyPath && <span className="prox" title={`${m.proxyNote}. Editing plays a preview copy; your export still uses the original file.`}> · proxy</span>}
+                      {m.proxyPct === undefined && m.proxyPath && <span className="prox" title={m.alpha ? 'Transparent preview; export uses the lossless alpha edit master.' : `${m.proxyNote}. Editing plays a preview copy; your export still uses the original file.`}> · {m.alpha ? 'alpha animation' : 'proxy'}</span>}
                       {m.proxyPct === undefined && !m.proxyPath && m.proxyNote && <span className="prox warn" title={m.proxyNote}> · no preview</span>}
                     </span>
                   </div>
@@ -2246,7 +2446,7 @@ function App() {
 
         <div className="center-panel">
           <div className="viewer-container">
-            <div className="stage" ref={stageRef} style={{ aspectRatio: String(ORIENTATIONS[orientation].ratio) }} onMouseDown={() => setSelectedId(null)}>
+            <div className={`stage ${EXPORT_FORMATS[exportFormat].alpha ? 'alpha-preview' : ''}`} ref={stageRef} style={{ aspectRatio: String(ORIENTATIONS[orientation].ratio), ...(!EXPORT_FORMATS[exportFormat].alpha ? { background: exportBackground } : {}) }} onMouseDown={() => setSelectedId(null)}>
               {activeVideoClips.length === 0 && activeTexts.length === 0 && <div className="placeholder">{w}×{h}</div>}
               {previewVideoClips.map(c => {
                 const media = mediaBin.find(m => m.id === c.mediaId)
@@ -2266,16 +2466,20 @@ function App() {
                   contentEditable={editingTextId === t.id}
                   suppressContentEditableWarning
                   spellCheck={false}
-                  title={editingTextId === t.id ? '' : 'Drag to move, double-click to type'}
+                  title={editingTextId === t.id ? '' : 'Drag to move, use the corner handle to resize, double-click to type'}
                   onMouseDown={(e) => { if (isPlaying) return; if (editingTextId === t.id) { e.stopPropagation(); return } startTextDrag(e, t) }}
                   onDoubleClick={(e) => { e.stopPropagation(); if (!isPlaying) startTextEdit(t.id) }}
-                  onInput={(e) => { const v = (e.target as HTMLElement).innerText; setTexts(prev => prev.map(x => x.id === t.id ? { ...x, text: v } : x)) }}
-                  onBlur={() => endTextEdit()}
+                  onInput={(e) => { const v = (e.currentTarget as HTMLElement).innerText; editTextRef.current = v; setTexts(prev => prev.map(x => x.id === t.id ? { ...x, text: v } : x)) }}
+                  onBlur={(e) => endTextEdit(t.id, e.currentTarget.innerText)}
                   onKeyDown={(e) => {
                     e.stopPropagation()   // Space and Delete belong to the caret while typing
-                    if (e.key === 'Escape' || (e.key === 'Enter' && !e.shiftKey)) { e.preventDefault(); endTextEdit() }
+                    if (e.key === 'Escape' || (e.key === 'Enter' && !e.shiftKey)) { e.preventDefault(); endTextEdit(t.id, e.currentTarget.innerText) }
                   }}>
-                  {editingTextId === t.id ? undefined : (t.text || ' ')}
+                  {editingTextId === t.id ? undefined : <>
+                    {t.text || ' '}
+                    {selectedId === t.id && !isPlaying && <button type="button" className="text-resize-handle" aria-label="Resize text"
+                      title="Drag to resize text" onMouseDown={(e) => startTextResize(e, t)} onClick={(e) => e.stopPropagation()} />}
+                  </>}
                 </div>
               ))}
               {settings.brand.enabled && settings.brand.logoPath && (() => {
@@ -2353,20 +2557,31 @@ function App() {
                   {m.label && <span className="marker-flag-label">{m.label}</span>}
                 </div>
               ))}
-              <div className="scrubber" style={{ left: currentTime * pxPerSec }}>
-                <div className="scrubber-grab" title="Drag to scrub" {...scrubHandlers} />
-              </div>
               <div className="tracks">
+                <div className="scrubber-position" style={{ left: currentTime * pxPerSec }}>
+                  <div className="scrubber" style={{ height: Math.max(0, timelineH - 26) }}>
+                    <div className="scrubber-grab" title="Drag to scrub" {...scrubHandlers} />
+                  </div>
+                </div>
                 <button className="track-label" onClick={() => setCollapsed(c => ({ ...c, text: !c.text }))}><IconChevron open={!collapsed.text} /> TEXT</button>
                 {!collapsed.text && (
                   <div className="track text-track">
-                    {texts.map(t => (
-                      <div key={t.id} onMouseDown={(e) => { e.stopPropagation(); setSelectedId(t.id) }}
-                        onDoubleClick={(e) => { e.stopPropagation(); setCurrentTime(t.start + Math.min(0.2, t.duration / 2)); startTextEdit(t.id) }}
-                        className={`clip text-clip ${selectedId === t.id ? 'selected' : ''}`} style={{ left: t.start * pxPerSec, width: t.duration * pxPerSec }} title={`${t.text}  (double-click to type)`}>
-                        <span className="clip-label"><IconText /> {t.text}</span>
-                      </div>
-                    ))}
+                    {texts.map(t => {
+                      const layout = timelineBlockLayout(t, pxPerSec)
+                      return (
+                        <div key={t.id} onMouseDown={(e) => startTextMove(e, t)}
+                          onClick={(e) => e.stopPropagation()}
+                          onDragStart={(e) => e.preventDefault()}
+                          onDoubleClick={(e) => { e.stopPropagation(); setCurrentTime(t.start + Math.min(0.2, t.duration / 2)); startTextEdit(t.id) }}
+                          className={`clip text-clip ${selectedId === t.id ? 'selected' : ''}`} style={{ left: layout.left, width: layout.width }} title={`${t.text}  (double-click to type)`}>
+                          <div className="trim-handle left" title="Drag to change start and duration" onMouseDown={(e) => startTextTrim(e, t, 'left')} onClick={(e) => e.stopPropagation()} />
+                          {layout.fadeInWidth > 0 && <div className="fade-tri in" style={{ width: layout.fadeInWidth }} />}
+                          <span className="clip-label"><IconText /> {t.text}</span>
+                          {layout.fadeOutWidth > 0 && <div className="fade-tri out" style={{ width: layout.fadeOutWidth }} />}
+                          <div className="trim-handle right" title="Drag to change duration" onMouseDown={(e) => startTextTrim(e, t, 'right')} onClick={(e) => e.stopPropagation()} />
+                        </div>
+                      )
+                    })}
                   </div>
                 )}
                 <button className="track-label" onClick={() => setCollapsed(c => ({ ...c, broll: !c.broll }))} title="Picture only: cutaways here cover the video track while the audio underneath keeps playing"><IconChevron open={!collapsed.broll} /> B-ROLL</button>
@@ -2384,10 +2599,22 @@ function App() {
 
         {!expanded && (
           <div className="sidebar right">
-            <div className="control-group">
+            <div className="section-header tabs right-sidebar-tabs" role="tablist" aria-label="Right sidebar">
+              <button className={`tab ${rightSidebarTab === 'properties' ? 'active' : ''}`} role="tab" aria-selected={rightSidebarTab === 'properties'} aria-controls="right-properties" onClick={() => setRightSidebarTab('properties')}>Properties</button>
+              <button className={`tab ${rightSidebarTab === 'export' ? 'active' : ''}`} role="tab" aria-selected={rightSidebarTab === 'export'} aria-controls="right-export" onClick={() => setRightSidebarTab('export')}>Export</button>
+            </div>
+            <div className="right-sidebar-content">
+            {rightSidebarTab === 'export' && (
+            <div className="control-group" id="right-export" role="tabpanel">
               <h3 className="group-title">Export Settings</h3>
               <div className="card">
-                <div className="field"><label>Format</label><div className="format-readout">{ORIENTATIONS[orientation].label} · {ORIENTATIONS[orientation].sub} · {w}×{h}</div></div>
+                <div className="field"><label>File Format</label>
+                  <select value={exportFormat} onChange={e => { setExportFormat(e.target.value as ExportFormat); setCustomExportPath(null); setLastExport(null) }}>
+                    {(Object.entries(EXPORT_FORMATS) as [ExportFormat, typeof EXPORT_FORMATS[ExportFormat]][]).map(([key, spec]) => <option key={key} value={key}>{spec.label}</option>)}
+                  </select>
+                  <span className="format-detail">{EXPORT_FORMATS[exportFormat].detail}</span>
+                </div>
+                <div className="field"><label>Canvas</label><div className="format-readout">{ORIENTATIONS[orientation].label} · {ORIENTATIONS[orientation].sub} · {w}×{h}</div></div>
                 <div className="field row">
                   <div><label>Resolution</label>
                     <select value={resolution} onChange={e => setResolution(e.target.value as ResolutionKey)}>
@@ -2403,30 +2630,29 @@ function App() {
                 <div className="field"><label>Encoding Quality</label>
                   <select value={exportQuality} onChange={e => setExportQuality(e.target.value as any)}><option value="medium">Standard (faster)</option><option value="high">High (larger file)</option></select>
                 </div>
-                <div className="field"><label><IconVolume /> Master Volume - {Math.round(masterVolume * 100)}%</label>
-                  <input type="range" min="0" max="1.5" step="0.05" value={masterVolume} onChange={e => setMasterVolume(parseFloat(e.target.value))} style={{ width: '100%', accentColor: 'var(--accent-primary)' }} />
-                </div>
-                <div className="field chk" onClick={() => setSettings(s => ({ ...s, audio: { ...s.audio, optimize: !s.audio.optimize } }))}><input type="checkbox" checked={settings.audio.optimize} readOnly id="norm" /><label htmlFor="norm" style={{ cursor: 'pointer', marginBottom: 0 }}>Optimize loudness (−14 LUFS)</label></div>
-                <div className="field chk" onClick={() => setSettings(s => ({ ...s, audio: { ...s.audio, noiseReduction: !s.audio.noiseReduction } }))}><input type="checkbox" checked={settings.audio.noiseReduction} readOnly id="nr" /><label htmlFor="nr" style={{ cursor: 'pointer', marginBottom: 0 }}>Noise reduction</label></div>
+                {!EXPORT_FORMATS[exportFormat].alpha && <div className="field"><label>Background Color</label><div className="color-field"><input type="color" value={exportBackground} onChange={e => setExportBackground(e.target.value)} /><span>{exportBackground.toUpperCase()}</span></div></div>}
+                {EXPORT_FORMATS[exportFormat].audio ? <>
+                  <div className="field"><label><IconVolume /> Master Volume - {Math.round(masterVolume * 100)}%</label>
+                    <input type="range" min="0" max="1.5" step="0.05" value={masterVolume} onChange={e => setMasterVolume(parseFloat(e.target.value))} style={{ width: '100%', accentColor: 'var(--accent-primary)' }} />
+                  </div>
+                  <div className="field chk" onClick={() => setSettings(s => ({ ...s, audio: { ...s.audio, optimize: !s.audio.optimize } }))}><input type="checkbox" checked={settings.audio.optimize} readOnly id="norm" /><label htmlFor="norm" style={{ cursor: 'pointer', marginBottom: 0 }}>Optimize loudness (−14 LUFS)</label></div>
+                  <div className="field chk" onClick={() => setSettings(s => ({ ...s, audio: { ...s.audio, noiseReduction: !s.audio.noiseReduction } }))}><input type="checkbox" checked={settings.audio.noiseReduction} readOnly id="nr" /><label htmlFor="nr" style={{ cursor: 'pointer', marginBottom: 0 }}>Noise reduction</label></div>
+                </> : <div className="format-note">This image-animation format preserves transparency and does not contain audio.</div>}
                 <div className="field"><label>Save To</label><div className="path-box" onClick={pickExportPath}><IconFolder /><span>{customExportPath ? customExportPath.split(/[\\/]/).pop() : 'Choose on export…'}</span></div></div>
                 <div className={`progress-line ${exportProgress !== null ? 'show' : ''}`}><div className="fill" style={{ width: `${exportProgress || 0}%` }} /></div>
-                <button className="action-btn export" onClick={handleExport} disabled={(clips.length === 0 && texts.length === 0) || exportProgress !== null}><IconExport /> <span>{exportProgress !== null ? `Rendering ${Math.round(exportProgress)}%${eta && eta > 0 ? ` • ${fmtEta(eta)} left` : ''}` : 'Export Video'}</span></button>
+                <button className="action-btn export" onClick={handleExport} disabled={(clips.length === 0 && texts.length === 0) || exportProgress !== null}><IconExport /> <span>{exportProgress !== null ? `Rendering ${Math.round(exportProgress)}%${eta && eta > 0 ? ` • ${fmtEta(eta)} left` : ''}` : exportFormat === 'png-sequence' ? 'Export PNG Frames' : EXPORT_FORMATS[exportFormat].alpha ? 'Export Animation' : 'Export Video'}</span></button>
                 {lastExport && exportProgress === null && (
                   <div className="post-export">
                     <button className="reveal-link" onClick={() => window.ipcRenderer.revealFile(lastExport)}>✓ Show in folder</button>
-                    <button className="reveal-link" onClick={() => runQualityCheck(lastExport)}>🔍 Watch &amp; Verify</button>
+                    {EXPORT_FORMATS[exportFormat].qualityCheck && <button className="reveal-link" onClick={() => runQualityCheck(lastExport)}>🔍 Watch &amp; Verify</button>}
                   </div>
                 )}
               </div>
             </div>
+            )}
 
-            <div className="control-group">
-              <h3 className="group-title">Tag Points {markers.length > 0 && <span className="count-badge">{markers.length}</span>}</h3>
-              <div className="card">
-                <MarkerPanel markers={markers} currentTime={currentTime} onChange={setMarkers} onSeek={t => setCurrentTime(t)} />
-              </div>
-            </div>
-
+            {rightSidebarTab === 'properties' && (
+            <div className="right-properties" id="right-properties" role="tabpanel">
             {selClip && (
               <div className="control-group">
                 <h3 className="group-title">Clip Adjustments</h3>
@@ -2475,6 +2701,22 @@ function App() {
                 </div>
               </div>
             )}
+            {!selClip && !selText && (
+              <div className="properties-empty">
+                <b>No timeline selection</b>
+                <span>Select a video, audio, or text block to edit its properties.</span>
+              </div>
+            )}
+
+            <div className="control-group tag-points-group">
+              <h3 className="group-title">Tag Points {markers.length > 0 && <span className="count-badge">{markers.length}</span>}</h3>
+              <div className="card">
+                <MarkerPanel markers={markers} currentTime={currentTime} onChange={setMarkers} onSeek={t => setCurrentTime(t)} />
+              </div>
+            </div>
+            </div>
+            )}
+            </div>
           </div>
         )}
       </main>

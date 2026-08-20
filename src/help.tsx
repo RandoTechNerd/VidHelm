@@ -49,7 +49,7 @@ const TOUR: { title: string; body: string; go?: { label: string; panel: HelpPane
   },
   {
     title: '7 · Export, checked',
-    body: 'Pick your format on the right and hit Export Video. Watch & Verify then checks the finished file the way a platform would, resolution, loudness, true peak, black frames, so you know it is upload-ready before you upload it.',
+    body: 'Pick MP4 or WebM for video, or WebP / PNG frames when you need transparency. WebP and PNG sequences have no audio. Watch & Verify checks finished video files for resolution, loudness, true peak, and black frames.',
   },
   {
     title: '8 · Now connect your co-captain (do not skip this)',
