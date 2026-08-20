@@ -594,6 +594,66 @@ ipcMain.handle('visual-index', async (_event, { filePath, interval, maxFrames, p
   }
 })
 
+/**
+ * Hunt for an installed audio.cpp and a stable-audio model, and build the generator command.
+ *
+ * Getting that command string right by hand is the whole difficulty of this setup: two absolute
+ * paths, a family name, and two placeholders, typed without a typo. Everything else is just
+ * downloading files. So this looks in the handful of places people actually unzip things, with a
+ * depth limit and a time budget so it can never turn into a disk scan.
+ */
+ipcMain.handle('find-audiocpp', async (_event, { extraDirs }: { extraDirs?: string[] } = {}) => {
+  const home = app.getPath('home')
+  const roots = [
+    ...(extraDirs || []),
+    'C:\\audiocpp', 'D:\\audiocpp',
+    path.join(home, 'audiocpp'),
+    path.join(home, 'Downloads'),
+    path.join(home, 'Documents'),
+    path.join(home, 'Desktop'),
+    'C:\\Program Files\\audiocpp',
+    'C:\\models', path.join(home, 'models'),
+  ].filter(d => { try { return fs.existsSync(d) } catch { return false } })
+
+  const deadline = Date.now() + 6000
+  let exe: string | null = null
+  let model: string | null = null
+
+  const walk = (dir: string, depth: number) => {
+    if (depth > 3 || Date.now() > deadline || (exe && model)) return
+    let entries: fs.Dirent[] = []
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
+    for (const e of entries) {
+      if (Date.now() > deadline) return
+      const full = path.join(dir, e.name)
+      if (e.isFile()) {
+        if (!exe && /^audiocpp_cli(\.exe)?$/i.test(e.name)) exe = full
+      } else if (e.isDirectory()) {
+        // a model is a FOLDER whose name says stable-audio, or one holding a matching gguf
+        if (!model && /stable[-_ ]?audio/i.test(e.name)) model = full
+        if (/node_modules|\.git|AppData\\Local\\Temp|Windows|\$Recycle/i.test(full)) continue
+        walk(full, depth + 1)
+      }
+    }
+  }
+  for (const r of roots) walk(r, 0)
+
+  const command = exe && model
+    ? `"${exe}" --task gen --family stable_audio --model "${model}" --text "{prompt}" --out "{out}"`
+    : null
+  return {
+    exe, model, command,
+    searched: roots,
+    note: command
+      ? 'Found both. The command is filled in; press Generate to try it.'
+      : exe && !model
+        ? 'Found audio.cpp but no stable-audio model folder. Download one and unzip it next to audio.cpp, then search again.'
+        : model && !exe
+          ? 'Found a model but not audiocpp_cli.exe. Unzip the audio.cpp release, then search again.'
+          : 'Could not find either. Unzip audio.cpp and a stable-audio model somewhere obvious (C:\\audiocpp works), then search again, or paste the command yourself.',
+  }
+})
+
 /** Write labels for one clip back to the folder's sidecar. */
 ipcMain.handle('label-broll', async (_event, { folder, id, labels, description, bestStart, bestEnd, maxUses }: any) => {
   if (!folder || !fs.existsSync(folder)) return { error: 'folder not found' }

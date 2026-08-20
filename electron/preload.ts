@@ -55,6 +55,7 @@ contextBridge.exposeInMainWorld('ipcRenderer', {
   sfxDownload: (hit: any) => ipcRenderer.invoke('sfx-download', hit),
   sfxRender: (data: { recipe: string; seed?: number; intensity?: number; duration?: number; outPath?: string; name?: string }) => ipcRenderer.invoke('sfx-render', data),
   sfxRecipes: () => ipcRenderer.invoke('sfx-recipes'),
+  findAudioCpp: (data?: { extraDirs?: string[] }) => ipcRenderer.invoke('find-audiocpp', data || {}),
   sfxPlan: (data: { text: string; seed?: number }) => ipcRenderer.invoke('sfx-plan', data),
   visualIndex: (data: { filePath: string; interval?: number; maxFrames?: number; perSheet?: number; cols?: number; tileWidth?: number; sourceStart?: number; duration?: number }) => ipcRenderer.invoke('visual-index', data),
   scanBroll: (data: { folder: string; refresh?: boolean; tiles?: number }) => ipcRenderer.invoke('scan-broll', data),

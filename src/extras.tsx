@@ -45,6 +45,7 @@ export function SfxPanel({ onPlace, genCommand, onGenCommand, freesoundToken, on
   const [findNotes, setFindNotes] = useState<string[]>([])
   const [gettingId, setGettingId] = useState<string | null>(null)
   const [tokenEdit, setTokenEdit] = useState(false)
+  const [findingCpp, setFindingCpp] = useState(false)
   // describing a sound and having it built, with no generator to install
   const [plan, setPlan] = useState<any | null>(null)
   const [genName, setGenName] = useState('')
@@ -273,8 +274,33 @@ export function SfxPanel({ onPlace, genCommand, onGenCommand, freesoundToken, on
 
         <details className="sfx-advanced">
           <summary>Use an external AI generator instead</summary>
-          <p className="hint">For sounds that are not modelled. Needs a local text-to-audio command with <b>{'{prompt}'}</b> and <b>{'{out}'}</b>: free option is <b>audio.cpp</b> (prebuilt exe + stable_audio model), see docs/VOICE_CLONE.md.</p>
-          <input className="duration-input" style={{ width: '100%' }} placeholder='e.g. "C:\audiocpp\audiocpp_cli.exe" --task gen --family stable_audio --model "C:\models\stable-audio" --text "{prompt}" --out "{out}"'
+          <p className="hint">
+            Only needed for sounds VidHelm cannot model. It runs entirely on your machine and is free,
+            but there are two things to download first.
+          </p>
+          <ol className="sfx-steps">
+            <li>
+              <b>audio.cpp</b>, a prebuilt Windows zip.{' '}
+              <a href="#" onClick={e => { e.preventDefault(); window.ipcRenderer.openExternal('https://github.com/0xShug0/audio.cpp/releases') }}>Releases ↗</a>
+              {' '}(<code>audiocpp-windows-cpu-balance.zip</code> is a good default). Unzip it, ideally to <code>C:\audiocpp</code>.
+            </li>
+            <li>
+              A <b>stable_audio</b> model.{' '}
+              <a href="#" onClick={e => { e.preventDefault(); window.ipcRenderer.openExternal('https://huggingface.co/audio-cpp/audio.cpp-gguf') }}>Models ↗</a>.
+              Unzip it next to audio.cpp.
+            </li>
+            <li>Press <b>Find it for me</b>. It looks in the obvious places and writes the command, which is the only fiddly part.</li>
+          </ol>
+          <div className="vc-row">
+            <button disabled={findingCpp} onClick={async () => {
+              setFindingCpp(true); setGenStatus('Looking for audio.cpp…')
+              const r = await window.ipcRenderer.findAudioCpp()
+              setFindingCpp(false)
+              if (r.command) onGenCommand(r.command)
+              setGenStatus(r.note)
+            }}>{findingCpp ? 'Looking…' : '🔍 Find it for me'}</button>
+          </div>
+          <input className="duration-input" style={{ width: '100%' }} placeholder='or paste it yourself: "C:\audiocpp\audiocpp_cli.exe" --task gen --family stable_audio --model "C:\models\stable-audio" --text "{prompt}" --out "{out}"'
             value={genCommand} onChange={e => onGenCommand(e.target.value)} />
           <div className="vc-row">
             <button disabled={genBusy || !genPrompt.trim() || !genCommand.trim()} onClick={generate}>{genBusy ? 'Generating…' : 'Generate with it'}</button>

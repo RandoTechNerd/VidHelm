@@ -35,6 +35,7 @@ interface Window {
     sfxDownload: (hit: any) => Promise<{ ok?: boolean; path?: string; name?: string; seconds?: number; attribution?: string | null; error?: string }>
     sfxRender: (data: { recipe: string; seed?: number; intensity?: number; duration?: number; outPath?: string; name?: string }) => Promise<{ ok?: boolean; path?: string; name?: string; seconds?: number; about?: string; error?: string; available?: string[] }>
     sfxRecipes: () => Promise<{ recipes?: { name: string; seconds: number; about: string }[] }>
+    findAudioCpp: (data?: { extraDirs?: string[] }) => Promise<{ exe: string | null; model: string | null; command: string | null; searched?: string[]; note: string }>
     sfxPlan: (data: { text: string; seed?: number }) => Promise<{ recipe: string; options: any; name: string; summary: string; confidence: number; canMake: boolean }>
     visualIndex: (data: { filePath: string; interval?: number; maxFrames?: number; perSheet?: number; cols?: number; tileWidth?: number; sourceStart?: number; duration?: number }) => Promise<{ ok?: boolean; frames?: number; interval?: number; sheets?: any[]; note?: string; hint?: string; error?: string }>
     scanBroll: (data: { folder: string; refresh?: boolean; tiles?: number }) => Promise<{ folder?: string; assets?: any[]; needsLabels?: string[]; error?: string }>

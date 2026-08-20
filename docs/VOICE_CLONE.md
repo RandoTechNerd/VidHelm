@@ -41,7 +41,9 @@ The generated command looks like:
 powershell -NoProfile -ExecutionPolicy Bypass -File "C:\audiocpp\vidhelm_voice.ps1" {script} {outdir}
 ```
 
-audio.cpp also powers the **✨ AI sound-effect generator** (SFX tab): with a `stable_audio` model downloaded, set the generator command once and describe any sound:
+audio.cpp also powers the **✨ AI sound-effect generator** (SFX tab), which is now **optional**: most sound requests are matched to a built-in physical model and rendered with no setup at all (see docs/SFX.md). Reach for audio.cpp only for something VidHelm cannot model.
+
+When you do, open **✨ AI → Use an external AI generator instead** and press **🔍 Find it for me**. It looks through the handful of places people unzip things (`C:udiocpp`, Downloads, Documents, Desktop, `C:\models`) and writes the command for you, which is the only fiddly part. It is depth-limited and time-boxed, so it never turns into a disk scan. If it finds nothing it says so rather than guessing. The command it builds looks like:
 
 ```
 "C:\audiocpp\audiocpp_cli.exe" --task gen --family stable_audio --model "C:\models\stable-audio" --text "{prompt}" --out "{out}"

@@ -55,6 +55,7 @@ export function installIpcMock() {
     sfxDownload: async () => ({ error: 'Saving a sound needs the desktop app (npm run dev)' }),
     sfxRender: async () => ({ error: 'Rendering a sound effect needs the desktop app (npm run dev)' }),
     sfxRecipes: async () => ({ recipes: [] }),
+    findAudioCpp: async () => ({ exe: null, model: null, command: null, note: 'Searching your disk needs the desktop app (npm run dev)' }),
     // matching is pure, so the browser preview can do it for real; only the render needs Electron
     sfxPlan: async ({ text, seed }: { text: string; seed?: number }) => {
       const m = matchRecipe(text || '', { seed })
