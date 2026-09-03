@@ -7,7 +7,9 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js'
 import { ThreeMFLoader } from 'three/examples/jsm/loaders/3MFLoader.js'
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js'
+import { MTLLoader } from 'three/examples/jsm/loaders/MTLLoader.js'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
+import { applyThreeMFObjectColours } from './threemfColor'
 import { OBJExporter } from 'three/examples/jsm/exporters/OBJExporter.js'
 
 const FINISHES = {
@@ -217,12 +219,32 @@ export function Model3DModal({ open, onClose, initialPath, onRendered, apiRef, g
         geo.computeVertexNormals()
         obj = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color, ...FINISHES[finish] }))
       } else if (ext === '3mf') {
-        obj = await new ThreeMFLoader().loadAsync(url); own = true
+        obj = await new ThreeMFLoader().loadAsync(url)
+        // ThreeMFLoader only applies <m:colorgroup> through per-TRIANGLE properties. A plate
+        // that colours whole objects (`<object pid pindex>`, what BREPcode and several slicers
+        // write) comes back flat white, and claiming "brings its own colours" then leaves the
+        // colour picker looking broken. Read them ourselves and only claim it if we found some.
+        const painted = await applyThreeMFObjectColours(obj, url, FINISHES[finish])
+        own = painted.painted > 0
+        if (painted.painted) setStatus(`Loaded ${painted.painted} coloured part${painted.painted === 1 ? '' : 's'}…`)
       } else if (ext === 'obj') {
-        obj = await new OBJLoader().loadAsync(url)
-        // An OBJ with no material library loads as plain white. Only call it "brings its own
-        // colours" when a usemtl actually named something, otherwise the colour picker would
-        // appear to do nothing until you found the recolor tickbox.
+        // An OBJ's colours live in a SIDECAR .mtl. Load it when it is there, so a model
+        // exported with materials keeps them instead of arriving white.
+        const mtlUrl = url.replace(/\.obj$/i, '.mtl')
+        let materials: any = null
+        try {
+          const head = await fetch(mtlUrl, { method: 'GET' })
+          if (head.ok) {
+            const mtl = new MTLLoader().parse(await head.text(), mtlUrl.replace(/[^/]+$/, ''))
+            mtl.preload()
+            materials = mtl
+          }
+        } catch { /* no sidecar, or unreadable: fall through to the plain load */ }
+        const loader = new OBJLoader()
+        if (materials) loader.setMaterials(materials)
+        obj = await loader.loadAsync(url)
+        // Only call it "brings its own colours" when a usemtl actually named something,
+        // otherwise the colour picker would appear to do nothing until you found the recolor tickbox.
         obj.traverse(o => { if (o instanceof THREE.Mesh && (o.material as THREE.Material)?.name) own = true })
       } else { setStatus(`Unsupported file: .${ext}, try STL, 3MF, OBJ, GLB/glTF, or an HTML viewer page`); return }
       obj.traverse(o => { if (o instanceof THREE.Mesh && !(o.material as any)?.isMeshStandardMaterial && !own) o.material = new THREE.MeshStandardMaterial({ color }) })

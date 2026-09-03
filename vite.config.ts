@@ -7,6 +7,10 @@ import renderer from 'vite-plugin-electron-renderer'
 // `npm run dev:web`  → renderer only in a plain browser (UI work; uses the IPC mock)
 export default defineConfig(({ mode }) => ({
   base: './',
+  // Explicit (empty) PostCSS config: without it Vite searches parent folders for
+  // a postcss.config.js and happily loads someone else's, which has broken both
+  // `npm run dev` and `npm run build` when this repo sat under a folder that had one.
+  css: { postcss: { plugins: [] } },
   plugins: mode === 'web'
     ? [react()]
     : [

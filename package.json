@@ -1,7 +1,7 @@
 {
   "name": "vidhelm",
   "private": true,
-  "version": "1.8.3",
+  "version": "1.9.0",
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "vite",
@@ -18,11 +18,16 @@
     "test:framing": "node scripts/framing.test.mjs",
     "test:broll": "node scripts/broll.test.mjs",
     "test:capability": "node scripts/capability.test.mjs",
+    "test:score": "node scripts/score.test.mjs",
     "test:sfxsynth": "node scripts/sfxsynth.test.mjs",
     "test:sfxsearch": "node scripts/sfxsearch.test.mjs",
     "test:sfxmatch": "node scripts/sfxmatch.test.mjs",
     "test:visual": "node scripts/visual.test.mjs",
-    "test": "npm run typecheck && npm run test:takes && npm run test:playable && npm run test:speech && npm run test:framing && npm run test:broll && npm run test:capability && npm run test:sfxsynth && npm run test:sfxsearch && npm run test:sfxmatch && npm run test:visual && npm run selftest"
+    "test": "npm run typecheck && npm run test:takes && npm run test:playable && npm run test:speech && npm run test:framing && npm run test:broll && npm run test:capability && npm run test:score && npm run test:sfxsynth && npm run test:sfxsearch && npm run test:sfxmatch && npm run test:visual && npm run test:threemf && npm run test:grid && npm run test:textlayout && npm run test:pronounce && npm run selftest",
+    "test:threemf": "node scripts/threemf.test.mjs",
+    "test:grid": "node scripts/grid.test.mjs",
+    "test:textlayout": "node scripts/textlayout.test.mjs",
+    "test:pronounce": "node scripts/pronounce.test.mjs"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",

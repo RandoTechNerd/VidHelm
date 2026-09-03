@@ -34,6 +34,8 @@ interface Window {
     sfxSearch: (data: { query: string; token?: string; safeOnly?: boolean; maxSeconds?: number; pageSize?: number }) => Promise<{ ok?: boolean; query?: string; count?: number; notes?: string[]; results?: any[]; error?: string }>
     sfxDownload: (hit: any) => Promise<{ ok?: boolean; path?: string; name?: string; seconds?: number; attribution?: string | null; error?: string }>
     sfxRender: (data: { recipe: string; seed?: number; intensity?: number; duration?: number; outPath?: string; name?: string }) => Promise<{ ok?: boolean; path?: string; name?: string; seconds?: number; about?: string; error?: string; available?: string[] }>
+    scoreRender: (data: { cuts: number[]; hits: number[]; duration: number; bpm?: number; seed?: number; intensity?: string; style?: string; name?: string }) => Promise<{ ok?: boolean; path?: string; name?: string; seconds?: number; bpm?: number; style?: string; pockets?: number; grooveAt?: number; calmsAt?: number; droneAt?: number; whooshes?: number; impacts?: number; denseBars?: number; error?: string }>
+    captureSite: (data: { url: string; width?: number; height?: number; theme?: string; script?: string; settle?: number; seconds?: number; fps?: number; outPath?: string }) => Promise<{ ok?: boolean; kind?: 'image' | 'video'; path?: string; width?: number; height?: number; seconds?: number; fps?: number; frames?: number; error?: string }>
     sfxRecipes: () => Promise<{ recipes?: { name: string; seconds: number; about: string }[] }>
     findAudioCpp: (data?: { extraDirs?: string[] }) => Promise<{ exe: string | null; model: string | null; command: string | null; searched?: string[]; note: string }>
     sfxPlan: (data: { text: string; seed?: number }) => Promise<{ recipe: string; options: any; name: string; summary: string; confidence: number; canMake: boolean }>
@@ -45,7 +47,7 @@ interface Window {
     composeThumbnail: (data: { filePath: string; t: number; subtitle?: string; logoPath?: string | null; outPath: string }) => Promise<{ ok?: boolean; outPath?: string; error?: string }>
     openSfxFolder: () => Promise<{ ok?: boolean; path?: string; error?: string }>
     saveSfxRecording: (data: { base64: string; name: string }) => Promise<{ path?: string; name?: string; duration?: number; error?: string }>
-    voiceClone: (data: { command: string; scriptText: string }) => Promise<{ files?: string[]; error?: string; log?: string }>
+    voiceClone: (data: { command: string; scriptText: string; pronounce?: boolean }) => Promise<{ files?: string[]; error?: string; log?: string; spoken?: string; pronounceTable?: string }>
     pickModel: () => Promise<string | null>
     extractModel: (filePath: string) => Promise<{ path?: string; how?: string; error?: string }>
     save3DRender: (data: { base64: string; name: string; alpha?: boolean }) => Promise<{ path?: string; error?: string }>

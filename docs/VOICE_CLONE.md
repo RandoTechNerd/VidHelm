@@ -107,3 +107,21 @@ xtts-venv\Scripts\python.exe clone_voice.py C:\voices\me.wav {script} {outdir}
 
 - If you have **at least as many tag points as lines**, line *N* starts at tag *N* (sorted by time), so tag your beats first and narration drops into sync.
 - Otherwise lines are laid **back-to-back** from 0:00 on the VOICE / MUSIC track; slide them where you want them.
+
+## Pronunciation pass (automatic)
+
+Zero-shot voices have no pronunciation dictionary: "SAT, PSAT and ACT" come
+out as near-words and "CruxSci" as "Cruxie". Before the script reaches your
+narration command, VidHelm rewrites it (`electron/pronounce.ts`):
+
+1. A **table of terms**, longest match first, whole words only: built-ins for
+   ASCP, SAT/PSAT/ACT, CruxSci, VidHelm, 4K, 1080p, STL, PLA and friends, plus
+   your own in `pronounce.json` inside the app data folder
+   (`%APPDATA%\vidhelm\pronounce.json`, created with an example on first
+   use; the sectioned VoiceClone format works too).
+2. **Any remaining ALL-CAPS token of 2-5 letters is spelled out** (HDMI →
+   "H D M I") unless it is a word people say as a word (NASA, LASER, FISH...).
+
+The booth keeps your original lines; only the synthesized read uses the
+rewritten ones. The narration result reports `spoken` when anything changed.
+Pass `pronounce:false` to the adapter to skip the pass.

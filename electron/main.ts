@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, shell, screen } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog, shell, screen, nativeTheme } from 'electron'
 import { restoreDragOffset, plainDragOffset, shouldSnapMaximize } from './dragMath'
 import { findModelInHtml } from './modelSniff'
 import { planProxy, proxyFilter, proxyKey, HDR_TO_SDR, type ProbeInfo } from './playable'
@@ -9,6 +9,8 @@ import { REALISTIC_RECIPES, REALISTIC_REV } from './sfxrecipes'
 import { toWav } from './sfxsynth'
 import { freesoundUrl, commonsUrl, parseFreesound, parseCommons, collate, attributionLine, safeFilename, classifyLicense } from './sfxsearch'
 import { matchRecipe, nameToFilename, MIN_CONFIDENCE } from './sfxmatch'
+import { composeScore, type Intensity, type Style } from './score'
+import { spellOut, parseTable, mergeTables } from './pronounce'
 import { planVisualIndex, timecode, stackLayout } from './visual'
 import path from 'node:path'
 import fs from 'node:fs'
@@ -1555,7 +1557,8 @@ const agentServer = http.createServer(async (req, res) => {
       // b-roll scanning, speech reading and framing analysis are all deliberately slow: they
       // decode real footage rather than sampling a few frames, so they belong here too
       const LONG = ['export', 'cut_pauses', 'run_recipe', 'sample_frames', 'compose_thumbnail', 'render_3d', 'prepare_analysis',
-        'scan_broll', 'plan_broll', 'place_broll', 'analyze_speech', 'find_phrase', 'cut_at_phrase', 'plan_framing', 'look_through']
+        'scan_broll', 'plan_broll', 'place_broll', 'analyze_speech', 'find_phrase', 'cut_at_phrase', 'plan_framing', 'look_through',
+        'find_word', 'capture_site', 'make_score']
       // a fourteen minute cut takes about half an hour to render here, so a flat 30 minute cap
       // reported a timeout on an export that was going perfectly well
       const timeout = cmd.action === 'export' ? 4 * 60 * 60 * 1000 : LONG.includes(cmd.action) ? 20 * 60 * 1000 : 15000
@@ -1693,6 +1696,29 @@ ipcMain.handle('sfx-render', async (_event, { recipe, seed, intensity, duration,
     const out = outPath || path.join(dir, file)
     fs.writeFileSync(out, Buffer.from(toWav(stereo)))
     return { ok: true, path: out, name: path.basename(out).replace(/\.wav$/, ''), seconds: +(stereo.left.length / stereo.sampleRate).toFixed(2), about: entry.about }
+  } catch (e: any) {
+    return { error: String(e?.message || e) }
+  }
+})
+
+ipcMain.handle('score-render', async (_event, { cuts, hits, duration, bpm, seed, intensity, style, name }: {
+  cuts: number[]; hits: number[]; duration: number; bpm?: number; seed?: number; intensity?: Intensity; style?: Style; name?: string
+}) => {
+  try {
+    if (!duration || duration <= 0) return { error: 'timeline is empty, nothing to score' }
+    const { plan, stereo } = composeScore({ cuts: cuts || [], hits: hits || [], duration }, { bpm, seed, intensity, style })
+    const dir = path.join(sfxDir(), 'score')
+    fs.mkdirSync(dir, { recursive: true })
+    const file = name ? nameToFilename(name) : `score-${plan.style === 'cinematic' ? 'cinematic-' : ''}${plan.bpm}bpm${seed !== undefined ? `-${seed}` : ''}.wav`
+    const out = path.join(dir, file)
+    fs.writeFileSync(out, Buffer.from(toWav(stereo)))
+    return {
+      ok: true, path: out, name: path.basename(out).replace(/\.wav$/, ''),
+      seconds: +(stereo.left.length / stereo.sampleRate).toFixed(2),
+      bpm: plan.bpm, style: plan.style, pockets: plan.pockets.length, grooveAt: +(plan.grooveBeat * plan.beat).toFixed(2),
+      calmsAt: +(plan.lateBeat * plan.beat).toFixed(2), droneAt: +plan.droneAt.toFixed(2),
+      whooshes: plan.whooshes.length, impacts: plan.impacts.length, denseBars: plan.denseBars.length,
+    }
   } catch (e: any) {
     return { error: String(e?.message || e) }
   }
@@ -1908,13 +1934,106 @@ ipcMain.handle('save-sfx-recording', async (_event, { base64, name }: { base64: 
 // Template placeholders: {script} -> path of a temp file holding the script text (one line per scene),
 // {outdir} -> a fresh output dir. When the command exits, every .wav in {outdir} (sorted naturally)
 // is returned so the renderer can place them on the timeline.
-ipcMain.handle('voice-clone', async (_event, { command, scriptText }: { command: string; scriptText: string }) => {
+// Product captures: a hidden Chromium window renders any URL (a site, a
+// localhost dev server, a staging build) at an exact size and theme, runs an
+// optional script to seed state or freeze animations, then either grabs a
+// still or records `seconds` of frames straight into an mp4. This is the
+// `capture_site` tool; it is what made the CruxStudy teaser's UI shots routine.
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
+ipcMain.handle('capture-site', async (_event, { url, width = 1920, height = 1080, theme, script, settle = 800, seconds = 0, fps = 30, outPath }: {
+  url: string; width?: number; height?: number; theme?: 'light' | 'dark'; script?: string; settle?: number; seconds?: number; fps?: number; outPath?: string
+}) => {
+  if (!url) return { error: 'url required' }
+  const W = Math.max(320, Math.min(3840, Math.round(width))), H = Math.max(240, Math.min(2160, Math.round(height)))
+  const FPS = Math.max(5, Math.min(60, Math.round(fps)))
+  const prevTheme = nativeTheme.themeSource
+  const cap = new BrowserWindow({
+    width: W, height: H, show: false, frame: false, backgroundColor: '#000000',
+    webPreferences: { offscreen: true, contextIsolation: true, sandbox: true },
+  })
+  try {
+    cap.webContents.setAudioMuted(true)
+    if (theme === 'dark' || theme === 'light') nativeTheme.themeSource = theme
+    cap.setContentSize(W, H)
+    await cap.loadURL(url)
+    if (script && script.trim()) {
+      try { await cap.webContents.executeJavaScript(script, true) } catch (e) { return { error: 'the page script threw: ' + String(e) } }
+    }
+    await sleep(Math.max(0, settle))
+    const dir = path.join(app.getPath('userData'), 'captures')
+    fs.mkdirSync(dir, { recursive: true })
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+    // offscreen pages render at the display's DPI scale (a 1280x720 request came back
+    // 2244x1262 on a 175% display), so every frame is brought back to the requested size
+    const grab = async () => {
+      const img = await cap.webContents.capturePage()
+      const size = img.getSize()
+      return size.width === W && size.height === H ? img : img.resize({ width: W, height: H, quality: 'best' })
+    }
+    if (!seconds || seconds <= 0) {
+      const img = await grab()
+      const out = outPath || path.join(dir, `capture-${stamp}.png`)
+      fs.writeFileSync(out, img.toPNG())
+      const size = img.getSize()
+      return { ok: true, kind: 'image', path: out, width: size.width, height: size.height }
+    }
+    const secs = Math.min(120, seconds)
+    const out = outPath || path.join(dir, `capture-${stamp}.mp4`)
+    const total = Math.round(secs * FPS)
+    const ff = spawn(paths.ffmpeg, ['-y', '-hide_banner', '-loglevel', 'error',
+      '-f', 'image2pipe', '-framerate', String(FPS), '-i', '-',
+      '-vf', `scale=${W - (W % 2)}:${H - (H % 2)}`, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18', '-pix_fmt', 'yuv420p', out])
+    let ffErr = ''
+    ff.stderr?.on('data', d => { ffErr += d })
+    const t0 = Date.now()
+    let written = 0
+    for (let i = 0; i < total; i++) {
+      const due = t0 + (i * 1000) / FPS
+      const wait = due - Date.now()
+      if (wait > 0) await sleep(wait)
+      const img = await grab()
+      if (!ff.stdin.write(img.toPNG())) await new Promise(r => ff.stdin.once('drain', r))
+      written++
+    }
+    ff.stdin.end()
+    const code = await new Promise<number>(res => { ff.on('close', c => res(c ?? 0)); ff.on('error', () => res(-1)) })
+    if (code !== 0 || !fs.existsSync(out)) return { error: 'encoding the capture failed: ' + ffErr.slice(-400) }
+    return { ok: true, kind: 'video', path: out, seconds: secs, fps: FPS, frames: written, width: W, height: H }
+  } catch (e: any) {
+    return { error: String(e?.message || e) }
+  } finally {
+    nativeTheme.themeSource = prevTheme
+    try { cap.destroy() } catch {}
+  }
+})
+
+// The pronunciation table the narration adapter applies before synthesis
+// (see electron/pronounce.ts). Created with an example on first use so the
+// user finds it; edits are picked up on the next narration run.
+const pronounceTablePath = () => path.join(app.getPath('userData'), 'pronounce.json')
+function loadPronounceTable(): Record<string, string> {
+  const p = pronounceTablePath()
+  try {
+    if (!fs.existsSync(p)) {
+      fs.writeFileSync(p, JSON.stringify({
+        _readme: 'Terms rewritten before narration is synthesized, so the voice says them the way you do. Add your own as "Term": "how to say it". Built-in defaults cover ASCP, SAT, CruxSci, 4K and friends; ALL-CAPS acronyms are spelled out automatically.',
+        'CruxSci': 'Crux Sigh',
+      }, null, 2))
+    }
+    return mergeTables(parseTable(fs.readFileSync(p, 'utf8')))
+  } catch { return mergeTables() }
+}
+
+ipcMain.handle('voice-clone', async (_event, { command, scriptText, pronounce }: { command: string; scriptText: string; pronounce?: boolean }) => {
   if (!command || !command.trim()) return { error: 'No narration command configured (Settings → Narration).' }
   if (!scriptText || !scriptText.trim()) return { error: 'Script is empty.' }
   const workDir = path.join(app.getPath('userData'), 'narration', String(Date.now()))
   fs.mkdirSync(workDir, { recursive: true })
   const scriptFile = path.join(workDir, 'script.txt')
-  fs.writeFileSync(scriptFile, scriptText.trim() + '\n', 'utf8')
+  // pronunciation pass: the voice reads the rewritten lines, the booth keeps the originals
+  const spoken = pronounce === false ? scriptText.trim()
+    : scriptText.trim().split('\n').map(l => spellOut(l, loadPronounceTable())).join('\n')
+  fs.writeFileSync(scriptFile, spoken + '\n', 'utf8')
   const outDir = path.join(workDir, 'out')
   fs.mkdirSync(outDir, { recursive: true })
   const cmd = command.replace(/\{script\}/g, `"${scriptFile}"`).replace(/\{outdir\}/g, `"${outDir}"`)
@@ -1930,7 +2049,7 @@ ipcMain.handle('voice-clone', async (_event, { command, scriptText }: { command:
             .map(f => path.join(outDir, f))
         : []
       if (!wavs.length) resolve({ error: `Command finished (code ${code}) but produced no .wav files in {outdir}.`, log: log.slice(-2000) })
-      else resolve({ files: wavs, log: log.slice(-2000) })
+      else resolve({ files: wavs, log: log.slice(-2000), spoken: spoken !== scriptText.trim() ? spoken : undefined, pronounceTable: pronounceTablePath() })
     })
     proc.on('error', err => resolve({ error: String(err), log: log.slice(-2000) }))
   })
@@ -2010,8 +2129,13 @@ ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outp
         let a = `[${idx}:a]aresample=48000,adelay=${Math.round(clip.start * 1000)}|${Math.round(clip.start * 1000)}`
         // Volume automation (graph) takes precedence over the flat per-clip volume
         a += vExpr ? `,volume='${vExpr}':eval=frame` : `,volume=${clip.volume ?? 1.0}`
-        if (clip.fadeIn > 0) a += `,afade=t=in:st=${clip.start}:d=${clip.fadeIn}`
-        if (clip.fadeOut > 0) a += `,afade=t=out:st=${(end - clip.fadeOut).toFixed(3)}:d=${clip.fadeOut}`
+        // Audio-only ramps override the picture fades. A pause cut sets these to a
+        // few milliseconds so the picture cuts hard while the waveform still reaches
+        // zero before the splice; without it the join is a step, and a step clicks.
+        const aIn = clip.aFadeIn ?? clip.fadeIn
+        const aOut = clip.aFadeOut ?? clip.fadeOut
+        if (aIn > 0) a += `,afade=t=in:st=${clip.start}:d=${aIn}`
+        if (aOut > 0) a += `,afade=t=out:st=${(end - aOut).toFixed(3)}:d=${aOut}`
         filterComplex.push(`${a}[a_delayed_${idx}]`)
         audioMixInputs.push(`a_delayed_${idx}`)
       }

@@ -30,3 +30,13 @@ curl -X POST http://127.0.0.1:5959/command -H "Content-Type: application/json" -
 5. `export` blocks until rendered and returns a quality check (loudness, peaks, black frames), report the verdict.
 6. Built-in SFX names: whoosh, pop, boing, squish, gummy-squish, gloop, poof, spoosh, sparkle, party, riser, ding, thud.
 7. If the bridge doesn't answer: the app isn't open, or the port changed. Tell the user to click the **🤖 AI** button in VidHelm's header for the built-in connection troubleshooter.
+
+## Word anchors, the grid, and the other 1.9 habits
+
+- **Put things on words, not numbers.** `find_word {text}` returns where a word or phrase was said; then any time-taking tool (`add_text`, `add_tag`, `place_sfx`, `split_clip`, `add_clip`, `transport`) takes `at:"arcade"` or `at:"end:arcade"` instead of `t`/`start`. Every animation in a tight teaser is keyed to the moment a word is spoken; this is that trick as a parameter.
+- **Snap before you score.** `snap_to_grid` rolls every join onto the beat and slides tags onto bar lines (nothing downstream moves, runtime unchanged; `dryRun` previews). Then `make_score` at the same bpm lands every hit exactly.
+- **Two score palettes.** `make_score {style:"cinematic"}` swaps the electronic kit for bowed strings, a cello ostinato, felt piano, taiko, choir, braams, a riser into every hit and a pocket of silence before each drop. Use it when the user says anything like "no beeps".
+- **Text presets and design rules.** `add_text {preset:"title"|"lower-third"|"caption"|"end-card"}` supplies the lane, size, box and fades; the font auto-shrinks to fit, and the reply warns if the text overlaps another, runs off-frame, or flashes under half a second. `export_video` re-checks the whole text track.
+- **Script-aware export QC.** Pass `script` to `export_video` (or set the booth script first) and the finished mix is transcribed and diffed against it: the verdict gains a "Script match" line with the missing words. Cheap insurance against a dropped narration line.
+- **Film a website.** `capture_site {url, width, height, theme, script, seconds}` renders any page (including localhost) in the app's own Chromium, runs your script first to seed state or freeze animations, and returns a still or a real-time recording straight into the bin.
+- **Narration says acronyms right.** The narration adapter runs a pronunciation pass before synthesis (ASCP → "A S C P", CruxSci → "Crux Sigh", unknown CAPS spelled out). The user's own table is `pronounce.json` in the app data folder.

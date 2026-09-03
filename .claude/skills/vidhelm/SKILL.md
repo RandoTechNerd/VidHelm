@@ -65,7 +65,7 @@ If nothing matches a line, stay on the speaker. A cutaway to footage that does n
 It also returns `proof`: one image with the proposed crop drawn on the middle frame of each hold. **Open it.** Detail and motion energy find the biggest, busiest object in frame, which is not always the subject: on a coffee review it framed a black canister sitting next to the grinder. Where it is wrong, pass `hints` (`"3@0.72, 9.5@0.35"`, time@x with x across the frame) and call again.
 ## 3D models and extras
 
-- A dropped/asked-for STL, 3MF, OBJ or GLB goes through the **3D Studio**: `open_panel {panel: "model3d", path}` loads it (an HTML viewer page works too, the model inside gets extracted), then `render_3d` produces the clip.
+- A dropped/asked-for STL, 3MF, OBJ or GLB goes through the **3D Studio**: `open_panel {panel: "model3d", path}` loads it (an HTML viewer page works too, the model inside gets extracted), then `render_3d` produces the clip. Multicolour 3MF/OBJ keeps its own colours (object-level 3MF colours and an OBJ's sidecar .mtl both load), so only tick recolor if you actually want to override them.
 - `render_3d {seconds}` → spinning turntable into the bin. `render_3d {still: true, transparent: true}` → a **PNG with real alpha dropped at the playhead**, so it composites on top of the footage underneath: that is how you put a model over a video.
 - Turntable *video* can't be transparent (no available codec carries alpha). For a spin over footage, tell the user to pick the **Video frame** backdrop in the studio, which bakes the frame under the playhead behind the model.
 ## Sending footage to a video-analysis service (Adversal and similar)
@@ -87,7 +87,7 @@ Derive final chapter timestamps from `get_state` after the edit is cut, not from
 ## Sound effects
 
 - `search_sfx {query}` searches the free libraries and returns each hit's LICENCE. Wikimedia Commons always works; Freesound needs the user's free token in Settings and is the one worth having. Non-commercial and unlicensed results are hidden by default because they are not safe on a monetised channel. `download_sfx {index}` saves one and writes any required credit into CREDITS.txt: tell the user when a sound needs crediting, because it has to go in the description.
-- The ✨ AI button turns a plain description into one of the models with no setup, so tell the user to just type what they want. `make_sfx {recipe, seed}` is the same thing from your side: coffee beans into a metal, plastic or glass container, a sci-fi door opening or closing, a podracer starting, and one flying past with real Doppler. Change the seed for another take of the same sound. Call it with no recipe to list them. See docs/SFX.md.
+- The ✨ AI button turns a plain description into one of the models with no setup, so tell the user to just type what they want. `make_sfx, make_score {recipe, seed}` is the same thing from your side: coffee beans into a metal, plastic or glass container, a sci-fi door opening or closing, a podracer starting, and one flying past with real Doppler. Change the seed for another take of the same sound. Call it with no recipe to list them. See docs/SFX.md.
 
 ## Gotchas
 
@@ -99,3 +99,13 @@ Derive final chapter timestamps from `get_state` after the edit is cut, not from
 - B-roll on `v2` never contributes audio, by design. Natural sound from a cutaway has to go on `a1`/`a2` as its own clip.
 - If a tool errors "VidHelm is not running": the app must be open. Ask, or run `npm run dev` in the background yourself.
 - Connection problems on the user's side → tell them to click **🤖 AI** in the header (live diagnostics + per-client config) or see docs/CONNECT.md.
+
+## Word anchors, the grid, and the other 1.9 habits
+
+- **Put things on words, not numbers.** `find_word {text}` returns where a word or phrase was said; then any time-taking tool (`add_text`, `add_tag`, `place_sfx`, `split_clip`, `add_clip`, `transport`) takes `at:"arcade"` or `at:"end:arcade"` instead of `t`/`start`. Every animation in a tight teaser is keyed to the moment a word is spoken; this is that trick as a parameter.
+- **Snap before you score.** `snap_to_grid` rolls every join onto the beat and slides tags onto bar lines (nothing downstream moves, runtime unchanged; `dryRun` previews). Then `make_score` at the same bpm lands every hit exactly.
+- **Two score palettes.** `make_score {style:"cinematic"}` swaps the electronic kit for bowed strings, a cello ostinato, felt piano, taiko, choir, braams, a riser into every hit and a pocket of silence before each drop. Use it when the user says anything like "no beeps".
+- **Text presets and design rules.** `add_text {preset:"title"|"lower-third"|"caption"|"end-card"}` supplies the lane, size, box and fades; the font auto-shrinks to fit, and the reply warns if the text overlaps another, runs off-frame, or flashes under half a second. `export_video` re-checks the whole text track.
+- **Script-aware export QC.** Pass `script` to `export_video` (or set the booth script first) and the finished mix is transcribed and diffed against it: the verdict gains a "Script match" line with the missing words. Cheap insurance against a dropped narration line.
+- **Film a website.** `capture_site {url, width, height, theme, script, seconds}` renders any page (including localhost) in the app's own Chromium, runs your script first to seed state or freeze animations, and returns a still or a real-time recording straight into the bin.
+- **Narration says acronyms right.** The narration adapter runs a pronunciation pass before synthesis (ASCP → "A S C P", CruxSci → "Crux Sigh", unknown CAPS spelled out). The user's own table is `pronounce.json` in the app data folder.

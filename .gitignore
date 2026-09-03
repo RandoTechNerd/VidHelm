@@ -27,3 +27,7 @@ dist-ssr
 # Electron build output
 dist-electron
 release
+
+# VidHelm Cloud (the web version) is a separate private repo; never part of this one
+cloud/
+docs/CLOUD_PLAN.html

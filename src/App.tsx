@@ -4,7 +4,10 @@ import { SfxPanel, MarkerPanel, KaraokeBooth, NarrationModal, RecipeSection, Thu
 import { Model3DModal, KEY_GREEN, KEY_MAGENTA, type Model3DApi } from './model3d'
 import { HelpModal, InfoNote, type HelpPanel } from './help'
 import { TakesModal, takeStats, type TakeAnalysis } from './takes'
-import { groupTakes, removalRanges, removedSeconds, chunksFromWords } from '../electron/takes'
+import { groupTakes, removalRanges, removedSeconds, chunksFromWords, wordsOf } from '../electron/takes'
+import { snapToGrid, describeSnap } from '../electron/grid'
+import { fitBpm } from '../electron/score'
+import { layoutReport, presetFor, fitFontSize } from '../electron/textlayout'
 import { planProxy, isHdr } from '../electron/playable'
 import { spanForPhrase, sentenceSpans, type Word as SpeechWord, type Span } from '../electron/speech'
 import { planBroll, snapToWords, describePlan, type BrollAsset, type Placement } from '../electron/broll'
@@ -38,6 +41,11 @@ interface TimelineClip {
   volume: number      // 0.0 - 2.0 (flat gain when no automation points)
   fadeIn: number      // seconds
   fadeOut: number     // seconds
+  // Audio-only ramps, independent of the picture. A pause cut wants a hard cut on
+  // the picture but never a hard cut on the WAVEFORM: splicing mid-cycle leaves a
+  // step, and a step is a click. Undefined = follow fadeIn/fadeOut.
+  aFadeIn?: number
+  aFadeOut?: number
   volumePoints?: { t: number; v: number }[] // automation: t = seconds from clip start, v = gain 0..2
 }
 
@@ -281,6 +289,12 @@ function fadeFactor(c: { start: number; duration: number; fadeIn: number; fadeOu
   return clamp(o, 0, 1)
 }
 
+// Same, for AUDIO: uses the audio-only ramps when a cut set them, so the picture
+// can cut hard while the waveform still ramps. Mirrors the afade in main.ts.
+function audioFadeFactor(c: { start: number; duration: number; fadeIn: number; fadeOut: number; aFadeIn?: number; aFadeOut?: number }, t: number) {
+  return fadeFactor({ start: c.start, duration: c.duration, fadeIn: c.aFadeIn ?? c.fadeIn, fadeOut: c.aFadeOut ?? c.fadeOut }, t)
+}
+
 // Interpolated gain at an absolute time, following the clip's volume automation line.
 function gainAt(c: TimelineClip, tAbs: number) {
   const pts = c.volumePoints
@@ -297,6 +311,11 @@ function gainAt(c: TimelineClip, tAbs: number) {
 
 // Remove timeline range [s,e] and ripple everything after it left. Used to cut silent dead space.
 // If `transition` > 0, surviving edges get a short fade for a smoother seam.
+// Twelve milliseconds: far too short to hear as a fade, long enough that the
+// waveform reaches zero before the splice. Without it a cut lands mid-cycle and
+// the step reads as a click ("poofs" between phrases).
+const DEPOP = 0.012
+
 function removeRange(clips: TimelineClip[], texts: TextClip[], s: number, e: number, transition: number) {
   const len = e - s
   const td = Math.max(0, Math.min(transition, len, 0.3))
@@ -311,13 +330,21 @@ function removeRange(clips: TimelineClip[], texts: TextClip[], s: number, e: num
     // head with a hundred pause cuts that reads as the picture blinking at you all the way
     // through. Overlap them instead and let B dissolve in ON TOP of A, which never sees black.
     const overlap = Math.max(0, Math.min(td, left - 0.05, e - cs))
-    if (left > 0.05) outClips.push({ ...c, duration: left, fadeOut: overlap > 0 ? 0 : (td > 0 ? td : c.fadeOut) })
+    // The picture keeps whatever the transition setting asked for (including 0, and
+    // including the deliberate no-fadeOut under an overlap so it never dips through
+    // black). The AUDIO always gets at least DEPOP either side of the join.
+    if (left > 0.05) outClips.push({
+      ...c, duration: left,
+      fadeOut: overlap > 0 ? 0 : (td > 0 ? td : c.fadeOut),
+      aFadeOut: Math.max(DEPOP, overlap > 0 ? 0 : (td > 0 ? td : c.fadeOut)),
+    })
     if (right > 0.05) outClips.push({
       ...c, id: rid(),
       start: s - overlap,
       duration: right + overlap,
       sourceStart: c.sourceStart + (e - cs) - overlap,   // pull the source back so motion stays continuous
       fadeIn: overlap > 0 ? overlap : (td > 0 ? td : c.fadeIn),
+      aFadeIn: Math.max(DEPOP, overlap > 0 ? overlap : (td > 0 ? td : c.fadeIn)),
       volumePoints: undefined,
     })
   }
@@ -369,6 +396,7 @@ function App() {
   const [boothScript, setBoothScript] = useState('')
   const [showHelp, setShowHelp] = useState(false)
   const [showLinks, setShowLinks] = useState(false)
+  const [showMore, setShowMore] = useState(false)  // the toolbar's overflow menu
   const [projects, setProjects] = useState<{ name: string; path: string; media: number; saved: boolean; modified: number }[]>([])
   const [currentProject, setCurrentProject] = useState<{ dir: string; name: string } | null>(null)
   const [appVersion, setAppVersion] = useState('')
@@ -541,7 +569,7 @@ function App() {
       if (media?.type !== 'video') return
       const el = map.get(c.id)
       if (!el) return
-      el.volume = clamp(gainAt(c, currentTime) * masterVolume * fadeFactor(c, currentTime), 0, 1)
+      el.volume = clamp(gainAt(c, currentTime) * masterVolume * audioFadeFactor(c, currentTime), 0, 1)
       const target = c.sourceStart + (currentTime - c.start)
       if (isPlaying) {
         if (Math.abs(el.currentTime - target) > 0.3) el.currentTime = target
@@ -570,7 +598,7 @@ function App() {
       const el = map.get(c.id)
       if (!el) return
       const active = currentTime >= c.start && currentTime < c.start + c.duration
-      el.volume = clamp(gainAt(c, currentTime) * masterVolume * fadeFactor(c, currentTime), 0, 1)
+      el.volume = clamp(gainAt(c, currentTime) * masterVolume * audioFadeFactor(c, currentTime), 0, 1)
       if (active && isPlaying) {
         const target = c.sourceStart + (currentTime - c.start)
         if (Math.abs(el.currentTime - target) > 0.3) el.currentTime = target
@@ -660,6 +688,16 @@ function App() {
     window.addEventListener('click', close)
     return () => window.removeEventListener('click', close)
   }, [showLinks])
+
+  // Dismiss the toolbar overflow menu on any click elsewhere (its own clicks stop propagation)
+  useEffect(() => {
+    if (!showMore) return
+    const close = () => setShowMore(false)
+    const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') setShowMore(false) }
+    window.addEventListener('click', close)
+    window.addEventListener('keydown', esc)
+    return () => { window.removeEventListener('click', close); window.removeEventListener('keydown', esc) }
+  }, [showMore])
 
   // Close the right-click context menu on any outside click
   useEffect(() => {
@@ -911,6 +949,22 @@ function App() {
   const agentExec = useRef<(cmd: any) => Promise<any>>(async () => ({}))
   agentExec.current = async (cmd: any) => {
     const findMedia = (ref: string) => mediaBin.find(m => m.id === ref) || mediaBin.find(m => m.name.toLowerCase().includes(String(ref).toLowerCase()))
+    // Word anchors. Any time-taking command may say at:"<spoken words>" (or
+    // at:"end:<spoken words>") instead of a number, and the time is read off
+    // the transcript: text, SFX, tags and cuts land on the moment a word is
+    // said rather than on a number somebody estimated.
+    if (typeof cmd.at === 'string' && cmd.at.trim()) {
+      const m = cmd.at.match(/^(start|end)\s*:\s*(.+)$/i)
+      const edge = m ? m[1].toLowerCase() : 'start', phrase = (m ? m[2] : cmd.at).trim()
+      const sp = await readSpeech(cmd.model)
+      if (sp.error || !sp.words) return { error: sp.error || 'no speech to anchor on' }
+      const hit = spanForPhrase(sp.words, phrase, { after: cmd.after, before: cmd.before })
+      if (!hit) return { error: `could not find "${phrase}" in the speech (try find_word to see what was heard)` }
+      const t = +(edge === 'end' ? hit.end : hit.start).toFixed(3)
+      if (['add_text', 'update_text', 'add_clip', 'update_clip'].includes(cmd.action)) cmd.start = t
+      else cmd.t = t
+      cmd.anchored = { at: cmd.at, t, heard: hit.text }
+    }
     switch (cmd.action) {
       case 'get_state':
         return {
@@ -988,15 +1042,74 @@ function App() {
         const t = cmd.t
         if (t <= c0.start || t >= c0.start + c0.duration) return { error: `t=${t} outside clip [${c0.start}, ${c0.start + c0.duration}]` }
         const off = t - c0.start
-        const a = { ...c0, id: rid(), duration: off, fadeOut: 0 }
-        const b = { ...c0, id: rid(), start: t, duration: c0.duration - off, sourceStart: c0.sourceStart + off, fadeIn: 0 }
+        // hard cut on the picture, but ramp the waveform or the join clicks
+        const a = { ...c0, id: rid(), duration: off, fadeOut: 0, aFadeOut: DEPOP }
+        const b = { ...c0, id: rid(), start: t, duration: c0.duration - off, sourceStart: c0.sourceStart + off, fadeIn: 0, aFadeIn: DEPOP }
         setClips(prev => { const i = prev.findIndex(c => c.id === c0.id); const n = [...prev]; n.splice(i, 1, a, b); return n })
         return { ok: true, left: a.id, right: b.id }
       }
       case 'add_text': {
-        const t: TextClip = { id: rid(), text: cmd.text || 'text', start: cmd.start ?? currentTime, duration: cmd.duration ?? 3, x: cmd.x ?? 0.5, y: cmd.y ?? 0.5, fontSize: cmd.fontSize ?? 64, color: cmd.color || '#ffffff', fadeIn: cmd.fadeIn ?? 0.3, fadeOut: cmd.fadeOut ?? 0.3, box: cmd.box, boxOpacity: cmd.boxOpacity }
+        // design rules as code: a preset supplies the lane a title / lower third /
+        // caption / end card lives in, and the size always shrinks to fit the frame
+        const body = cmd.text || 'text'
+        const pre = presetFor(cmd.preset, body, w, h)
+        const fontSize = cmd.fontSize ?? pre.fontSize ?? fitFontSize(body, 64, 0.9, w, h)
+        const t: TextClip = { id: rid(), text: body, start: cmd.start ?? currentTime, duration: cmd.duration ?? pre.duration ?? 3, x: cmd.x ?? pre.x ?? 0.5, y: cmd.y ?? pre.y ?? 0.5, fontSize, color: cmd.color || pre.color || '#ffffff', fadeIn: cmd.fadeIn ?? pre.fadeIn ?? 0.3, fadeOut: cmd.fadeOut ?? pre.fadeOut ?? 0.3, box: cmd.box ?? pre.box, boxOpacity: cmd.boxOpacity ?? pre.boxOpacity }
         setTexts(prev => [...prev, t])
-        return { ok: true, textId: t.id }
+        const rep = layoutReport([...texts, t], w, h)
+        const mine = rep.notes.filter(n => n.includes(`"${t.id}"`))
+        return { ok: true, textId: t.id, fontSize, start: t.start, ...(cmd.anchored ? { anchored: cmd.anchored } : {}), ...(mine.length ? { warnings: mine } : {}) }
+      }
+      case 'find_word': {
+        if (!cmd.text) return { error: 'text required' }
+        const sp = await readSpeech(cmd.model)
+        if (sp.error || !sp.words) return { error: sp.error || 'no speech' }
+        const q = wordsOf(cmd.text)
+        const anchors: { start: number; end: number; text: string }[] = []
+        for (let i = 0; q.length && i + q.length <= sp.words.length; i++) {
+          const win = sp.words.slice(i, i + q.length)
+          if (win.every((x, k) => (wordsOf(x.text)[0] || '') === q[k])) {
+            anchors.push({ start: +win[0].start.toFixed(3), end: +win[win.length - 1].end.toFixed(3), text: win.map(x => x.text.trim()).join(' ') })
+          }
+        }
+        if (!anchors.length) {
+          const fuzzy = spanForPhrase(sp.words, cmd.text, { after: cmd.after, before: cmd.before })
+          if (fuzzy) anchors.push({ start: +fuzzy.start.toFixed(3), end: +fuzzy.end.toFixed(3), text: fuzzy.text })
+        }
+        if (!anchors.length) return { error: `"${cmd.text}" was not heard` }
+        return { ok: true, count: anchors.length, anchors, note: 'Place things on a word instead of a number: pass at:"<words>" (or at:"end:<words>") to add_text, add_tag, place_sfx, split_clip, add_clip or transport. after/before pick between repeats.' }
+      }
+      case 'snap_to_grid': {
+        const vis = clips.filter(c => c.trackId === 'v1' || c.trackId === 'v2')
+        if (!vis.length && !markers.length) return { error: 'nothing on the picture tracks or no tags to snap' }
+        const boundaries = [...new Set(vis.flatMap(c => [+c.start.toFixed(3), +(c.start + c.duration).toFixed(3)]))]
+        const bpm = cmd.bpm || fitBpm(boundaries).bpm
+        const gridClips = clips.map(c => ({ id: c.id, trackId: c.trackId, start: c.start, duration: c.duration, sourceStart: c.sourceStart, sourceDuration: mediaBin.find(m => m.id === c.mediaId)?.duration }))
+        const r = snapToGrid(gridClips, markers.map(m => ({ id: m.id, t: m.t })), {
+          bpm, phase: cmd.phase, cutDivision: cmd.cutDivision, tagDivision: cmd.tagDivision,
+          tolerance: cmd.tolerance, tagTolerance: cmd.tagTolerance, snapCuts: cmd.snapCuts, snapTags: cmd.snapTags,
+        })
+        const report = { bpm: r.bpm, phase: r.phase, cutStep: r.cutStep, tagStep: r.tagStep, moves: r.moves, skipped: r.skipped, summary: describeSnap(r) }
+        if (cmd.dryRun) return { ok: true, dryRun: true, ...report, note: 'Nothing moved; drop dryRun to apply.' }
+        setClips(prev => prev.map(c => { const g = r.clips.find(x => x.id === c.id); return g ? { ...c, start: g.start, duration: g.duration, sourceStart: g.sourceStart } : c }))
+        setMarkers(prev => prev.map(m => { const g = r.markers.find(x => x.id === m.id); return g ? { ...m, t: g.t } : m }))
+        return { ok: true, ...report, note: 'Joins were ROLLED onto the grid (the cut moved, nothing downstream shifted, runtime unchanged) and tags slid onto bar lines. Call make_score with this bpm and every hit lands exactly.' }
+      }
+      case 'capture_site': {
+        if (!cmd.url) return { error: 'url required' }
+        const r = await window.ipcRenderer.captureSite({ url: cmd.url, width: cmd.width, height: cmd.height, theme: cmd.theme, script: cmd.script, settle: cmd.settle, seconds: cmd.seconds, fps: cmd.fps, outPath: cmd.outPath })
+        if (r.error || !r.path) return r
+        if (cmd.place === false) return { ok: true, kind: r.kind, path: r.path, width: r.width, height: r.height, seconds: r.seconds }
+        const isVideo = r.kind === 'video'
+        let host = cmd.url
+        try { host = new URL(cmd.url).hostname || cmd.url } catch {}
+        const media: MediaFile = { id: rid(), name: `${host} ${isVideo ? 'capture' : 'shot'}`, path: r.path, type: isVideo ? 'video' : 'image', duration: isVideo ? (r.seconds || 5) : (cmd.duration || 5), hasVideo: true, hasAudio: false }
+        setMediaBin(prev => [...prev, media])
+        const track = clips.filter(c => c.trackId === 'v1')
+        const at = typeof cmd.start === 'number' ? cmd.start : (track.length ? Math.max(...track.map(c => c.start + c.duration)) : 0)
+        const clip: TimelineClip = { id: rid(), mediaId: media.id, type: media.type, trackId: 'v1', start: at, duration: media.duration, sourceStart: 0, volume: 1, fadeIn: 0, fadeOut: 0 }
+        setClips(prev => [...prev, clip])
+        return { ok: true, kind: r.kind, path: r.path, mediaId: media.id, clipId: clip.id, start: at, duration: media.duration }
       }
       case 'update_text': {
         if (!texts.find(t => t.id === cmd.textId)) return { error: `text not found: ${cmd.textId}` }
@@ -1285,6 +1398,41 @@ function App() {
             : 'No credit required.',
         }
       }
+      case 'make_score': {
+        // Cut-synced music: every visual boundary becomes a whoosh, every tag
+        // point an impact with the bed ducked under it, and the tempo is fitted
+        // to the cuts the user already made. Tag points are the shared language:
+        // tag the moments that matter BEFORE calling this, they are the hits.
+        const vis = clips.filter(c => c.trackId === 'v1' || c.trackId === 'v2')
+        const cutSet = new Set<number>()
+        for (const c of vis) { cutSet.add(+c.start.toFixed(3)); cutSet.add(+(c.start + c.duration).toFixed(3)) }
+        const cuts = [...cutSet].sort((a, b) => a - b)
+        const hits = markers.map(m => +m.t.toFixed(3))
+        if (totalDuration <= 0) return { error: 'timeline is empty, nothing to score' }
+        const r = await window.ipcRenderer.scoreRender({
+          cuts, hits, duration: totalDuration,
+          bpm: cmd.bpm, seed: cmd.seed, intensity: cmd.intensity, style: cmd.style, name: cmd.name,
+        })
+        if (r.error || !r.path) return r
+        const wavPath = r.path, wavName = r.name || 'score', wavSecs = r.seconds || totalDuration
+        let placed = null
+        if (cmd.place !== false) {
+          let media = mediaBin.find(m => m.path === wavPath)
+          if (!media) { media = { id: rid(), name: `${wavName} \u266b`, path: wavPath, type: 'audio', duration: wavSecs, hasVideo: false, hasAudio: true }; setMediaBin(prev => [...prev, media!]) }
+          const clip: TimelineClip = { id: rid(), mediaId: media!.id, type: 'audio', trackId: 'a1', start: 0, duration: wavSecs, sourceStart: 0, volume: cmd.volume ?? 1, fadeIn: 0, fadeOut: 0.4 }
+          setClips(prev => [...prev, clip])
+          placed = clip.id
+        }
+        return {
+          ok: true, path: wavPath, seconds: wavSecs, bpm: r.bpm, style: r.style || 'electronic', pockets: r.pockets,
+          whooshes: r.whooshes, impacts: r.impacts,
+          grooveAt: r.grooveAt, calmsAt: r.calmsAt, droneAt: r.droneAt,
+          clipId: placed,
+          note: placed
+            ? `Scored ${cuts.length} cuts and ${hits.length} tag points at ${r.bpm} BPM (${r.style || 'electronic'}), placed on a1. A different seed is a different take; intensity chill/standard/epic changes how hard it hits; style cinematic swaps the kit for strings, cello, taiko and choir with a silence pocket before every drop. Re-run after editing, the score is derived from the cuts.`
+            : 'Rendered into the sound library (score/), not placed.',
+        }
+      }
       case 'make_sfx': {
         if (!cmd.recipe) {
           const list = await window.ipcRenderer.sfxRecipes()
@@ -1463,7 +1611,35 @@ function App() {
         setTimeout(() => setExportProgress(null), 3000)
         setLastExport(cmd.outputPath)
         const qc = cmd.qualityCheck === false ? null : await window.ipcRenderer.qualityCheck(cmd.outputPath).catch(() => null)
-        return { ok: true, outputPath: cmd.outputPath, qualityCheck: qc ? { verdict: qc.verdict, checks: qc.checks?.map((c: any) => `${c.status}: ${c.label} - ${c.detail}`) } : undefined }
+        const checks: string[] = qc?.checks?.map((c: any) => `${c.status}: ${c.label} - ${c.detail}`) ?? []
+        let verdict: string | undefined = qc?.verdict
+        const worse = (v: string) => { if (v === 'fail' || (v === 'warn' && verdict === 'pass')) verdict = v }
+        // design rules, checked on the timeline that was just rendered
+        const layout = layoutReport(texts, w, h)
+        for (const n of layout.notes) { checks.push(`warn: Text layout - ${n}`); worse('warn') }
+        if (texts.length && !layout.notes.length) checks.push('pass: Text layout - no overlaps, nothing off-frame, no flashes')
+        // script-aware: read the finished mix back and diff it against what was meant to be said
+        let script: any
+        const expected = String(cmd.script || boothScript || '').trim()
+        if (expected && cmd.qualityCheck !== false) {
+          const tr = await window.ipcRenderer.transcribe(cmd.outputPath, { model: 'tiny', language: settings.caption.language, word: false }).catch(() => null)
+          if (tr?.chunks) {
+            const heard = wordsOf(tr.chunks.map(c => c.text).join(' '))
+            const want = wordsOf(expected)
+            const bag = new Map<string, number>()
+            for (const x of heard) bag.set(x, (bag.get(x) || 0) + 1)
+            const missing: string[] = []
+            let matched = 0
+            for (const x of want) { const n = bag.get(x) || 0; if (n > 0) { matched++; bag.set(x, n - 1) } else missing.push(x) }
+            const overlap = want.length ? matched / want.length : 1
+            const lengthRatio = want.length ? heard.length / want.length : 1
+            const status = overlap >= 0.9 && lengthRatio > 0.7 && lengthRatio < 1.5 ? 'pass' : overlap >= 0.75 ? 'warn' : 'fail'
+            script = { status, overlap: +overlap.toFixed(3), lengthRatio: +lengthRatio.toFixed(2), wordsExpected: want.length, wordsHeard: heard.length, missing: missing.slice(0, 15) }
+            checks.push(`${status}: Script match - ${Math.round(overlap * 100)}% of the script's words were heard in the render${missing.length ? ` (missing: ${missing.slice(0, 6).join(', ')}${missing.length > 6 ? '…' : ''})` : ''}`)
+            worse(status)
+          }
+        }
+        return { ok: true, outputPath: cmd.outputPath, qualityCheck: qc || checks.length ? { verdict, checks } : undefined, script, layout: layout.notes.length ? layout.notes : undefined }
       }
       default:
         return { error: `unknown action: ${cmd.action}` }
@@ -1747,6 +1923,11 @@ function App() {
     void ensureProxies([media], new Map([[media.id, m]]))
     return media
   }
+
+  // A collapsed menu still has to show what is happening underneath it: the number of
+  // pending take cuts when there is one, otherwise a dot while a hidden tool is busy or open.
+  const moreCount = takeStats(takes).cuts
+  const moreBusy = silenceBusy !== null || takesBusy !== null || showBooth
 
   // ---- Takes & history ----
   // Transcribe the timeline, group the lines that are retakes of each other, and hand the result
@@ -2308,29 +2489,56 @@ function App() {
           </div>
 
           <div className="timeline-actions">
+            {/* The primary tools scroll if the centre panel gets narrow, so the bar is always
+                exactly one row. More and the zoom group sit outside the scroller and stay put,
+                which also keeps the dropdown clear of the scroll container's clipping. */}
+            <div className="tool-group">
             <button className="tool-btn play" onClick={() => setIsPlaying(p => !p)} disabled={totalDuration <= 0}>{isPlaying ? <IconPause /> : <IconPlay />} {isPlaying ? 'Pause' : 'Play'}</button>
             <div className="divider" />
-            <button className="tool-btn" onClick={undo} disabled={!canUndo} title="Undo (Ctrl+Z)"><IconUndo /> Undo</button>
-            <button className="tool-btn" onClick={redo} disabled={!canRedo} title="Redo (Ctrl+Shift+Z)"><IconRedo /> Redo</button>
+            <button className="tool-btn compactable" onClick={undo} disabled={!canUndo} title="Undo (Ctrl+Z)"><IconUndo /> <span className="tb-label">Undo</span></button>
+            <button className="tool-btn compactable" onClick={redo} disabled={!canRedo} title="Redo (Ctrl+Shift+Z)"><IconRedo /> <span className="tb-label">Redo</span></button>
             <div className="divider" />
-            <button className="tool-btn" onClick={splitAtPlayhead} disabled={!selClip}><IconScissors /> Split</button>
-            <button className="tool-btn" onClick={deleteSelected} disabled={!selectedId}><IconTrash /> Delete</button>
-            <button className="tool-btn" onClick={addText}><IconText /> Text</button>
-            <button className={`tool-btn ${isRecording ? 'recording' : ''}`} onClick={toggleRecord}><IconMic /> {isRecording ? 'Stop' : 'Voiceover'}</button>
-            <button className={`tool-btn ${showBooth ? 'active' : ''}`} onClick={() => setShowBooth(b => !b)} title="Karaoke booth, read a script along with the video in one take">🎙 Booth</button>
-            <button className="tool-btn" onClick={() => setShowNarration(true)} title="Generate narration with a cloned voice (external TTS tool)">🗣 Narrate</button>
-            <button className="tool-btn captions-btn" onClick={generateCaptions} disabled={captioning !== null || totalDuration <= 0} title="Auto-caption the whole timeline (on-device Whisper)">
-              <IconCaptions /> {captioning ? `${captioning}${captionPct !== null ? ` ${captionPct}%` : '…'}` : 'Captions'}
+            <button className="tool-btn compactable" onClick={splitAtPlayhead} disabled={!selClip} title="Split the selected clip at the playhead"><IconScissors /> <span className="tb-label">Split</span></button>
+            <button className="tool-btn compactable" onClick={deleteSelected} disabled={!selectedId} title="Delete the selection"><IconTrash /> <span className="tb-label">Delete</span></button>
+            <button className="tool-btn compactable" onClick={addText} title="Add a text layer"><IconText /> <span className="tb-label">Text</span></button>
+            <button className={`tool-btn compactable ${isRecording ? 'recording' : ''}`} onClick={toggleRecord} title="Record a voiceover"><IconMic /> <span className="tb-label">{isRecording ? 'Stop' : 'Voiceover'}</span></button>
+            <button className="tool-btn compactable captions-btn" onClick={generateCaptions} disabled={captioning !== null || totalDuration <= 0} title="Auto-caption the whole timeline (on-device Whisper)">
+              <IconCaptions /> <span className="tb-label">{captioning ? `${captioning}${captionPct !== null ? ` ${captionPct}%` : '…'}` : 'Captions'}</span>
               {captioning && captionPct !== null && <span className="cap-bar"><span className="cap-fill" style={{ width: `${captionPct}%` }} /></span>}
             </button>
-            <button className="tool-btn" onClick={cutDeadSpace} disabled={silenceBusy !== null || totalDuration <= 0} title="Detect & remove long silent pauses (great for faceless videos)"><IconScissors /> {silenceBusy || 'Cut Pauses'}</button>
-            <button className="tool-btn tk-btn" onClick={() => setShowTakes(true)} disabled={takesBusy !== null}
-              title="Takes & history: find repeated takes, keep the best one, and see the full transcript of what was cut">
-              📋 {takesBusy || 'Takes'}{takeStats(takes).cuts > 0 && <span className="tk-badge">{takeStats(takes).cuts}</span>}
-            </button>
+
+            </div>
+
+            {/* The speech and take tools sit behind one button. They are the least reached for,
+                and moving them here is what lets the bar hold a single row at any width. */}
+            <div className="tool-more" onClick={e => e.stopPropagation()}>
+              <button className={`tool-btn ${showMore ? 'active' : ''}`} onClick={() => setShowMore(m => !m)}
+                aria-haspopup="menu" aria-expanded={showMore} title="Booth, Narrate, Cut Pauses and Takes">
+                More <IconChevron open={showMore} />
+                {moreCount > 0 && <span className="tk-badge">{moreCount}</span>}
+                {moreBusy && moreCount === 0 && <span className="more-dot" />}
+              </button>
+              {showMore && (
+                <div className="tool-menu" role="menu">
+                  <button role="menuitem" className={showBooth ? 'on' : ''} onClick={() => { setShowMore(false); setShowBooth(b => !b) }}
+                    title="Karaoke booth, read a script along with the video in one take">🎙 <span>Booth</span></button>
+                  <button role="menuitem" onClick={() => { setShowMore(false); setShowNarration(true) }}
+                    title="Generate narration with a cloned voice (external TTS tool)">🗣 <span>Narrate</span></button>
+                  <div className="ctx-sep" />
+                  <button role="menuitem" onClick={() => { setShowMore(false); cutDeadSpace() }} disabled={silenceBusy !== null || totalDuration <= 0}
+                    title="Detect & remove long silent pauses (great for faceless videos)">✂ <span>{silenceBusy || 'Cut Pauses'}</span></button>
+                  <button role="menuitem" onClick={() => { setShowMore(false); setShowTakes(true) }} disabled={takesBusy !== null}
+                    title="Takes & history: find repeated takes, keep the best one, and see the full transcript of what was cut">
+                    📋 <span>{takesBusy || 'Takes & history'}</span>{takeStats(takes).cuts > 0 && <span className="tk-badge">{takeStats(takes).cuts}</span>}
+                  </button>
+                </div>
+              )}
+            </div>
+
             <div className="spacer" />
-            <div className="zoom">
-              <button onClick={() => setPxPerSec(p => clamp(p / 1.4, 2, 200))}>−</button><span>Zoom</span><button onClick={() => setPxPerSec(p => clamp(p * 1.4, 2, 200))}>+</button>
+            <div className="zoom" role="group" aria-label="Timeline zoom">
+              <button title="Zoom out" aria-label="Zoom out" onClick={() => setPxPerSec(p => clamp(p / 1.4, 2, 200))}>−</button>
+              <button title="Zoom in" aria-label="Zoom in" onClick={() => setPxPerSec(p => clamp(p * 1.4, 2, 200))}>+</button>
               <button className="zoom-fit" title="Zoom to fit, see every clip at once (Ctrl+scroll on the timeline also zooms)" disabled={totalDuration <= 0}
                 onClick={() => { const w = timelineRef.current?.clientWidth || 800; setPxPerSec(clamp((w - 60) / Math.max(totalDuration, 0.5), 2, 200)); if (timelineRef.current) timelineRef.current.scrollLeft = 0 }}>Fit</button>
             </div>

@@ -6,7 +6,7 @@ VidHelm is a desktop video editor (Electron + React) designed to be driven colla
 
 ## Steering the running app
 
-This repo ships an MCP server (`agent/mcp-server.mjs`, wired up for most clients already, see `docs/CONNECT.md`). While the app is running (`npm run dev` or the installed app), you have 40 tools to drive it live: `get_state`, `screenshot`, `add_media`, `add_clip`, `update_clip`, `split_clip`, `delete_item`, `add_text`, `update_text`, `add_tag`, `update_tag`, `list_sfx`, `place_sfx`, `set_booth_script`, `render_3d`, `prepare_analysis`, `open_project`, `transport`, `set_format`, `export_video`, `cut_pauses`, `find_repeats`, `apply_takes`, `run_recipe`, `sample_frames`, `compose_thumbnail`, `open_panel`, plus b-roll (`scan_broll`, `label_broll`, `plan_broll`, `place_broll`), precise speech (`analyze_speech`, `find_phrase`, `cut_at_phrase`, `plan_framing`), sound effects (`search_sfx`, `download_sfx`, `make_sfx`), `look_through` (see the video), and `set_recipe`.
+This repo ships an MCP server (`agent/mcp-server.mjs`, wired up for most clients already, see `docs/CONNECT.md`). While the app is running (`npm run dev` or the installed app), you have 44 tools to drive it live: `get_state`, `screenshot`, `add_media`, `add_clip`, `update_clip`, `split_clip`, `delete_item`, `add_text`, `update_text`, `add_tag`, `update_tag`, `list_sfx`, `place_sfx`, `set_booth_script`, `render_3d`, `prepare_analysis`, `open_project`, `transport`, `set_format`, `export_video`, `cut_pauses`, `find_repeats`, `apply_takes`, `run_recipe`, `sample_frames`, `compose_thumbnail`, `open_panel`, plus b-roll (`scan_broll`, `label_broll`, `plan_broll`, `place_broll`), precise speech (`analyze_speech`, `find_phrase`, `cut_at_phrase`, `find_word`, `plan_framing`), sound effects (`search_sfx`, `download_sfx`, `make_sfx`), cut-synced music (`make_score`, `snap_to_grid`), `look_through` (see the video), `capture_site` (film a website), and `set_recipe`.
 
 **No MCP support?** The bridge is plain HTTP on `http://127.0.0.1:5959` (localhost only): `GET /state`, `POST /command {action,...}`, `GET /screenshot`, `GET /ping`. Any agent that can run `curl` can drive it, same actions as the tool names above.
 
@@ -22,13 +22,25 @@ Tracks: `v1` video · `v2` b-roll (picture only, composited over v1) · `a1` voi
 
 Panels for `open_panel`: booth, narration, sfx, media, settings, thumbnail, connect, takes (transcript, repeated takes, and what was cut), model3d (pass `path` to load an STL/3MF/OBJ, the user poses it and renders a turntable clip into the bin). Optional pairings worth suggesting: a browser-control extension for uploading the export, and the Adversal MCP if installed (footage → Markdown notes/chapters/stills for planning cuts).
 
+## Word anchors, the grid, and the other 1.9 habits
+
+- **Put things on words, not numbers.** `find_word {text}` returns where a word or phrase was said; then any time-taking tool (`add_text`, `add_tag`, `place_sfx`, `split_clip`, `add_clip`, `transport`) takes `at:"arcade"` or `at:"end:arcade"` instead of `t`/`start`. Every animation in a tight teaser is keyed to the moment a word is spoken; this is that trick as a parameter.
+- **Snap before you score.** `snap_to_grid` rolls every join onto the beat and slides tags onto bar lines (nothing downstream moves, runtime unchanged; `dryRun` previews). Then `make_score` at the same bpm lands every hit exactly.
+- **Two score palettes.** `make_score {style:"cinematic"}` swaps the electronic kit for bowed strings, a cello ostinato, felt piano, taiko, choir, braams, a riser into every hit and a pocket of silence before each drop. Use it when the user says anything like "no beeps".
+- **Text presets and design rules.** `add_text {preset:"title"|"lower-third"|"caption"|"end-card"}` supplies the lane, size, box and fades; the font auto-shrinks to fit, and the reply warns if the text overlaps another, runs off-frame, or flashes under half a second. `export_video` re-checks the whole text track.
+- **Script-aware export QC.** Pass `script` to `export_video` (or set the booth script first) and the finished mix is transcribed and diffed against it: the verdict gains a "Script match" line with the missing words. Cheap insurance against a dropped narration line.
+- **Film a website.** `capture_site {url, width, height, theme, script, seconds}` renders any page (including localhost) in the app's own Chromium, runs your script first to seed state or freeze animations, and returns a still or a real-time recording straight into the bin.
+- **Narration says acronyms right.** The narration adapter runs a pronunciation pass before synthesis (ASCP → "A S C P", CruxSci → "Crux Sigh", unknown CAPS spelled out). The user's own table is `pronounce.json` in the app data folder.
+
 ## Repo map
 
 - `src/App.tsx`: the whole editor UI + state (clips/texts/markers), incl. the agent command executor (`agentExec`)
 - `src/extras.tsx`: SfxPanel, MarkerPanel, KaraokeBooth, NarrationModal, ConnectModal (AI setup + troubleshooter)
 - `electron/main.ts`: FFmpeg service + IPC + the HTTP agent bridge (port 5959) + SFX synth recipes
 - `agent/mcp-server.mjs`: dependency-free MCP↔bridge proxy · `agent/clients/`: ready-made configs · `agent/skills/`: portable skill text
-- `docs/`: WORKFLOW (user pipeline), BROLL (cutaways, phrase-accurate cuts, 9:16 framing), SFX (free-library search + physical sound models), CONNECT (hook up any AI), ARCHITECTURE (contributor guide), AGENT (bridge details), VOICE_CLONE (XTTS setup), PROJECT_FORMAT (save-file JSON)
+- `docs/`: WORKFLOW (user pipeline), BROLL (cutaways, phrase-accurate cuts, 9:16 framing), SFX (free-library search + physical sound models), SCORE (cut-synced music, both palettes), CONNECT (hook up any AI), ARCHITECTURE (contributor guide), AGENT (bridge details), VOICE_CLONE (XTTS setup), PROJECT_FORMAT (save-file JSON)
+
+The web version (VidHelm Cloud) is a separate product in its own private repo; it copies the pure `electron/*.ts` modules it needs via `cloud/scripts/sync-shared.mjs`, so a capability added here ships to both. Nothing under `cloud/` is part of the desktop build or the public repo.
 
 ## Commands
 
@@ -39,6 +51,8 @@ Panels for `open_panel`: booth, narration, sfx, media, settings, thumbnail, conn
 
 ## Conventions
 
+- **Never splice audio on a hard cut.** Clips carry `aFadeIn`/`aFadeOut` (audio-only, ~12 ms) so the picture can cut hard without the waveform clicking. `removeRange` and `split_clip` set them.
+- **3MF object colours**: three's loader only applies `<m:colorgroup>` per triangle, so object-level colours load white. `electron/threemf.ts` + `src/threemfColor.ts` handle it.
 - Windows-first (3 known portability points listed in docs/ARCHITECTURE.md)
 - All state lives in App.tsx React state; the export filtergraph in main.ts mirrors the preview math, if you change fades/volume behavior, change both
 - FFmpeg binaries come from `ffmpeg-static` in node_modules; never assume a system install
