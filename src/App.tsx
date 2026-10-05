@@ -18,6 +18,7 @@ import { spanForPhrase, sentenceSpans, type Word as SpeechWord, type Span } from
 import { planBroll, snapToWords, describePlan, type BrollAsset, type Placement } from '../electron/broll'
 import { looksLikeThumbPhoto } from '../electron/thumbpick'
 import { resolveProfile, describeProfile, type PerfProfile, type Tier, type TierPreference } from '../electron/capability'
+import { resolveCaptionModel, modelLabel, MODEL_NAMES, type CaptionModelSetting } from '../electron/asrmodel'
 
 interface MediaFile {
   id: string
@@ -70,7 +71,8 @@ interface AppSettings {
   intro: { segment: 'first' | 'last'; seconds: number; fade: number; treatment: 'ripple' | 'overlay' }
   audio: { optimize: boolean; noiseReduction: boolean }
   /** theme: a theme id or the creator's words ("futuristic tech"); 'classic' = the plain style below. tweak: words on top ("but blue") */
-  caption: { fontSize: number; color: string; position: 'lower' | 'top' | 'center'; box: boolean; boxOpacity: number; model: 'tiny' | 'base' | 'small'; language: string; mode: 'phrase' | 'word'; theme: string; tweak: string }
+  /** model 'auto' follows the machine tier (perf.speechModel); modelPicked: chosen in the menu, so a saved tiny is a choice, not the old default */
+  caption: { fontSize: number; color: string; position: 'lower' | 'top' | 'center'; box: boolean; boxOpacity: number; model: CaptionModelSetting; modelPicked?: boolean; language: string; mode: 'phrase' | 'word'; theme: string; tweak: string }
   silence: { minPause: number; thresholdDb: number; pad: number; smooth: boolean; transition: number; detectBy: 'auto' | 'audio' | 'motion'; freezeDb: number }
   narration: { command: string }
   sfxGen: { command: string; freesoundToken?: string; favorites?: string[] }
@@ -86,7 +88,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   brand: { enabled: false, logoPath: null, position: 'br', sizePct: 16, margin: 40, opacity: 0.85, showMode: 'whole', windowSec: 5, fade: 0.5 },
   intro: { segment: 'first', seconds: 5, fade: 0.6, treatment: 'ripple' },
   audio: { optimize: true, noiseReduction: false },
-  caption: { fontSize: 44, color: '#ffffff', position: 'lower', box: true, boxOpacity: 0.5, model: 'tiny', language: 'en', mode: 'phrase', theme: 'creator', tweak: '' },
+  caption: { fontSize: 44, color: '#ffffff', position: 'lower', box: true, boxOpacity: 0.5, model: 'auto', language: 'en', mode: 'phrase', theme: 'creator', tweak: '' },
   silence: { minPause: 0.8, thresholdDb: -30, pad: 0.12, smooth: true, transition: 0.12, detectBy: 'auto', freezeDb: -50 },
   narration: { command: '' },
   sfxGen: { command: '' },
@@ -720,6 +722,7 @@ function Editor() {
   const [qcRunning, setQcRunning] = useState(false)
   const [showQC, setShowQC] = useState(false)
   const [captioning, setCaptioning] = useState<string | null>(null) // status text while transcribing
+  const [captionEta, setCaptionEta] = useState<number | null>(null) // seconds left, from main's measured pace
   const [captionPct, setCaptionPct] = useState<number | null>(null)
   const [thumbs, setThumbs] = useState<Record<string, { sig: string; path: string }>>({})
   const thumbsRef = useRef<Record<string, { sig: string; path: string }>>({})
@@ -833,9 +836,13 @@ function Editor() {
       } else if (pct >= 100) setEta(null)
     }
     window.ipcRenderer.on('export-progress', handleProgress)
-    const handleTranscribe = (_e: any, p: { stage: string; pct: number }) => {
+    const handleTranscribe = (_e: any, p: { stage: string; pct: number; etaSec?: number }) => {
+      // Takes, the booth draft and speech analysis transcribe too. Their progress used to light up
+      // the Captions button, which only a captions run clears: it then sat disabled until a restart.
+      if (!busyRef.current.captions) return
       setCaptioning(p.stage === 'download' ? 'Downloading model' : 'Transcribing')
       setCaptionPct(p.pct)
+      setCaptionEta(p.stage === 'transcribe' && typeof p.etaSec === 'number' && p.pct < 100 ? p.etaSec : null)
     }
     window.ipcRenderer.on('transcribe-progress', handleTranscribe)
     const handleProxy = (_e: unknown, d: { filePath: string; pct: number }) =>
@@ -2297,6 +2304,9 @@ function Editor() {
     return JSON.stringify([settings.caption.language, merged.map(x => [x.p, +x.s.toFixed(3), +x.d.toFixed(3), +x.ss.toFixed(3), x.v])])
   }
 
+  /** The Whisper model captions, the booth draft and Takes use: Automatic is the machine tier's. */
+  const captionModel = () => resolveCaptionModel(settings.caption.model, perf.speechModel)
+
   // Local Whisper captions for the WHOLE timeline → timed text cues styled by caption settings
   // replace: the captions already on the timeline are swapped for the new ones in one update
   const generateCaptions = async (themeOverride?: string, opts: { replace?: boolean } = {}): Promise<number> => {
@@ -2313,7 +2323,7 @@ function Editor() {
       const payload = mixPayload()
       const mix = await window.ipcRenderer.renderMixAudio({ clips: payload })
       if (mix.error || !mix.path) { notify('Captions: ' + (mix.error || 'could not prepare audio')); return 0 }
-      const res = await window.ipcRenderer.transcribe(mix.path, { model: cs.model, language: cs.language, word: themed || cs.mode === 'word' })
+      const res = await window.ipcRenderer.transcribe(mix.path, { model: captionModel(), language: cs.language, word: themed || cs.mode === 'word' })
       if (res.error) { notify('Captions: ' + res.error); return 0 }
       const cues: TextClip[] = []
       if (themed) {
@@ -2325,8 +2335,9 @@ function Editor() {
       }
       else for (const c of res.chunks || []) {
         const text = (c.text || '').trim()
-        if (!text) continue
-        const dur = Math.max(cs.mode === 'word' ? 0.2 : 0.4, (c.end || c.start + (cs.mode === 'word' ? 0.4 : 2)) - c.start)
+        // the same end clamp as the themed path: a cue may not start, or run, past the timeline
+        if (!text || c.start >= totalDuration) continue
+        const dur = Math.min(totalDuration - c.start, Math.max(cs.mode === 'word' ? 0.2 : 0.4, (c.end || c.start + (cs.mode === 'word' ? 0.4 : 2)) - c.start))
         cues.push({ id: rid(), text, start: c.start, duration: dur, x: 0.5, y: CAPTION_Y[cs.position], fontSize: cs.fontSize, color: cs.color, fadeIn: cs.mode === 'word' ? 0 : 0.08, fadeOut: cs.mode === 'word' ? 0 : 0.08, box: cs.box, boxOpacity: cs.boxOpacity })
       }
       if (cues.length) { setTexts(prev => [...(opts.replace ? prev.filter(t => !t.caption) : prev), ...cues]); made = cues.length }
@@ -2334,7 +2345,7 @@ function Editor() {
     } catch (e) { console.error(e); notify('Captioning failed.') }
     // in finally: an early return above (no audio mix, a Whisper error) used to leave the status up
     // and the Captions button disabled until a restart
-    finally { busyRef.current.captions = false; setCaptioning(null); setCaptionPct(null) }
+    finally { busyRef.current.captions = false; setCaptioning(null); setCaptionPct(null); setCaptionEta(null) }
     return made
   }
 
@@ -2362,7 +2373,7 @@ function Editor() {
       const payload = mixPayload()
       const mix = await window.ipcRenderer.renderMixAudio({ clips: payload })
       if (mix.error || !mix.path) return null
-      const res = await window.ipcRenderer.transcribe(mix.path, { model: settings.caption.model, language: settings.caption.language, word: false })
+      const res = await window.ipcRenderer.transcribe(mix.path, { model: captionModel(), language: settings.caption.language, word: false })
       const lines = (res.chunks || []).map(c => (c.text || '').trim()).filter(Boolean)
       return lines.length ? lines.join('\n') : null
     } catch (e) { console.error(e); return null }
@@ -2521,7 +2532,7 @@ function Editor() {
       // Word timings, not phrases: Whisper packs a false start and its retake into one segment
       // ("Say hello to VidHelm. Say hello to VidHelm, a free editor"), so we rebuild the lines
       // ourselves and split them where the speaker started over.
-      const res = await window.ipcRenderer.transcribe(mix.path, { model: settings.caption.model, language: settings.caption.language, word: true })
+      const res = await window.ipcRenderer.transcribe(mix.path, { model: captionModel(), language: settings.caption.language, word: true })
       if (res.error) return { error: 'Takes: ' + res.error }
       const words = (res.chunks || [])
         .map(c => ({ start: c.start, end: c.end ?? c.start + 0.3, text: (c.text || '') }))
@@ -3693,7 +3704,7 @@ function Editor() {
             <button className="tool-btn compactable" onClick={addText} title="Add a text layer"><IconText /> <span className="tb-label">Text</span></button>
             <button className={`tool-btn compactable ${isRecording ? 'recording' : ''}`} onClick={toggleRecord} title="Record a voiceover"><IconMic /> <span className="tb-label">{isRecording ? 'Stop' : 'Voiceover'}</span></button>
             <button className="tool-btn compactable captions-btn" onClick={() => generateCaptions()} disabled={captioning !== null || totalDuration <= 0} title="Auto-caption the whole timeline (on-device Whisper)">
-              <IconCaptions /> <span className="tb-label">{captioning ? `${captioning}${captionPct !== null ? ` ${captionPct}%` : '…'}` : 'Captions'}</span>
+              <IconCaptions /> <span className="tb-label">{captioning ? `${captioning}${captionPct !== null ? ` ${captionPct}%` : '…'}${captionEta !== null && captionEta >= 1 ? `, ${fmtEta(captionEta)} left` : ''}` : 'Captions'}</span>
               {captioning && captionPct !== null && <span className="cap-bar"><span className="cap-fill" style={{ width: `${captionPct}%` }} /></span>}
             </button>
             <div className="divider" />
@@ -4045,8 +4056,10 @@ function Editor() {
                 </>}
                 <div className="grid2">
                   <label>Accuracy / speed
-                    <select value={settings.caption.model} onChange={e => setSettings(s => ({ ...s, caption: { ...s.caption, model: e.target.value as any } }))}>
-                      <option value="tiny">Tiny, fastest</option><option value="base">Base, balanced</option><option value="small">Small, most accurate, slower</option>
+                    {/* modelPicked: a choice made here is kept, even Fast (see migrateCaptionModel) */}
+                    <select value={settings.caption.model} onChange={e => setSettings(s => ({ ...s, caption: { ...s.caption, model: e.target.value as CaptionModelSetting, modelPicked: true } }))}>
+                      <option value="auto">Automatic (this PC: {MODEL_NAMES[perf.speechModel]})</option>
+                      <option value="tiny">{modelLabel('tiny')}</option><option value="base">{modelLabel('base')}</option><option value="small">{modelLabel('small')}</option>
                     </select>
                   </label>
                   <label>Language

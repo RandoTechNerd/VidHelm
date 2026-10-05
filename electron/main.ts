@@ -5,6 +5,9 @@ import { buildAss, chooseTheme, THEME_FONTS, type ThemeFont } from './styletheme
 import { scoreFrame, rankFrames, sampleTimes, thumbTextLayout, photoNudge, type FrameScore } from './thumbpick'
 import { planProxy, proxyFits, proxyKey, proxyAttempts, proxyArgs, quarterTurn, isRealVideo, isStillFormat, probeDuration, lastStatsTime, HDR_TO_SDR, type ProbeInfo } from './playable'
 import { refineFromEnvelope } from './speech'
+import { energyEnvelope, nextWindow, resumeAt, mergeWordPieces } from './asrwindows'
+import { cleanTranscript } from './asrclean'
+import { resolveCaptionModel, migrateCaptionModel, etaSeconds, blendRate, DEFAULT_SEC_PER_MIN, type AsrModel, type CaptionModelSetting } from './asrmodel'
 import { planCrop, cropExpr, type Frame as GrayFrame } from './framing'
 import { classify, profileFor, benchmark, type MachineSpecs } from './capability'
 import { REALISTIC_RECIPES, REALISTIC_REV } from './sfxrecipes'
@@ -410,10 +413,16 @@ const decodePCM = (file: string) => new Promise<Float32Array>((resolve, reject) 
 
 // Local Whisper captioning (Transformers.js + onnxruntime-node, fully on-device)
 const asrPipes: Record<string, any> = {} // cache one pipeline per model id
+// How fast each model really runs here (seconds of work per minute of audio), kept between runs so
+// the progress pill can say how long is left before the first window is even back
+const asrSpeedPath = () => path.join(app.getPath('userData'), 'asr-speed.json')
+const readAsrSpeed = (): Record<string, number> => { try { return JSON.parse(fs.readFileSync(asrSpeedPath(), 'utf8')) || {} } catch { return {} } }
+// 'auto' (or nothing) from a caller that did not resolve it: the machine's own tier decides
+const tierSpeechModel = (): AsrModel => machineSpecs ? profileFor(classify(machineSpecs).tier).speechModel : 'base'
 ipcMain.handle('transcribe', async (_event, filePath: string, opts: any = {}) => {
   try {
     if (!filePath || !fs.existsSync(filePath)) return { error: 'File not found' }
-    const size = ['tiny', 'base', 'small'].includes(opts.model) ? opts.model : 'tiny'
+    const size = resolveCaptionModel(opts.model, tierSpeechModel())
     const lang = opts.language || 'en'
     const useEn = lang === 'en' // English-only models are faster + more accurate for English
     const modelId = `Xenova/whisper-${size}${useEn ? '.en' : ''}`
@@ -428,40 +437,53 @@ ipcMain.handle('transcribe', async (_event, filePath: string, opts: any = {}) =>
     const audio = await decodePCM(filePath)
     if (!audio.length) return { error: 'No audio found' }
 
-    // Process in 30s segments (Whisper's window) so we can report real progress.
-    //
-    // The windows OVERLAP. Slicing on an exact 30s boundary lands mid-word roughly every time,
-    // and a word cut in half is either transcribed wrong or lost from both sides, which is
-    // exactly the sort of hole that later makes a cut land in the wrong place. The overlap is
-    // then de-duplicated: the same word spoken once must not come back twice.
-    const sr = 16000, chunkSec = 30
-    const overlap = Math.max(0, Math.min(5, opts.overlap ?? 1.5))
-    const stride = chunkSec - overlap
-    const nChunks = Math.max(1, Math.ceil(Math.max(0, audio.length / sr - overlap) / stride))
+    // Whisper hears 30 s at a time, so long audio goes in windows, each ending in a pause (see
+    // electron/asrwindows.ts: cutting every 30 s exactly garbled or doubled the word on each seam).
+    // The loudness envelope that finds the pauses also feeds the ghost filter at the end.
+    const sr = 16000, total = audio.length / sr
+    const env = energyEnvelope(audio, sr)
     const genOpts: any = { return_timestamps: opts.word ? 'word' : true }
     if (!useEn) { genOpts.task = 'transcribe'; if (lang !== 'auto') genOpts.language = lang }
+    const speedKey = `${size}${useEn ? '.en' : ''}`
+    const speeds = readAsrSpeed()
+    // the multilingual models are a little slower than the English-only ones
+    const secPerMin = speeds[speedKey] || DEFAULT_SEC_PER_MIN[size] * (useEn ? 1 : 1.15)
+    const t0 = Date.now()
+    const progress = (doneSec: number) => {
+      if (win) win.webContents.send('transcribe-progress', { stage: 'transcribe', pct: Math.round((doneSec / total) * 100),
+        etaSec: etaSeconds({ audioSec: total, doneSec, elapsedSec: (Date.now() - t0) / 1000, secPerMin }) })
+    }
+    progress(0)
     const results: { start: number; end: number; text: string }[] = []
-    const norm = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '')
-    for (let i = 0; i < nChunks; i++) {
-      const from = Math.round(i * stride * sr)
-      const seg = audio.subarray(from, Math.min(audio.length, from + chunkSec * sr))
-      if (seg.length < sr * 0.2) break
-      const out = await asr(seg, genOpts)
-      const offset = from / sr
-      for (const c of (out.chunks || [])) {
-        const text = (c.text || '').trim()
-        if (!text) continue
-        const start = (c.timestamp?.[0] ?? 0) + offset
-        const end = (c.timestamp?.[1] ?? c.timestamp?.[0] ?? 0) + offset
-        // already heard, in the overlap: same words at nearly the same time
-        const dupe = results.some(r => norm(r.text) === norm(text) && Math.abs(r.start - start) < Math.max(0.8, overlap * 0.6))
-        if (dupe) continue
-        results.push({ start, end, text })
-      }
-      if (win) win.webContents.send('transcribe-progress', { stage: 'transcribe', pct: Math.round(((i + 1) / nChunks) * 100) })
+    // runUp: the start of this window the previous one already covered (only after an overlap)
+    let from = 0, runUp = 0
+    for (let guard = 0; from < total - 0.2 && guard < 100000; guard++) {
+      const w = nextWindow(env, from, total)
+      const out = await asr(audio.subarray(Math.round(w.start * sr), Math.round(w.end * sr)), genOpts)
+      const chunks: { text?: string; timestamp?: (number | null)[] }[] = out?.chunks || []
+      // nothing heard can end after the audio this window was given (Whisper stretches its last word)
+      const pieces = chunks.map(c => ({
+        start: Math.min((c.timestamp?.[0] ?? 0) + w.start, w.end), end: Math.min((c.timestamp?.[1] ?? c.timestamp?.[0] ?? 0) + w.start, w.end), raw: String(c.text || ''),
+      }))
+      // word mode: pieces back into whole words, inside this window only
+      const items = (opts.word ? mergeWordPieces(pieces, lang) : pieces.map(p => ({ start: p.start, end: p.end, text: p.raw.trim() })).filter(p => p.text))
+        .filter(it => !(runUp && it.end <= from + runUp + 0.05))   // only the tail of a word the last window kept
+      const last = w.end >= total - 1e-6
+      // A cut in a pause keeps everything before it. Without a pause, a word that crossed the cut
+      // is dropped here and heard again, whole, at the start of the next window.
+      const next = last ? total : w.quiet ? w.cut : resumeAt(items, w.cut, w.cut - 5)
+      for (const it of items) if (last || it.start < next) results.push(it)
+      progress(next)
+      if (last) break
+      runUp = w.quiet ? 0 : Math.min(0.15, next - w.start)
+      from = next - runUp
     }
     results.sort((a, b) => a.start - b.start)
-    return { chunks: results }
+    const { kept, dropped } = cleanTranscript(results, { total, word: !!opts.word, env })
+    if (dropped.length) console.log('transcribe: left out what nobody said:', dropped.map(d => `"${d.text}" at ${d.start.toFixed(2)}s (${d.why})`).join('; '))
+    const rate = blendRate(speeds[speedKey], total, (Date.now() - t0) / 1000)
+    if (rate && rate !== speeds[speedKey]) { try { fs.writeFileSync(asrSpeedPath(), JSON.stringify({ ...speeds, [speedKey]: rate })) } catch { /* only an estimate */ } }
+    return { chunks: kept }
   } catch (e: any) {
     console.error('transcribe error', e)
     return { error: e?.message || 'Transcription failed' }
@@ -1769,7 +1791,7 @@ const DEFAULT_SETTINGS = {
   brand: { enabled: false, logoPath: null as string | null, position: 'br', sizePct: 16, margin: 40, opacity: 0.85, showMode: 'whole' as 'whole' | 'intro' | 'outro', windowSec: 5, fade: 0.5 },
   intro: { segment: 'first' as 'first' | 'last', seconds: 5, fade: 0.6, treatment: 'ripple' as 'ripple' | 'overlay' },
   audio: { optimize: true, noiseReduction: false },
-  caption: { fontSize: 44, color: '#ffffff', position: 'lower' as 'lower' | 'top' | 'center', box: true, boxOpacity: 0.5, model: 'tiny' as 'tiny' | 'base' | 'small', language: 'en', mode: 'phrase' as 'phrase' | 'word', theme: 'creator', tweak: '' },
+  caption: { fontSize: 44, color: '#ffffff', position: 'lower' as 'lower' | 'top' | 'center', box: true, boxOpacity: 0.5, model: 'auto' as CaptionModelSetting, language: 'en', mode: 'phrase' as 'phrase' | 'word', theme: 'creator', tweak: '' },
   silence: { minPause: 0.8, thresholdDb: -30, pad: 0.12, smooth: true, transition: 0.12, detectBy: 'auto' as 'auto' | 'audio' | 'motion', freezeDb: -50 },
 }
 
@@ -1784,7 +1806,8 @@ ipcMain.handle('get-settings', async () => {
       brand: { ...DEFAULT_SETTINGS.brand, ...raw.brand },
       intro: { ...DEFAULT_SETTINGS.intro, ...raw.intro },
       audio: { ...DEFAULT_SETTINGS.audio, ...raw.audio },
-      caption: { ...DEFAULT_SETTINGS.caption, ...raw.caption },
+      // a saved "tiny" is usually the old default, not a choice: it becomes Automatic (asrmodel.ts)
+      caption: { ...DEFAULT_SETTINGS.caption, ...raw.caption, model: migrateCaptionModel(raw.caption) },
       silence: { ...DEFAULT_SETTINGS.silence, ...raw.silence },
     }
   } catch { return DEFAULT_SETTINGS }
