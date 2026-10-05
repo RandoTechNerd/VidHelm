@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { InfoNote } from './help'
 import { SecretField } from './controls'
-import { IcStop, IcRecord, IcFolder, IcSearch, IcSparkle, IcRefresh, IcPlaySm, IcClose } from './icons'
+import { IcStop, IcRecord, IcFolder, IcSearch, IcSparkle, IcRefresh, IcPlaySm, IcClose, IcStar, IcKey, IcDownload, IcDice, IcExternal, IcPlus, IcGrip, IcMic, IcPause, IcCheck, IcCopy, IcTerminal, IcGlobe, IcFilm, IcChevron, IcGear, IcImage } from './icons'
 
 export interface Marker { id: string; t: number; label: string; color: string }
 export interface SfxItem { name: string; path: string; duration: number; builtin: boolean; about?: string }
@@ -123,7 +123,7 @@ export function SfxPanel({ onPlace, genCommand, onGenCommand, freesoundToken, on
     if (!pending) return
     setGenBusy(true); setGenStatus('Saving…')
     const r = await window.ipcRenderer.saveSfxRecording({ base64: pending.base64, name: recName.trim() || 'my sound' })
-    if (r.path) { setGenStatus(`Saved "${r.name}" to your library ✓`); setPending(null); setRecName(''); load() }
+    if (r.path) { setGenStatus(`Saved "${r.name}" to your library.`); setPending(null); setRecName(''); load() }
     else setGenStatus(r.error || 'could not save that recording')
     setGenBusy(false)
   }
@@ -132,7 +132,7 @@ export function SfxPanel({ onPlace, genCommand, onGenCommand, freesoundToken, on
     if (!genPrompt.trim() || !genCommand.trim()) return
     setGenBusy(true); setGenStatus('Generating…')
     const r = await window.ipcRenderer.sfxGenerate({ command: genCommand, prompt: genPrompt.trim() })
-    if (r.path) { setGenStatus('Added to the library ✓'); setGenPrompt(''); load() }
+    if (r.path) { setGenStatus('Added to the library.'); setGenPrompt(''); load() }
     else setGenStatus(r.error || 'failed')
     setGenBusy(false)
   }
@@ -219,10 +219,11 @@ export function SfxPanel({ onPlace, genCommand, onGenCommand, freesoundToken, on
             <button className="sfx-play" title="Audition" onClick={() => audition(item)}>{playing === item.path ? <IcStop /> : <IcPlaySm />}</button>
             <button className={`sfx-star ${favSet.has(item.name) ? 'on' : ''}`}
               title={favSet.has(item.name) ? 'Remove from favourites' : 'Favourite, keeps it at the top of the list'}
-              onClick={() => onToggleFavorite?.(item.name)}>{favSet.has(item.name) ? '★' : '☆'}</button>
+              aria-label={favSet.has(item.name) ? 'Remove from favourites' : 'Add to favourites'} aria-pressed={favSet.has(item.name)}
+              onClick={() => onToggleFavorite?.(item.name)}><IcStar filled={favSet.has(item.name)} /></button>
             <span className="sfx-name" title={item.about || (item.builtin ? 'Built-in (synthesized)' : 'Custom sound')}>{item.name}</span>
             <span className="sfx-dur">{item.duration.toFixed(1)}s</span>
-            <button className="sfx-add" title="Place on the SFX track at the playhead" onClick={() => onPlace(item)}>+</button>
+            <button className="sfx-add" title="Place on the SFX track at the playhead" aria-label={`Place ${item.name} at the playhead`} onClick={() => onPlace(item)}><IcPlus size={13} /></button>
           </div>
         ))}
       </div>
@@ -231,7 +232,7 @@ export function SfxPanel({ onPlace, genCommand, onGenCommand, freesoundToken, on
           value={findQ} onChange={e => setFindQ(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') runSearch() }} />
         <div className="vc-row">
           <button className="primary" disabled={findBusy || !findQ.trim()} onClick={runSearch}>{findBusy ? 'Searching…' : 'Search'}</button>
-          <button title="Freesound API token" onClick={() => setTokenEdit(v => !v)}>{freesoundToken ? '🔑' : '🔑 add key'}</button>
+          <button title="Freesound API key" aria-label={freesoundToken ? 'Freesound API key' : undefined} onClick={() => setTokenEdit(v => !v)}><IcKey />{freesoundToken ? '' : 'Add key'}</button>
         </div>
         {tokenEdit && <div className="sfx-token">
           <p className="hint">
@@ -254,9 +255,9 @@ export function SfxPanel({ onPlace, genCommand, onGenCommand, freesoundToken, on
                 {h.needsAttribution ? 'credit' : 'free'}
               </span>
               {h.seconds > 0 && <span className="sfx-dur">{h.seconds > 60 ? `${Math.round(h.seconds / 60)}m` : `${h.seconds.toFixed(1)}s`}</span>}
-              <button className="sfx-add" title="Save into your sounds"
+              <button className="sfx-add" title="Save into your sounds" aria-label={`Save ${h.name} into your sounds`}
                 disabled={gettingId === h.provider + h.id}
-                onClick={() => download(h)}>{gettingId === h.provider + h.id ? '…' : '↓'}</button>
+                onClick={() => download(h)}>{gettingId === h.provider + h.id ? '…' : <IcDownload />}</button>
             </div>
           ))}
         </div>}
@@ -273,13 +274,13 @@ export function SfxPanel({ onPlace, genCommand, onGenCommand, freesoundToken, on
               title="What it will be called in your library, change it to anything you like"
               onChange={e => setGenName(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') makeIt() }} />
             <button className="primary" disabled={genBusy} onClick={() => makeIt()}>{genBusy ? 'Making…' : 'Make it'}</button>
-            <button disabled={genBusy} title="Another take of the same sound" onClick={() => makeIt(true)}>🎲</button>
+            <button disabled={genBusy} title="Another take of the same sound" aria-label="Another take of the same sound" onClick={() => makeIt(true)}><IcDice /></button>
           </div>
         </div>}
 
         {genPrompt.trim() && plan && !plan.canMake && (
           <p className="hint">
-            That one is not modelled here. Try the 🔎 Find button to search the free libraries, or set up a
+            That one is not modelled here. Try the Find button below to search the free libraries, or set up a
             text-to-audio generator below.
           </p>
         )}
@@ -300,12 +301,12 @@ export function SfxPanel({ onPlace, genCommand, onGenCommand, freesoundToken, on
           <ol className="sfx-steps">
             <li>
               <b>audio.cpp</b>, a prebuilt Windows zip.{' '}
-              <a href="#" onClick={e => { e.preventDefault(); window.ipcRenderer.openExternal('https://github.com/0xShug0/audio.cpp/releases') }}>Releases ↗</a>
+              <a href="#" onClick={e => { e.preventDefault(); window.ipcRenderer.openExternal('https://github.com/0xShug0/audio.cpp/releases') }}>Releases <IcExternal /></a>
               {' '}(<code>audiocpp-windows-cpu-balance.zip</code> is a good default). Unzip it, ideally to <code>C:\audiocpp</code>.
             </li>
             <li>
               A <b>stable_audio</b> model.{' '}
-              <a href="#" onClick={e => { e.preventDefault(); window.ipcRenderer.openExternal('https://huggingface.co/audio-cpp/audio.cpp-gguf') }}>Models ↗</a>.
+              <a href="#" onClick={e => { e.preventDefault(); window.ipcRenderer.openExternal('https://huggingface.co/audio-cpp/audio.cpp-gguf') }}>Models <IcExternal /></a>.
               Unzip it next to audio.cpp.
             </li>
             <li>Press <b>Find it for me</b>. It looks in the obvious places and writes the command, which is the only fiddly part.</li>
@@ -317,7 +318,7 @@ export function SfxPanel({ onPlace, genCommand, onGenCommand, freesoundToken, on
               setFindingCpp(false)
               if (r.command) onGenCommand(r.command)
               setGenStatus(r.note)
-            }}>{findingCpp ? 'Looking…' : '🔍 Find it for me'}</button>
+            }}>{findingCpp ? 'Looking…' : <><IcSearch /> Find it for me</>}</button>
           </div>
           <input className="duration-input" style={{ width: '100%' }} placeholder='or paste it yourself: "C:\audiocpp\audiocpp_cli.exe" --task gen --family stable_audio --model "C:\models\stable-audio" --text "{prompt}" --out "{out}"'
             value={genCommand} onChange={e => onGenCommand(e.target.value)} />
@@ -332,7 +333,7 @@ export function SfxPanel({ onPlace, genCommand, onGenCommand, freesoundToken, on
         <div className="sfx-rec">
           {recording ? (
             <div className="vc-row" style={{ marginTop: 0 }}>
-              <button className="booth-rec on" onClick={stopRec}>■ Stop ({recSecs.toFixed(1)}s)</button>
+              <button className="booth-rec on" onClick={stopRec}><IcStop /> Stop ({recSecs.toFixed(1)}s)</button>
               <div className="booth-meter"><i style={{ width: `${Math.min(100, recLevel * 100)}%` }} /></div>
             </div>
           ) : (
@@ -510,7 +511,7 @@ export function KaraokeBooth({ open, onClose, markers, totalDuration, currentTim
         try { saved = await saveTake(blob, projectDir) }
         catch (err) { setStatus(`The take could not be saved: ${String((err as Error)?.message || err).replace(/^Error invoking remote method '[^']+':\s*(Error:\s*)?/, '')}`); return }
         setStatus(saved.keptElsewhere ? 'Take saved in VidHelm’s own folder (the project folder could not be written) and placed on the voice track. Save the project to move it in.'
-          : projectDir ? 'Take saved in the project and placed on the voice track ✓' : 'Take saved and placed on the voice track ✓')
+          : projectDir ? 'Take saved in the project and placed on the voice track.' : 'Take saved and placed on the voice track.')
         onRecorded(saved.path, 0)
       }
       recRef.current = { rec, stream }
@@ -532,15 +533,15 @@ export function KaraokeBooth({ open, onClose, markers, totalDuration, currentTim
     <div className="booth" ref={boothRef}
       style={pos ? { left: pos.x, top: pos.y, bottom: 'auto', transform: 'none' } : undefined}>
       <div className="booth-head" onMouseDown={startBoothDrag} title="Drag to move the booth">
-        <span className="booth-grip" aria-hidden>⠿</span>
-        <b>🎙 Karaoke booth</b>
+        <span className="booth-grip" aria-hidden><IcGrip /></span>
+        <b>Karaoke booth</b>
         <span className="booth-status">{status}</span>
         <div className="booth-meter"><i style={{ width: `${Math.min(100, level * 100)}%` }} /></div>
-        <button className="modal-close" onClick={() => { if (recording) stop(); onClose() }}>✕</button>
+        <button className="modal-close" aria-label="Close the booth" onClick={() => { if (recording) stop(); onClose() }}><IcClose /></button>
       </div>
       <div className="booth-mic" title="This is the Windows default input, which is what the take records from. Click to change it in Sound settings."
         onClick={() => window.ipcRenderer.openExternal('ms-settings:sound')}>
-        🎤 {mic || 'default microphone'} <span>· change</span>
+        <IcMic size={12} /> {mic || 'default microphone'} <span>· change</span>
       </div>
       {lines.length > 0 && !editing ? (
         <div className="booth-cues">
@@ -553,17 +554,17 @@ export function KaraokeBooth({ open, onClose, markers, totalDuration, currentTim
         <button className="booth-edit" disabled={drafting || totalDuration <= 0}
           title="Transcribe the timeline audio with on-device Whisper and turn it into read-along lines, perfect for cleanly re-recording a rough take"
           onClick={async () => { setDrafting(true); setStatus('Listening to your timeline…'); const s = await onDraft(); if (s) { setScript(s); setStatus('Draft ready, tidy the lines, then record.') } else setStatus('No speech found on the timeline.'); setDrafting(false) }}>
-          {drafting ? 'Transcribing…' : '✨ Draft from timeline audio'}
+          {drafting ? 'Transcribing…' : <><IcSparkle /> Draft from timeline audio</>}
         </button>
       </>)}
       {lines.length > 0 && !recording && !editing && <button className="booth-edit" onClick={() => setEditing(true)}>edit script</button>}
       {editing && <button className="booth-edit" onClick={() => setEditing(false)}>done editing</button>}
       <div className="booth-controls">
         <button className={`booth-rec ${recording ? 'on' : ''}`} onClick={() => recording ? stop() : start()}>
-          {recording ? '■ Stop' : '● Record take'}
+          {recording ? <><IcStop /> Stop</> : <><IcRecord /> Record take</>}
         </button>
         {lines.length > 0 && <button className={`booth-hold ${hold !== null ? 'on' : ''}`} title="Freeze the prompter on this line (the video and the recording keep going); press again to catch up"
-          onClick={() => setHold(h => h === null ? shownIdx : null)}>{hold !== null ? '▶ Resume prompter' : '⏸ Hold prompter'}</button>}
+          onClick={() => setHold(h => h === null ? shownIdx : null)}>{hold !== null ? <><IcPlaySm /> Resume prompter</> : <><IcPause size={11} /> Hold prompter</>}</button>}
         <label className="toggle-row" title="Pin each line to your tag points (needs at least as many tags as lines); otherwise lines are spread evenly">
           <input type="checkbox" className="toggle" checked={useMarkers} onChange={e => setUseMarkers(e.target.checked)} /><span>Time lines with tag points</span>
         </label>
@@ -664,9 +665,9 @@ export function RecipeSection({ recipe, onChange, logoPath, onPickLogo }: {
       </div>
       <div className="recipe-toggles">
         {RECIPE_TOGGLES.map(t => (
-          <button key={t.key} className={`recipe-chip ${active[t.key] ? 'on' : ''}`} title={t.hint}
+          <button key={t.key} className={`recipe-chip ${active[t.key] ? 'on' : ''}`} title={t.hint} aria-pressed={!!active[t.key]}
             onClick={() => onChange({ ...recipe, text: toggleRecipeLine(recipe.text, t.key, !active[t.key]) })}>
-            {active[t.key] ? '●' : '○'} {t.label}
+            {t.label}
           </button>
         ))}
       </div>
@@ -678,14 +679,14 @@ export function RecipeSection({ recipe, onChange, logoPath, onPickLogo }: {
           <button onClick={async () => { const p = await window.ipcRenderer.pickAudio(); if (p) onChange({ ...recipe, introAudioPath: p }) }}>
             {recipe.introAudioPath ? recipe.introAudioPath.split(/[\\/]/).pop() : 'Choose…'}
           </button>
-          {recipe.introAudioPath && <button onClick={() => onChange({ ...recipe, introAudioPath: null })}>✕</button>}
+          {recipe.introAudioPath && <button title="No intro audio" aria-label="Remove the intro audio" onClick={() => onChange({ ...recipe, introAudioPath: null })}><IcClose /></button>}
         </div>
         <div className="recipe-file">
           <span>Logo:</span>
           <button onClick={onPickLogo}>{logoPath ? logoPath.split(/[\\/]/).pop() : 'Choose PNG…'}</button>
         </div>
       </div>
-      <p className="hint">Hit <b>🚀 Recipe</b> in the header to run it on the current timeline. Steps your AI handles (titles, subtitle ideas, free-typed lines) are picked up automatically when it reads the project.</p>
+      <p className="hint">Press <b>Recipe</b> in the header to run it on the current timeline. Steps your AI handles (titles, subtitle ideas, free-typed lines) are picked up automatically when it reads the project.</p>
     </section>
   )
 }
@@ -737,7 +738,7 @@ export function ThumbnailModal({ open, onClose, videoPath, videoName, logoPath, 
       filePath: sel.kind === 'frame' ? videoPath : null, t: sel.kind === 'frame' ? frames[sel.i].t : undefined,
       imagePath: sel.kind === 'photo' ? sel.path : null, subtitle, logoPath, outPath: out, theme })
     setBusy(false)
-    if (r.ok) { setStatus(r.placeholder ? 'Placeholder saved. Swap in a real photo before you publish.' : 'Saved ✓'); setNudge(r.nudge || ''); window.ipcRenderer.revealFile(out) }
+    if (r.ok) { setStatus(r.placeholder ? 'Placeholder saved. Swap in a real photo before you publish.' : 'Saved.'); setNudge(r.nudge || ''); window.ipcRenderer.revealFile(out) }
     else setStatus(r.error || 'failed')
   }
 
@@ -746,7 +747,7 @@ export function ThumbnailModal({ open, onClose, videoPath, videoName, logoPath, 
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal" onClick={e => e.stopPropagation()}>
-        <div className="modal-head"><h2>Thumbnail</h2><button className="modal-close" onClick={onClose}>✕</button></div>
+        <div className="modal-head"><h2>Thumbnail</h2><button className="modal-close" aria-label="Close" onClick={onClose}><IcClose /></button></div>
         <div className="modal-body">
           {!allPhotos.length && <div className="photo-nudge">
             <b>Real photos win.</b> Thumbnails with a real photo (you + the build, close up, eyes to camera, bright light) tend to get more clicks than a paused video frame or AI art.
@@ -760,7 +761,7 @@ export function ThumbnailModal({ open, onClose, videoPath, videoName, logoPath, 
                   <img src={fileUrl(p)} alt="" /><span>{p.split(/[\\/]/).pop()}</span>
                 </button>
               ))}
-              <button className="thumb-cand add-photo" onClick={choosePhoto}><span className="add-photo-plus">+</span><span>Choose a photo…</span></button>
+              <button className="thumb-cand add-photo" onClick={choosePhoto}><span className="add-photo-plus"><IcPlus size={24} /></span><span>Choose a photo…</span></button>
             </div>
           </section>
           <section>
@@ -774,7 +775,7 @@ export function ThumbnailModal({ open, onClose, videoPath, videoName, logoPath, 
               ))}
               {!videoPath && !allPhotos.length && (
                 <button className={`thumb-cand ${isSel({ kind: 'placeholder' }) ? 'selected' : ''}`} onClick={() => setSel({ kind: 'placeholder' })}>
-                  <span className="add-photo-plus">▢</span><span>Placeholder</span>
+                  <span className="add-photo-plus"><IcImage size={24} /></span><span>Placeholder</span>
                 </button>
               )}
             </div>
@@ -782,7 +783,7 @@ export function ThumbnailModal({ open, onClose, videoPath, videoName, logoPath, 
           <section>
             <h3>Text ({themeName} style)</h3>
             <input className="duration-input" style={{ width: '100%' }} placeholder="e.g.  A1 MINI RESCUE | for $12 in parts" value={subtitle} onChange={e => setSubtitle(e.target.value)} />
-            <p className="hint">Put a <b>|</b> between a big hook and a smaller second line (in the accent colour). {logoPath ? 'Your logo goes top-right automatically.' : 'Set a logo in Settings → Brand Kit and it is added top-right.'}</p>
+            <p className="hint">Put a <b>|</b> between a big hook and a smaller second line (in the accent colour). {logoPath ? 'Your logo goes top-right automatically.' : 'Set a logo in Settings > Brand Kit and it is added top-right.'}</p>
           </section>
           {nudge && <p className="photo-nudge">{nudge}</p>}
         </div>
@@ -804,16 +805,16 @@ type AgentStatus = Awaited<ReturnType<Window['ipcRenderer']['agentStatus']>>
 
 const CLIENT_DOCS: { id: string; name: string; where: string; kind: 'json' | 'toml' | 'http' | 'auto' }[] = [
   { id: 'claude-code', name: 'Claude Code', where: 'Zero config, open this repo folder and approve the "vidhelm" server when prompted (.mcp.json is auto-discovered). Installed-app users: run the command below once instead.', kind: 'auto' },
-  { id: 'claude-desktop', name: 'Claude Desktop', where: 'Settings → Developer → Edit Config, or edit  %APPDATA%\\Claude\\claude_desktop_config.json, merge this in, then fully restart Claude Desktop.', kind: 'json' },
-  { id: 'cursor', name: 'Cursor', where: 'Zero config in the repo (.cursor/mcp.json ships with it). Otherwise: Settings → MCP → Add server, or merge into  %USERPROFILE%\\.cursor\\mcp.json.', kind: 'json' },
-  { id: 'vscode', name: 'VS Code (Copilot)', where: 'Zero config in the repo (.vscode/mcp.json ships with it). Otherwise: Command Palette → "MCP: Add Server", or merge into your user mcp.json.', kind: 'json' },
+  { id: 'claude-desktop', name: 'Claude Desktop', where: 'Settings > Developer > Edit Config, or edit  %APPDATA%\\Claude\\claude_desktop_config.json, merge this in, then fully restart Claude Desktop.', kind: 'json' },
+  { id: 'cursor', name: 'Cursor', where: 'Zero config in the repo (.cursor/mcp.json ships with it). Otherwise: Settings > MCP > Add server, or merge into  %USERPROFILE%\\.cursor\\mcp.json.', kind: 'json' },
+  { id: 'vscode', name: 'VS Code (Copilot)', where: 'Zero config in the repo (.vscode/mcp.json ships with it). Otherwise: Command Palette > "MCP: Add Server", or merge into your user mcp.json.', kind: 'json' },
   { id: 'windsurf', name: 'Windsurf', where: 'Merge into  %USERPROFILE%\\.codeium\\windsurf\\mcp_config.json  then reload Windsurf.', kind: 'json' },
-  { id: 'cline', name: 'Cline / Roo', where: 'Extension sidebar → MCP Servers → Configure → merge this into the JSON.', kind: 'json' },
+  { id: 'cline', name: 'Cline / Roo', where: 'Extension sidebar > MCP Servers > Configure > merge this into the JSON.', kind: 'json' },
   { id: 'codex', name: 'Codex CLI', where: 'Append to  %USERPROFILE%\\.codex\\config.toml.', kind: 'toml' },
   { id: 'gemini', name: 'Gemini CLI', where: 'Merge into  %USERPROFILE%\\.gemini\\settings.json.', kind: 'json' },
-  { id: 'lmstudio', name: 'LM Studio', where: 'Fully local: chat sidebar → Program → Install → Edit mcp.json, merge this in. Pick a model that supports tool use (Qwen, Llama 3.1+, Mistral…) and toggle on just the VidHelm tools you need for small models.', kind: 'json' },
-  { id: 'jan', name: 'Jan', where: 'Fully local: Settings → MCP Servers (enable the experimental toggle) → add server, or merge this into its JSON.', kind: 'json' },
-  { id: 'openwebui', name: 'Open WebUI', where: 'Open WebUI speaks OpenAPI tool servers, not MCP, run the mcpo proxy below, then add http://localhost:8001 under Settings → Tools.', kind: 'http' },
+  { id: 'lmstudio', name: 'LM Studio', where: 'Fully local: chat sidebar > Program > Install > Edit mcp.json, merge this in. Pick a model that supports tool use (Qwen, Llama 3.1+, Mistral…) and toggle on just the VidHelm tools you need for small models.', kind: 'json' },
+  { id: 'jan', name: 'Jan', where: 'Fully local: Settings > MCP Servers (enable the experimental toggle) > add server, or merge this into its JSON.', kind: 'json' },
+  { id: 'openwebui', name: 'Open WebUI', where: 'Open WebUI speaks OpenAPI tool servers, not MCP, run the mcpo proxy below, then add http://localhost:8001 under Settings > Tools.', kind: 'http' },
   { id: 'localmodels', name: 'Ollama / Lemonade', where: 'Ollama, AMD Lemonade Server, llama.cpp & co. serve the model but are not agents themselves, point an MCP-capable front-end (LM Studio, Cline, Continue, Open WebUI) at your local endpoint, then add VidHelm in that front-end:', kind: 'http' },
   { id: 'http', name: 'Anything else', where: 'No MCP? Any agent that can run shell commands can drive the plain HTTP bridge directly:', kind: 'http' },
 ]
@@ -837,16 +838,6 @@ export function ConnectModal({ open, onClose }: { open: boolean; onClose: () => 
   const mcpPath = st?.mcpFile.path ?? '<path to VidHelm>\\agent\\mcp-server.mjs'
   const jsonPath = mcpPath.replace(/\\/g, '\\\\')
   const stdJson = `{\n  "mcpServers": {\n    "vidhelm": {\n      "command": "node",\n      "args": ["${jsonPath}"]\n    }\n  }\n}`
-  const IconCopy = () => (
-    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <rect x="9" y="9" width="12" height="12" rx="2.5" /><path d="M5 15V5.5A2.5 2.5 0 0 1 7.5 3H15" />
-    </svg>
-  )
-  const IconCheck = () => (
-    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M4 12.5 9.5 18 20 6.5" />
-    </svg>
-  )
 
   // PowerShell needs & to run a quoted path; plain `claude` when it is on PATH
   const cliPath = st?.cli?.path
@@ -879,7 +870,7 @@ export function ConnectModal({ open, onClose }: { open: boolean; onClose: () => 
 
   const Check = ({ ok, label, detail, fix }: { ok: boolean | undefined; label: string; detail?: string; fix?: string }) => (
     <div className={`conn-check ${ok === undefined ? '' : ok ? 'ok' : 'bad'}`}>
-      <span className="conn-dot">{ok === undefined ? '…' : ok ? '✓' : '✕'}</span>
+      <span className="conn-dot">{ok === undefined ? '…' : ok ? <IcCheck /> : <IcClose />}</span>
       <div><b>{label}</b>{detail && <span className="conn-detail"> - {detail}</span>}
         {ok === false && fix && <div className="conn-fix">{fix}</div>}
       </div>
@@ -889,11 +880,11 @@ export function ConnectModal({ open, onClose }: { open: boolean; onClose: () => 
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal conn-modal" onClick={e => e.stopPropagation()}>
-        <div className="modal-head"><h2>🤖 Connect your AI</h2><button className="modal-close" onClick={onClose}>✕</button></div>
+        <div className="modal-head"><h2>Connect your AI</h2><button className="modal-close" aria-label="Close" onClick={onClose}><IcClose /></button></div>
         <div className="modal-body">
           <section>
             <div className="sec-title"><h3>Health check</h3>
-              <button onClick={refresh} disabled={busy}>{busy ? 'Testing…' : '↻ Test connection'}</button>
+              <button onClick={refresh} disabled={busy}>{busy ? 'Testing…' : <><IcRefresh /> Test connection</>}</button>
             </div>
             <Check ok={st?.bridge.listening} label={`Agent bridge on port ${port}`}
               detail={st?.bridge.listening ? `http://127.0.0.1:${port}` : st?.bridge.error || undefined}
@@ -917,18 +908,18 @@ export function ConnectModal({ open, onClose }: { open: boolean; onClose: () => 
             <p className="hint">{cdoc.where}</p>
             <pre className="conn-snippet">{SNIPPETS[client]}</pre>
             <div className="conn-actions">
-              <button className="primary" onClick={() => copy('snippet', SNIPPETS[client])}>{copied === 'snippet' ? 'Copied ✓' : 'Copy config'}</button>
-              <button onClick={() => copy('path', mcpPath)}>{copied === 'path' ? 'Copied ✓' : 'Copy server path'}</button>
-              <button onClick={() => { copy('cmdline', SNIPPETS[client]); window.ipcRenderer.openTerminal() }}>⌨ Copy &amp; open a terminal</button>
-              <button onClick={() => window.ipcRenderer.openExternal('https://github.com/RandoTechNerd/VidHelm/blob/main/docs/CONNECT.md')}>Full guide ↗</button>
+              <button className="primary" onClick={() => copy('snippet', SNIPPETS[client])}>{copied === 'snippet' ? <><IcCheck /> Copied</> : <><IcCopy /> Copy config</>}</button>
+              <button onClick={() => copy('path', mcpPath)}>{copied === 'path' ? <><IcCheck /> Copied</> : 'Copy server path'}</button>
+              <button onClick={() => { copy('cmdline', SNIPPETS[client]); window.ipcRenderer.openTerminal() }}><IcTerminal /> Copy and open a terminal</button>
+              <button onClick={() => window.ipcRenderer.openExternal('https://github.com/RandoTechNerd/VidHelm/blob/main/docs/CONNECT.md')}>Full guide <IcExternal /></button>
             </div>
             {copied === 'fail' && <p className="hint">Clipboard is blocked here. Select the command above and copy it by hand.</p>}
           </section>
           <section>
             <div className="sec-title"><h3>Optional power-ups</h3></div>
-            <details><summary>🌐 Claude in Chrome, let your AI upload &amp; film the web</summary>
+            <details><summary><IcGlobe /> Claude in Chrome, let your AI upload &amp; film the web</summary>
               <p className="hint">Pair Claude with its Chrome extension and your AI can take the finished export all the way: <b>upload it to YouTube for you</b> (title, description, tags, thumbnail) and pause for your OK before publishing. It can also <b>capture websites or your localhost app</b>, screenshots and walkthrough recordings that drop straight into your timeline as footage. Get it at <code>claude.ai/chrome</code>, then just ask: "upload my export to YouTube" or "record my site's landing page for the intro".</p></details>
-            <details><summary>🎞 Adversal AI, your agent understands the footage (optional)</summary>
+            <details><summary><IcFilm /> Adversal AI, your agent understands the footage (optional)</summary>
               <p className="hint">Adversal is a third-party video-analysis MCP: your AI uploads a video and gets back a long Markdown write-up with extracted stills. <b>Optional, and rarely the right tool.</b> Tested on a 13-minute review it read on-screen detail well (it correctly reported a battery display showing 85%) but returned <b>no timestamps at all</b>, which makes it no use for cutting or for chapters. VidHelm’s own <b>look_through</b> does the same reading locally with the timecode burned into every frame, in seconds, with nothing uploaded. Reach for Adversal only when you want a written article out of a video. Needs Python 3.13+, an account, and <b>ffmpeg on your PATH</b> (VidHelm’s bundled copy does not count). Quota depends on your tier. Setup:</p>
               {/* one line at a time: these are run separately, and the second one waits on the first */}
               {[`pip install adversal-cli`, `${cliCall} mcp add -s user adversal -- adversal-cli`].map((line, i) => (
@@ -936,12 +927,12 @@ export function ConnectModal({ open, onClose }: { open: boolean; onClose: () => 
                   <span className="conn-step">{i + 1}</span>
                   <pre className="conn-snippet">{line}</pre>
                   <button className={`conn-copy ${copied === `adv${i}` ? 'done' : ''}`} title={`Copy line ${i + 1}`}
-                    onClick={() => copy(`adv${i}`, line)}>{copied === `adv${i}` ? <IconCheck /> : <IconCopy />}</button>
+                    aria-label={`Copy line ${i + 1}`} onClick={() => copy(`adv${i}`, line)}>{copied === `adv${i}` ? <IcCheck /> : <IcCopy />}</button>
                 </div>
               ))}
               <div className="conn-actions">
-                <button className="primary" onClick={() => window.ipcRenderer.openTerminal()}>⌨ Open a terminal</button>
-                <button onClick={() => window.ipcRenderer.openExternal('https://adversal.ai')}>adversal.ai ↗</button>
+                <button className="primary" onClick={() => window.ipcRenderer.openTerminal()}><IcTerminal /> Open a terminal</button>
+                <button onClick={() => window.ipcRenderer.openExternal('https://adversal.ai')}>adversal.ai <IcExternal /></button>
               </div>
               {copied === 'fail' && <p className="hint">Clipboard is blocked here. Select the two lines above and copy them by hand.</p>}
               <p className="hint">Paste the two lines into the terminal one at a time. Not a Claude Code user? Skip the second line and register <code>adversal-cli</code> with your own client exactly the way you registered VidHelm above, it is the command to run, with no arguments. Then ask your AI to run its <b>authenticate</b> tool once, which opens a browser sign-in.</p>
@@ -1005,7 +996,7 @@ function VoiceWizard({ onCommand }: { onCommand: (c: string) => void }) {
         let bin = ''
         for (let i = 0; i < b.length; i += 0x8000) bin += String.fromCharCode(...Array.from(b.subarray(i, i + 0x8000)))
         setSample({ base64: btoa(bin), label: `recorded sample (${Math.round(elapsedRef.current)}s)` })
-        setStatus('Sample recorded ✓, now create the engine.')
+        setStatus('Sample recorded. Now create the engine.')
       }
       const t0 = Date.now()
       const timer = window.setInterval(() => { elapsedRef.current = (Date.now() - t0) / 1000; setElapsed(elapsedRef.current) }, 250)
@@ -1035,13 +1026,13 @@ function VoiceWizard({ onCommand }: { onCommand: (c: string) => void }) {
       const r = await window.ipcRenderer.voiceCloneSetup(sample.base64 ? { sampleBase64: sample.base64 } : { samplePath: sample.path })
       if (r.command) {
         onCommand(r.command)
-        setStatus('Voice engine created and the command below is filled in ✓, once the installer window finishes, write a script and hit Generate narration.')
+        setStatus('Voice engine created and the command below is filled in. Once the installer window finishes, write a script and press Generate narration.')
       } else setStatus(r.error || 'canceled')
     } else {
       const r = await window.ipcRenderer.voiceCppSetup({ ...(sample.base64 ? { sampleBase64: sample.base64 } : { samplePath: sample.path }), cliPath, modelPath, family })
       if (r.command) {
         onCommand(r.command)
-        setStatus('Wrapper + reference written next to audiocpp_cli and the command below is filled in ✓, write a script and hit Generate narration.')
+        setStatus('Wrapper and reference written next to audiocpp_cli, and the command below is filled in. Write a script and press Generate narration.')
       } else setStatus(r.error || 'canceled')
     }
     setBusy(false)
@@ -1050,7 +1041,7 @@ function VoiceWizard({ onCommand }: { onCommand: (c: string) => void }) {
   return (
     <section className="vc-wizard">
       <div className="sec-title" style={{ cursor: 'pointer' }} onClick={() => setExpanded(e => !e)}>
-        <h3>🧬 No cloned voice yet? Create one {expanded ? '▾' : '▸'}</h3>
+        <h3>No cloned voice yet? Create one <IcChevron open={expanded} /></h3>
       </div>
       {expanded && <>
         <div className="conn-clients" style={{ marginTop: 4 }}>
@@ -1059,13 +1050,13 @@ function VoiceWizard({ onCommand }: { onCommand: (c: string) => void }) {
         </div>
         {engine === 'xtts'
           ? <p className="hint" style={{ marginTop: 4 }}>Three steps, all free and local: record ~20 seconds of your voice, pick an install folder, and VidHelm sets up the XTTS-v2 engine (needs <b>Python 3.10+</b> from python.org) and fills in the command for you. Heads up: the XTTS-v2 <i>model</i> is licensed for non-commercial use, for monetized videos consider the audio.cpp engines (Apache-licensed models).</p>
-          : <p className="hint" style={{ marginTop: 4 }}>No Python needed: grab a prebuilt <b>audio.cpp</b> zip (github.com/0xShug0/audio.cpp → Releases → <code>audiocpp-windows-cpu-*.zip</code>), download a voice-cloning GGUF model (Hugging Face: <code>audio-cpp/audio.cpp-gguf</code>), point VidHelm at both, and it writes the wrapper + reference and fills in the command. Model families like PocketTTS and Fish are Apache/permissively licensed, good for monetized videos.</p>}
+          : <p className="hint" style={{ marginTop: 4 }}>No Python needed: grab a prebuilt <b>audio.cpp</b> zip (<code>audiocpp-windows-cpu-*.zip</code> under Releases at github.com/0xShug0/audio.cpp), download a voice-cloning GGUF model (Hugging Face: <code>audio-cpp/audio.cpp-gguf</code>), point VidHelm at both, and it writes the wrapper + reference and fills in the command. Model families like PocketTTS and Fish are Apache/permissively licensed, good for monetized videos.</p>}
         <div className="vc-sample">{VOICE_SAMPLE_TEXT}</div>
         <div className="vc-row">
-          <button className={`booth-rec ${recording ? 'on' : ''}`} onClick={() => recording ? stop() : record()}>{recording ? `■ Stop (${elapsed.toFixed(0)}s)` : '● Record sample'}</button>
+          <button className={`booth-rec ${recording ? 'on' : ''}`} onClick={() => recording ? stop() : record()}>{recording ? <><IcStop /> Stop ({elapsed.toFixed(0)}s)</> : <><IcRecord /> Record sample</>}</button>
           {recording && <div className="booth-meter"><i style={{ width: `${Math.min(100, level * 100)}%` }} /></div>}
           <span className="hint" style={{ margin: 0 }}>or</span>
-          <button onClick={async () => { const p = await window.ipcRenderer.pickAudio(); if (p) { setSample({ path: p, label: p.split(/[\\/]/).pop() || 'sample' }); setStatus('Sample chosen ✓, now create the engine.') } }}>Use a WAV/MP3 I have…</button>
+          <button onClick={async () => { const p = await window.ipcRenderer.pickAudio(); if (p) { setSample({ path: p, label: p.split(/[\\/]/).pop() || 'sample' }); setStatus('Sample chosen. Now create the engine.') } }}>Use a WAV/MP3 I have…</button>
         </div>
         {engine === 'acpp' && <div className="vc-row">
           <button onClick={async () => { const p = await window.ipcRenderer.pickFile({ title: 'audiocpp_cli.exe', extensions: ['exe'] }); if (p) setCliPath(p) }}>{cliPath ? cliPath.split(/[\\/]/).pop() : 'audiocpp_cli.exe…'}</button>
@@ -1073,7 +1064,7 @@ function VoiceWizard({ onCommand }: { onCommand: (c: string) => void }) {
           <label>family <input className="duration-input" style={{ width: 110 }} value={family} onChange={e => setFamily(e.target.value)} /></label>
         </div>}
         <div className="vc-row">
-          {sample && <button className="primary" disabled={busy || (engine === 'acpp' && (!cliPath || !modelPath))} onClick={create}>{busy ? 'Setting up…' : `⚙ Create voice engine (${sample.label})`}</button>}
+          {sample && <button className="primary" disabled={busy || (engine === 'acpp' && (!cliPath || !modelPath))} onClick={create}>{busy ? 'Setting up…' : <><IcGear /> Create voice engine ({sample.label})</>}</button>}
         </div>
         {status && <p className="hint" style={{ marginTop: 6 }}>{status}</p>}
       </>}
@@ -1110,7 +1101,7 @@ export function NarrationModal({ open, onClose, command, onCommand, onGenerated 
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal" onClick={e => e.stopPropagation()}>
-        <div className="modal-head"><h2>Narrate with a cloned voice</h2><button className="modal-close" onClick={onClose}>✕</button></div>
+        <div className="modal-head"><h2>Narrate with a cloned voice</h2><button className="modal-close" aria-label="Close" onClick={onClose}><IcClose /></button></div>
         <div className="modal-body">
           <VoiceWizard onCommand={onCommand} />
           <section>

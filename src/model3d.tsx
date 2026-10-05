@@ -10,6 +10,7 @@ import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js'
 import { MTLLoader } from 'three/examples/jsm/loaders/MTLLoader.js'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { applyThreeMFObjectColours } from './threemfColor'
+import { IcCamera, IcClose, IcRecord } from './icons'
 import { OBJExporter } from 'three/examples/jsm/exporters/OBJExporter.js'
 
 const FINISHES = {
@@ -332,8 +333,8 @@ export function Model3DModal({ open, onClose, initialPath, onRendered, apiRef, g
         if (out.path) {
           const key = backdrop === 'green' ? pickKeyColour(color) : undefined
           setStatus(key
-            ? 'Green-screen turntable placed at the playhead, the backdrop is keyed out over the clip below ✓'
-            : alpha ? 'Transparent turntable placed at the playhead, it sits on top of the footage below ✓' : 'Turntable added to the Media Bin ✓')
+            ? 'Green-screen turntable placed at the playhead. The backdrop is keyed out over the clip below.'
+            : alpha ? 'Transparent turntable placed at the playhead. It sits on top of the footage below.' : 'Turntable added to the Media Bin.')
           onRendered(out.path, 'video', `${modelName} spin`, alpha || !!key, key)
         }
         else setStatus(out.error || 'encode failed')
@@ -378,8 +379,8 @@ export function Model3DModal({ open, onClose, initialPath, onRendered, apiRef, g
     const r = await window.ipcRenderer.save3DStill({ dataUrl: st.renderer.domElement.toDataURL('image/png'), name: modelName })
     if (r.path) {
       const key = backdrop === 'green' ? pickKeyColour(color) : undefined
-      setStatus(key ? 'Green-screen still placed at the playhead, keyed over the clip below ✓'
-        : alpha ? 'Transparent still placed at the playhead, it sits on top of the footage below ✓' : 'Still added to the Media Bin ✓')
+      setStatus(key ? 'Green-screen still placed at the playhead, keyed over the clip below.'
+        : alpha ? 'Transparent still placed at the playhead. It sits on top of the footage below.' : 'Still added to the Media Bin.')
       onRendered(r.path, 'image', `${modelName} still`, alpha || !!key, key)
     }
     else setStatus(r.error || 'save failed')
@@ -401,7 +402,7 @@ export function Model3DModal({ open, onClose, initialPath, onRendered, apiRef, g
     try {
       const text = new OBJExporter().parse(st.pivot)
       const r = await window.ipcRenderer.saveObjFile({ text, defaultName: `${modelName}.obj` })
-      setStatus(r.path ? `Saved ${r.path.split(/[\\/]/).pop()} ✓` : (r.error || 'save canceled'))
+      setStatus(r.path ? `Saved ${r.path.split(/[\\/]/).pop()}.` : (r.error || 'save canceled'))
     } catch (e) { setStatus(String(e)) }
     setBusy(false)
   }
@@ -410,7 +411,7 @@ export function Model3DModal({ open, onClose, initialPath, onRendered, apiRef, g
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal m3d-modal" onClick={e => e.stopPropagation()}>
-        <div className="modal-head"><h2>🧊 3D Studio</h2><button className="modal-close" onClick={onClose}>✕</button></div>
+        <div className="modal-head"><h2>3D Studio</h2><button className="modal-close" aria-label="Close" onClick={onClose}><IcClose /></button></div>
         <div className="modal-body">
           <div className={`m3d-stage ${transparent ? 'alpha' : ''}`} ref={hostRef}
             onDragOver={e => e.preventDefault()}
@@ -500,8 +501,8 @@ export function Model3DModal({ open, onClose, initialPath, onRendered, apiRef, g
               <option value="3">3s</option><option value="6">6s</option><option value="10">10s</option><option value="15">15s</option>
             </select>
           </label>
-          <button className="primary" disabled={!modelName || recording || busy} onClick={() => { void recordTurntable() }}>{recording ? 'Recording…' : '⏺ Render turntable clip'}</button>
-          <button disabled={!modelName || recording || busy} onClick={() => { void snapshot() }}>📷 Still</button>
+          <button className="primary" disabled={!modelName || recording || busy} onClick={() => { void recordTurntable() }}>{recording ? 'Recording…' : <><IcRecord /> Render turntable clip</>}</button>
+          <button disabled={!modelName || recording || busy} onClick={() => { void snapshot() }}><IcCamera /> Still</button>
           {transparent && <span className="hint" style={{ margin: 0, maxWidth: 264 }}>Stills keep real transparency. Video can’t, so for a spin over footage use <b>Green screen</b>.</span>}
           {backdrop === 'green' && <span className="hint" style={{ margin: 0, maxWidth: 264 }}>Rendered on {pickKeyColour(color) === KEY_MAGENTA ? 'magenta' : 'green'} and keyed out on the timeline, so the clip below shows through.</span>}
           <button disabled={!modelName || recording || busy} onClick={exportObj} title="Convert the loaded model to .obj">Save as OBJ…</button>

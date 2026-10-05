@@ -757,6 +757,11 @@ main {
 .tool-btn:active:not(:disabled), .hdr-btn:active, .hdr-export:active:not(:disabled), .action-btn:active:not(:disabled),
 .add-btn:active, .btn:active:not(:disabled) { transform: scale(0.97); }
 
+/* IcChevron: a disclosure arrow that turns down when its section is open */
+.ic-chevron { flex: none; transition: transform var(--dur-2) var(--ease-out); }
+.ic-chevron.open { transform: rotate(90deg); }
+h3 > .ic-chevron { vertical-align: -1px; margin-left: 2px; }
+
 /* Sliders. The fill is painted from --fill, a percentage set inline on the input; a slider that
    does not set it shows a plain track rather than a wrong fill. Native accent-color left
    Chromium's light grey track, a bright bar across the dark theme. */
@@ -938,7 +943,7 @@ textarea.duration-input { height: auto; padding: 7px 9px; resize: vertical; line
 .modal { width: 600px; max-width: 100%; max-height: 90vh; background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--shadow-lg); display: flex; flex-direction: column; overflow: hidden; }
 .modal-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; border-bottom: 1px solid var(--border); }
 .modal-head h2 { font-size: 15px; font-weight: 600; }
-.modal-close { width: 28px; height: 28px; border-radius: var(--radius-sm); background: none; border: none; color: var(--text-muted); font-size: 14px; cursor: pointer; }
+.modal-close { width: 28px; height: 28px; flex: none; display: inline-flex; align-items: center; justify-content: center; border-radius: var(--radius-sm); background: none; border: none; color: var(--text-muted); font-size: 14px; cursor: pointer; }
 .modal-close:hover { background: rgb(var(--ink) / 0.07); color: var(--text-main); }
 .modal-body { padding: 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 22px; }
 .modal-body section { display: flex; flex-direction: column; gap: 12px; }
@@ -1009,7 +1014,7 @@ textarea.duration-input { height: auto; padding: 7px 9px; resize: vertical; line
 .sfx-dur { color: var(--text-secondary, #9aa3af); font-size: 11px; }
 /* A ghost until its row is in play: a solid accent square on every row stacked into a purple
    stripe and drowned out the one real call to action. */
-.sfx-add { width: 26px; height: 26px; border-radius: 6px; border: 1px solid var(--border); background: transparent; color: var(--text-muted); font-weight: 800; cursor: pointer; }
+.sfx-add { width: 26px; height: 26px; flex: none; display: inline-flex; align-items: center; justify-content: center; padding: 0; border-radius: 6px; border: 1px solid var(--border); background: transparent; color: var(--text-muted); font-weight: 800; cursor: pointer; }
 .sfx-item:hover .sfx-add, .sfx-hit:hover .sfx-add, .sfx-add:focus-visible { background: var(--accent-primary); border-color: transparent; color: #fff; }
 .sfx-foot { display: flex; gap: 6px; padding: 8px; border-top: 1px solid rgb(var(--ink) / 0.06); }
 .sfx-foot button { flex: 1; background: rgb(var(--ink) / 0.06); border: none; color: inherit; padding: 7px; border-radius: 8px; cursor: pointer; font-size: 12px; }
@@ -1035,7 +1040,7 @@ textarea.duration-input { height: auto; padding: 7px 9px; resize: vertical; line
 .booth { position: fixed; left: 50%; bottom: 90px; transform: translateX(-50%); width: min(720px, 90vw); background: var(--bg-overlay); border: 1px solid rgb(var(--ink) / 0.12); border-radius: 16px; padding: 14px 16px; z-index: 60; box-shadow: var(--shadow-lg); backdrop-filter: blur(8px); }
 .booth-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
 .booth-status { color: var(--text-secondary, #9aa3af); font-size: 12px; flex: 1; min-width: 0; overflow-wrap: anywhere; }
-.booth-mic { font-size: 11px; color: var(--text-secondary, #9aa3af); margin: -4px 0 6px; cursor: pointer; width: fit-content; }
+.booth-mic { display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--text-secondary, #9aa3af); margin: -4px 0 6px; cursor: pointer; width: fit-content; }
 .booth-mic:hover { color: var(--text-primary, #e6e9ef); text-decoration: underline; }
 .booth-mic span { opacity: .7; }
 .booth-meter { width: 110px; height: 8px; border-radius: 5px; background: rgb(var(--ink) / 0.08); overflow: hidden; }
@@ -1044,14 +1049,24 @@ textarea.duration-input { height: auto; padding: 7px 9px; resize: vertical; line
 .booth-line { font-size: 24px; font-weight: 800; line-height: 1.3; }
 .booth-prev { font-size: 15px; color: var(--text-secondary, #9aa3af); opacity: .8; line-height: 1.3; min-height: 20px; margin-bottom: 6px; }
 .booth-line.held { box-shadow: inset 0 -3px 0 var(--accent-gold); }
-.booth-hold { background: transparent; border: 1px solid var(--border, #2a3140); color: var(--text-secondary, #9aa3af); border-radius: 8px; padding: 6px 10px; cursor: pointer; }
+.booth-hold { display: inline-flex; align-items: center; gap: 6px; background: transparent; border: 1px solid var(--border, #2a3140); color: var(--text-secondary, #9aa3af); border-radius: 8px; padding: 6px 10px; cursor: pointer; }
 .booth-hold.on { color: var(--accent-gold); border-color: var(--accent-gold); }
 .booth-next { font-size: 13px; color: var(--text-secondary, #9aa3af); margin-top: 4px; min-height: 18px; }
 .booth-script { width: 100%; background: rgb(var(--ink) / 0.05); border: 1px solid rgb(var(--ink) / 0.1); color: inherit; border-radius: 10px; padding: 10px; font: inherit; font-size: 13.5px; resize: vertical; }
-.booth-edit { background: none; border: none; color: var(--accent-primary, #3b82f6); cursor: pointer; font-size: 12px; padding: 2px 0; }
+.booth-edit { display: inline-flex; align-items: center; gap: 5px; background: none; border: none; color: var(--accent-text); cursor: pointer; font-size: 12px; padding: 2px 0; }
 .booth-controls { display: flex; align-items: center; gap: 14px; margin-top: 8px; }
-.booth-rec { background: #e11d48; color: #fff; border: none; border-radius: 10px; padding: 9px 18px; font-weight: 800; font-size: 14px; cursor: pointer; }
-.booth-rec.on { background: rgba(225,29,72,0.15); color: #fb7185; outline: 2px solid #e11d48; }
+/* Record is a plain button with a red dot, the way recorders draw it; while it records, the
+   whole button goes red and reads Stop. */
+.booth-rec {
+  display: inline-flex; align-items: center; gap: 8px; height: 34px; padding: 0 16px;
+  background: var(--bg-surface-elevated); color: var(--text-main); border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md); font-weight: 600; font-size: 13.5px; cursor: pointer;
+  transition: border-color var(--dur-1) var(--ease-out), background var(--dur-1) var(--ease-out), transform var(--dur-1) var(--ease-out);
+}
+.booth-rec svg { color: var(--accent-error); }
+.booth-rec:hover:not(:disabled) { border-color: var(--accent-error); }
+.booth-rec:active:not(:disabled) { transform: scale(0.97); }
+.booth-rec.on { background: color-mix(in srgb, var(--accent-error) 14%, transparent); color: var(--accent-error); border-color: var(--accent-error); }
 .booth-count { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 160px; font-weight: 900; color: #fff; background: rgba(5,7,13,0.75); z-index: 70; border-radius: 0; }
 
 .clone-log { background: var(--bg-code); border: 1px solid rgb(var(--ink) / 0.08); border-radius: 8px; padding: 10px; font-size: 11.5px; max-height: 160px; overflow-y: auto; white-space: pre-wrap; word-break: break-word; color: var(--text-muted); }
@@ -1066,9 +1081,10 @@ textarea.duration-input { height: auto; padding: 7px 9px; resize: vertical; line
 .sfx-advanced { margin-top: 10px; }
 .sfx-steps { margin: 6px 0 6px 18px; padding: 0; font-size: 12px; color: var(--text-secondary, #9aa3af); line-height: 1.6; }
 .sfx-steps code { background: rgb(var(--ink) / 0.08); padding: 1px 5px; border-radius: 4px; }
+.sfx-steps a svg { vertical-align: -1px; }
 .sfx-advanced summary { cursor: pointer; font-size: 12px; color: var(--text-secondary, #9aa3af); }
 /* the star only shows on the row you are pointing at, unless it is already a favourite */
-.sfx-star { background: none; border: none; cursor: pointer; font-size: 14px; line-height: 1; padding: 0 2px; color: var(--text-secondary, #6b7280); opacity: 0; }
+.sfx-star { display: inline-flex; align-items: center; background: none; border: none; cursor: pointer; line-height: 1; padding: 0 2px; color: var(--text-secondary, #6b7280); opacity: 0; }
 .sfx-item:hover .sfx-star, .sfx-star:focus-visible, .sfx-star.on { opacity: 1; }
 .sfx-star:hover { color: var(--accent-gold); }
 .sfx-star.on { color: var(--accent-gold); }
@@ -1080,10 +1096,14 @@ textarea.duration-input { height: auto; padding: 7px 9px; resize: vertical; line
 .recipe-toggles { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
 .recipe-chip { background: rgb(var(--ink) / 0.05); border: 1px solid rgb(var(--ink) / 0.14); color: var(--text-secondary, #9aa3af); border-radius: 999px; padding: 5px 12px; font-size: 12.5px; cursor: pointer; }
 .recipe-chip.on { background: var(--accent-soft); border-color: var(--accent-primary); color: var(--text-main); }
+/* a recipe step's on/off is a drawn dot, not a ●/○ glyph that changes size from font to font */
+.recipe-toggles .recipe-chip { display: inline-flex; align-items: center; gap: 7px; }
+.recipe-toggles .recipe-chip::before { content: ''; width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid currentColor; box-sizing: border-box; flex: none; }
+.recipe-toggles .recipe-chip.on::before { background: var(--accent-primary); border-color: var(--accent-primary); }
 .recipe-text { width: 100%; background: var(--bg-code); border: 1px solid rgb(var(--ink) / 0.12); color: var(--text-code); border-radius: 10px; padding: 10px 12px; font-family: 'Consolas', ui-monospace, monospace; font-size: 12.5px; line-height: 1.55; resize: vertical; }
 .recipe-files { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 8px; }
 .recipe-file { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-secondary, #9aa3af); }
-.recipe-file button { background: rgb(var(--ink) / 0.07); border: 1px solid rgb(var(--ink) / 0.12); color: var(--text-main); border-radius: 8px; padding: 6px 12px; cursor: pointer; font-size: 12.5px; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.recipe-file button { display: inline-flex; align-items: center; gap: 6px; background: rgb(var(--ink) / 0.07); border: 1px solid rgb(var(--ink) / 0.12); color: var(--text-main); border-radius: 8px; padding: 6px 12px; cursor: pointer; font-size: 12.5px; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .thumb-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 12px; }
 .thumb-cand { position: relative; border: 2px solid transparent; border-radius: 10px; overflow: hidden; padding: 0; cursor: pointer; background: var(--bg-code); }
 .thumb-cand img { display: block; width: 100%; height: auto; }
@@ -1092,21 +1112,28 @@ textarea.duration-input { height: auto; padding: 7px 9px; resize: vertical; line
 
 /* ============ Social / support links ============ */
 
-/* links and contact, collapsed behind the (i) */
-.links-pop {
+/* Header dropdowns (the Help menu, Import's extra sources): anchored under their button, right
+   edge by default, .from-left for a button on the left of the bar */
+.pop-menu {
   position: absolute; top: calc(100% + 8px); right: 0; z-index: 120; width: 268px; padding: 6px;
   background: var(--bg-overlay); border: 1px solid rgb(var(--ink) / 0.16); border-radius: 12px; backdrop-filter: blur(12px);
   box-shadow: var(--shadow-lg); display: flex; flex-direction: column; gap: 2px;
   animation: pop-in var(--dur-2) var(--ease-out);
 }
-.links-pop button {
+.pop-menu.from-left { left: 0; right: auto; }
+.pop-menu button {
   display: flex; align-items: flex-start; gap: 10px; width: 100%; text-align: left;
   background: none; border: none; color: var(--text-main, #f8fafc); border-radius: 8px;
   padding: 7px 9px; cursor: pointer; font: inherit;
 }
-.links-pop button:hover { background: rgb(var(--ink) / 0.07); }
+.pop-menu button:hover, .pop-menu button:focus-visible { background: rgb(var(--ink) / 0.07); }
 .links-ico { width: 18px; margin-top: 1px; display: flex; align-items: center; justify-content: center; color: var(--text-muted, #94a3b8); flex: none; }
-.links-pop button:hover .links-ico { color: var(--accent-primary, #3b82f6); }
+.pop-menu button:hover .links-ico { color: var(--accent-primary, #3b82f6); }
+.links-more { margin-left: auto; align-self: center; color: var(--text-dim); display: flex; }
+/* the second page of the Help menu leads with its way back */
+.pop-menu button.pop-back { align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--text-muted); padding: 6px 8px; }
+.links-back { display: flex; transform: rotate(180deg); }
+.hdr-btn.icon.on { background: rgb(var(--ink) / 0.07); color: var(--text-main); }
 .links-txt { display: flex; flex-direction: column; line-height: 1.25; min-width: 0; }
 .links-txt b { font-size: 12.5px; font-weight: 600; }
 .links-txt i { font-size: 11px; font-style: normal; color: var(--text-dim, #64748b); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1133,6 +1160,7 @@ textarea.duration-input { height: auto; padding: 7px 9px; resize: vertical; line
 .conn-actions { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
 /* the panel's buttons had no styling at all, so they rendered as raw white browser buttons */
 .conn-actions button, .modal .conn-line button {
+  display: inline-flex; align-items: center; gap: 6px;
   background: var(--bg-surface-elevated); color: var(--text-muted);
   border: 1px solid var(--border-subtle); border-radius: 8px;
   padding: 7px 13px; font-size: 12.5px; font-weight: 600; cursor: pointer;
@@ -1156,6 +1184,7 @@ textarea.duration-input { height: auto; padding: 7px 9px; resize: vertical; line
 .modal .conn-line button.conn-copy.done { color: var(--accent-secondary); border-color: var(--accent-secondary); }
 .conn-modal details { margin-bottom: 6px; background: rgb(var(--ink) / 0.03); border: 1px solid rgb(var(--ink) / 0.07); border-radius: 10px; padding: 8px 12px; }
 .conn-modal summary { cursor: pointer; font-size: 13px; font-weight: 600; color: var(--text-primary, #f8fafc); }
+.conn-modal summary svg { vertical-align: -2px; margin: 0 4px 0 2px; color: var(--text-muted); }
 .conn-modal details .hint { margin: 8px 0 2px; }
 .conn-modal code { background: rgb(var(--ink) / 0.08); border-radius: 4px; padding: 1px 5px; font-size: 12px; }
 
@@ -1173,7 +1202,7 @@ textarea.duration-input { height: auto; padding: 7px 9px; resize: vertical; line
 .tk-text { flex: 1 1 auto; color: var(--text-main); }
 /* a cut line stays readable but obviously gone: this is the record of what was removed */
 .tk-row.cut .tk-text { color: var(--text-dim); text-decoration: line-through; }
-.tk-drop, .tk-pick { flex: 0 0 auto; background: transparent; border: 1px solid var(--border-subtle); color: var(--text-muted); border-radius: 999px;
+.tk-drop, .tk-pick { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 4px; background: transparent; border: 1px solid var(--border-subtle); color: var(--text-muted); border-radius: 999px;
   font-size: 11px; font-weight: 600; padding: 3px 10px; cursor: pointer; opacity: 0; transition: opacity var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out); }
 .tk-row:hover .tk-drop, .tk-drop:focus-visible { opacity: 1; }
 .tk-drop:hover { color: var(--text-main); border-color: var(--accent-primary); }
@@ -1217,7 +1246,7 @@ textarea.duration-input { height: auto; padding: 7px 9px; resize: vertical; line
 .m3d-seg button:hover { color: var(--text-main, #f8fafc); background: rgb(var(--ink) / 0.05); }
 .m3d-seg button.on { background: var(--accent-primary, #3b82f6); color: #fff; font-weight: 600; }
 .m3d-controls input[type="color"] { width: 30px; height: 22px; padding: 0; border: 1px solid rgb(var(--ink) / 0.15); border-radius: 6px; background: none; cursor: pointer; }
-.m3d-controls button, .m3d-foot button { background: var(--bg-surface-elevated, #1a1d27); color: var(--text-main, #f8fafc); border: 1px solid rgb(var(--ink) / 0.14); border-radius: 8px; padding: 6px 12px; font-size: 12.5px; cursor: pointer; }
+.m3d-controls button, .m3d-foot button { display: inline-flex; align-items: center; gap: 6px; background: var(--bg-surface-elevated, #1a1d27); color: var(--text-main, #f8fafc); border: 1px solid rgb(var(--ink) / 0.14); border-radius: 8px; padding: 6px 12px; font-size: 12.5px; cursor: pointer; }
 .m3d-foot { gap: 10px; display: flex; align-items: center; }
 .m3d-foot label { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-muted, #9aa3af); }
 
@@ -1232,7 +1261,7 @@ textarea.duration-input { height: auto; padding: 7px 9px; resize: vertical; line
 .booth-head { cursor: grab; user-select: none; -webkit-user-select: none; }
 .booth-head:active { cursor: grabbing; }
 .booth-head b, .booth-status { pointer-events: none; }
-.booth-grip { color: var(--text-dim, #64748b); font-size: 15px; letter-spacing: -1px; }
+.booth-grip { display: flex; color: var(--text-dim, #64748b); }
 
 /* ============ Scrubbing ============ */
 /* Dragging the playhead used to select the ruler numbers instead of scrubbing */
@@ -1287,7 +1316,7 @@ textarea.duration-input { height: auto; padding: 7px 9px; resize: vertical; line
 .proj-bar button:hover:not(:disabled) { color: var(--text-main, #f8fafc); border-color: var(--accent-primary, #3b82f6); }
 .proj-bar button:disabled { opacity: 0.35; cursor: default; }
 .sfx-rec { padding: 8px 12px; border-top: 1px solid rgb(var(--ink) / 0.08); }
-.sfx-foot button.rec-on { color: #fff; background: #e11d48; border-color: transparent; }
+.sfx-foot button.rec-on { color: var(--accent-error); background: color-mix(in srgb, var(--accent-error) 14%, transparent); border-color: transparent; }
 .m3d-status { flex: 0 0 auto; margin: 6px 0; min-height: 32px; display: flex; align-items: center; }
 .m3d-controls input[type="color"].is-idle { opacity: 0.32; cursor: default; }
 .m3d-group { min-height: 52px; }
@@ -1317,7 +1346,7 @@ textarea.duration-input { height: auto; padding: 7px 9px; resize: vertical; line
   border: 1px solid rgba(245, 158, 11, 0.35); border-radius: var(--radius-md); padding: 10px 12px; margin: 0 0 10px; }
 .photo-nudge code { font-size: 11px; background: rgb(var(--ink) / 0.08); padding: 1px 4px; border-radius: 3px; }
 .thumb-cand.add-photo { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 90px; border-style: dashed; }
-.add-photo-plus { font-size: 28px; line-height: 1; color: var(--text-muted); }
+.add-photo-plus { display: flex; color: var(--text-muted); }
 .thumb-cand.add-photo span { position: static; background: none; padding: 2px 4px; }
 .thumb-cand > span { max-width: calc(100% - 12px); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 

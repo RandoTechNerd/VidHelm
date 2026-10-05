@@ -66,7 +66,7 @@ export const HELP_ENTRIES: HelpEntry[] = [
   { id: 'slow', topic: 'Slow or choppy playback', keys: ['slow', 'lag', 'choppy', 'stutter', 'proxy', 'preview copy', 'hdr', '4k', 'freeze'],
     answer: 'Heavy files (4K, HDR, some phone formats) get a lighter preview copy built in the background; the Media panel shows its progress. Editing uses the copy. A High quality export always reads your original files. A Standard export uses the copy only when it is at least as big and as smooth as the export (a small analysis render always does), so the picture is never smaller or choppier than the export needs.' },
   { id: 'bug', topic: 'Reporting a problem', keys: ['bug', 'broken', 'crash', 'error', 'not working', 'report', 'issue', 'feature'],
-    answer: 'Sorry about that. Report it on GitHub (the (i) button at the top lists the link) with what you clicked and what happened, and include the VidHelm version shown there.' },
+    answer: 'Sorry about that. Report it on GitHub (the Help menu, the ? at the top right, has the link under Community and links) with what you clicked and what happened, and include the VidHelm version shown at the bottom of that menu.' },
 ]
 
 /** Where people get a human. Shown in the chat's FAQ and handed to the model. */
@@ -102,7 +102,7 @@ export const FAQ: FaqSection[] = [
     { q: 'The AI connected but no VidHelm tools show up', a: 'Fully restart the AI app: most only read their setup when they start. Check the config pasted cleanly (no stray commas). In Claude Code, type /mcp to see the server.', action: 'connect' },
     { q: 'Tools show up but every call fails', a: 'Open Connect AI and press Test connection. If the bridge is green, the assistant cannot start the server: usually Node.js is missing or the path in the config is old. Copy a fresh config from Connect AI.', action: 'connect' },
     { q: 'Playback is slow or choppy', a: 'Heavy files (4K, HDR, some phone formats) get a lighter preview copy built in the background, and the Media panel shows its progress. High quality exports read your original files; Standard exports use the copy only when it already matches the export size and frame rate.' },
-    { q: 'Something is broken or I want a feature', a: 'Tell us on Discord or open a GitHub issue with what you clicked, what happened and your VidHelm version (shown under the (i) button at the top).' },
+    { q: 'Something is broken or I want a feature', a: 'Tell us on Discord or open a GitHub issue with what you clicked, what happened and your VidHelm version (shown at the bottom of the Help menu, the ? at the top right).' },
   ] },
 ]
 

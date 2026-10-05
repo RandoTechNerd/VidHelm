@@ -118,7 +118,7 @@ export function HelpChat({ open, onClose, onAction, context }: {
           ))}
           <section>
             <h4>Still stuck?</h4>
-            <p className="hc-faq-note">Real people answer on Discord, usually fastest. Email works too. Say which VidHelm version you have (under the (i) button at the top) and what you clicked.</p>
+            <p className="hc-faq-note">Real people answer on Discord, usually fastest. Email works too. Say which VidHelm version you have (at the bottom of the Help menu, the ? at the top right) and what you clicked.</p>
           </section>
         </div>
       )}

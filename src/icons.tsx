@@ -1,11 +1,14 @@
 /* Line icons for the app chrome. One stroke weight and one grid (24) so the bar reads as a
-   single set; emoji render differently on every machine and were what made it look homemade. */
+   single set; emoji render differently on every machine and were what made it look homemade.
+   This is the only icon set: App.tsx and the panels draw from here, nothing defines its own. */
 import type { ReactNode } from 'react'
 
-const I = ({ size = 15, children, fill }: { size?: number; children: ReactNode; fill?: boolean }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill={fill ? 'currentColor' : 'none'} stroke={fill ? 'none' : 'currentColor'}
-    strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{children}</svg>
+const I = ({ size = 15, children, fill, weight = 1.8, className }: { size?: number; children: ReactNode; fill?: boolean; weight?: number; className?: string }) => (
+  <svg className={className} width={size} height={size} viewBox="0 0 24 24" fill={fill ? 'currentColor' : 'none'} stroke={fill ? 'none' : 'currentColor'}
+    strokeWidth={weight} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{children}</svg>
 )
+/** most icons default to the size their usual spot wants; a few spots ask for another */
+type S = { size?: number }
 
 export const IcSave = () => <I><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z" /><path d="M17 21v-8H7v8M7 3v5h8" /></I>
 export const IcOpen = () => <I><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2" /></I>
@@ -19,7 +22,7 @@ export const IcMoon = () => <I><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" /></
 export const IcHelp = () => <I><circle cx="12" cy="12" r="10" /><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3M12 17h.01" /></I>
 export const IcRefresh = () => <I size={14}><path d="M21 12a9 9 0 1 1-2.64-6.36L21 8" /><path d="M21 3v5h-5" /></I>
 export const IcFolder = () => <I size={14}><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" /></I>
-export const IcPlus = () => <I size={14}><path d="M12 5v14M5 12h14" /></I>
+export const IcPlus = ({ size = 14 }: S) => <I size={size}><path d="M12 5v14M5 12h14" /></I>
 export const IcBooth = () => <I size={14}><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v3M8 22h8" /></I>
 export const IcVoice = () => <I size={14}><path d="M2 10v3M6 6v11M10 3v18M14 8v7M18 5v13M22 10v3" /></I>
 export const IcCut = () => <I size={14}><circle cx="6" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path d="M20 4 8.12 15.88M14.47 14.48 20 20M8.12 8.12 12 12" /></I>
@@ -38,6 +41,47 @@ export const IcStop = () => <I size={12} fill><rect x="6" y="6" width="12" heigh
 export const IcClose = () => <I size={12}><path d="M18 6 6 18M6 6l12 12" /></I>
 export const IcDice = () => <I size={13}><rect x="3" y="3" width="18" height="18" rx="3" /><path d="M8 8h.01M16 16h.01M12 12h.01" /></I>
 export const IcKey = () => <I size={13}><circle cx="7.5" cy="15.5" r="4.5" /><path d="m21 2-9.6 9.6M15.5 7.5l3 3L22 7l-3-3" /></I>
+
+// the editor's own controls (these were drawn inline in App.tsx at a heavier stroke)
+export const IcExport = ({ size = 18 }: S) => <I size={size}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3" /></I>
+export const IcAudio = ({ size = 16 }: S) => <I size={size}><path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" /></I>
+export const IcTrash = () => <I size={14}><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></I>
+export const IcPlay = ({ size = 16 }: S) => <I size={size} fill><path d="M8 5v14l11-7Z" /></I>
+export const IcPause = ({ size = 16 }: S) => <I size={size} fill><path d="M6 4h4v16H6ZM14 4h4v16h-4Z" /></I>
+export const IcText = () => <I size={14}><path d="M4 7V4h16v3M9 20h6M12 4v16" /></I>
+export const IcMic = ({ size = 14 }: S) => <I size={size}><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v3" /></I>
+export const IcExpand = () => <I size={14}><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" /></I>
+export const IcVolume = () => <I size={14}><path d="M11 5 6 9H2v6h4l5 4V5Z" /><path d="M15.54 8.46a5 5 0 0 1 0 7.07M19.07 4.93a10 10 0 0 1 0 14.14" /></I>
+export const IcUndo = ({ size = 14 }: S) => <I size={size}><path d="M3 7v6h6" /><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13" /></I>
+export const IcRedo = () => <I size={14}><path d="M21 7v6h-6" /><path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3L21 13" /></I>
+export const IcCaptions = () => <I size={14}><rect x="2" y="5" width="20" height="14" rx="2" /><path d="M7 13h2M7 10h2M13 10h4M13 13h4" /></I>
+/** A disclosure arrow, pointing right when closed and down when open (App.css .ic-chevron). It
+ *  is drawn heavier than the set: at 12px the shared weight all but disappears. */
+export const IcChevron = ({ open = false, size = 12 }: { open?: boolean; size?: number }) =>
+  <I size={size} weight={2.6} className={`ic-chevron ${open ? 'open' : ''}`}><path d="m9 18 6-6-6-6" /></I>
+export const IcGear = () => <I size={14}><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z" /></I>
+
+// panels and dialogs (each of these replaced an emoji or a text glyph)
+export const IcCamera = () => <I size={14}><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3Z" /><circle cx="12" cy="13" r="3" /></I>
+export const IcGlobe = ({ size = 14 }: S) => <I size={size}><circle cx="12" cy="12" r="10" /><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10Z" /></I>
+export const IcFilm = ({ size = 14 }: S) => <I size={size}><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M7 3v18M17 3v18M3 7.5h4M3 12h18M3 16.5h4M17 7.5h4M17 16.5h4" /></I>
+export const IcImage = ({ size = 14 }: S) => <I size={size}><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="9" cy="9" r="2" /><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21" /></I>
+export const IcTerminal = () => <I size={14}><path d="m4 17 6-6-6-6M12 19h8" /></I>
+/** a favourite: filled when it is one */
+export const IcStar = ({ filled = false }: { filled?: boolean }) => <I size={14} fill={filled}><path d="M12 2.8l2.85 5.8 6.4.93-4.63 4.5 1.1 6.37L12 17.4l-5.72 3 1.1-6.37-4.63-4.5 6.4-.93Z" /></I>
+export const IcDownload = () => <I size={14}><path d="M12 3v12M7 10l5 5 5-5M5 21h14" /></I>
+export const IcCopy = () => <I size={14}><rect x="9" y="9" width="12" height="12" rx="2.5" /><path d="M5 15V5.5A2.5 2.5 0 0 1 7.5 3H15" /></I>
+/** a link that leaves the app for the browser */
+export const IcExternal = () => <I size={12}><path d="M7 17 17 7M8 7h9v9" /></I>
+export const IcInfo = ({ size = 13 }: S) => <I size={size}><circle cx="12" cy="12" r="10" /><path d="M12 16v-5M12 8h.01" /></I>
+/** the handle you drag a floating panel by */
+export const IcGrip = () => <I size={14} fill><circle cx="9" cy="6" r="1.6" /><circle cx="15" cy="6" r="1.6" /><circle cx="9" cy="12" r="1.6" /><circle cx="15" cy="12" r="1.6" /><circle cx="9" cy="18" r="1.6" /><circle cx="15" cy="18" r="1.6" /></I>
+
+// community links in the Help menu
+export const IcGithub = () => <I size={15} fill><path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.58.11.79-.25.79-.55v-1.94c-3.2.7-3.87-1.54-3.87-1.54-.52-1.33-1.28-1.68-1.28-1.68-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.19 1.76 1.19 1.03 1.75 2.69 1.25 3.34.95.1-.74.4-1.25.72-1.54-2.55-.29-5.23-1.28-5.23-5.68 0-1.26.45-2.28 1.19-3.09-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.17 1.18a11 11 0 0 1 5.78 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.83 1.19 3.09 0 4.42-2.69 5.39-5.25 5.67.41.35.77 1.05.77 2.12v3.15c0 .3.21.66.8.55A11.5 11.5 0 0 0 23.5 12C23.5 5.65 18.35.5 12 .5Z" /></I>
+export const IcYoutube = () => <I size={16} fill><path d="M23.5 6.2a3 3 0 0 0-2.1-2.1C19.5 3.5 12 3.5 12 3.5s-7.5 0-9.4.6A3 3 0 0 0 .5 6.2 31.3 31.3 0 0 0 0 12a31.3 31.3 0 0 0 .5 5.8 3 3 0 0 0 2.1 2.1c1.9.6 9.4.6 9.4.6s7.5 0 9.4-.6a3 3 0 0 0 2.1-2.1A31.3 31.3 0 0 0 24 12a31.3 31.3 0 0 0-.5-5.8ZM9.5 15.5v-7L15.8 12l-6.3 3.5Z" /></I>
+export const IcInstagram = () => <I size={15}><rect x="2" y="2" width="20" height="20" rx="5" /><circle cx="12" cy="12" r="4" /><circle cx="17.5" cy="6.5" r="1" fill="currentColor" stroke="none" /></I>
+export const IcCoffee = () => <I size={15}><path d="M17 8h1a4 4 0 0 1 0 8h-1" /><path d="M3 8h14v9a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4Z" /><path d="M6 2v2M10 2v2M14 2v2" /></I>
 /** a file that is not where the project says it is */
 export const IcMissing = () => <I><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9Z" /><path d="M14 3v6h6M12 12v3M12 18h.01" /></I>
 

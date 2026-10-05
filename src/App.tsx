@@ -1,6 +1,9 @@
 import { useState, useRef, useEffect, useCallback, Component, type ReactNode } from 'react'
 import './App.css'
-import { VidHelmMark, IcSave, IcOpen, IcCloud, IcRecipe, IcCube, IcSparkle, IcBot, IcSun, IcMoon, IcHelp, IcRefresh, IcFolder, IcPlus, IcBooth, IcVoice, IcCut, IcList, IcCheck, IcEye, IcChat, IcMissing } from './icons'
+import { VidHelmMark, IcSave, IcOpen, IcCloud, IcRecipe, IcCube, IcSparkle, IcBot, IcSun, IcMoon, IcHelp, IcRefresh, IcFolder, IcPlus, IcBooth, IcVoice, IcCut, IcList, IcCheck, IcEye, IcChat, IcMissing, IcGear, IcClose } from './icons'
+// The editor's controls under the names their call sites have always used; they are the shared
+// set now (one stroke, one grid), not a second set drawn here.
+import { IcExport as IconExport, IcPlus as IconPlus, IcAudio as IconAudio, IcFolder as IconFolder, IcCut as IconScissors, IcTrash as IconTrash, IcPlay as IconPlay, IcPause as IconPause, IcText as IconText, IcMic as IconMic, IcExpand as IconExpand, IcVolume as IconVolume, IcUndo as IconUndo, IcRedo as IconRedo, IcChevron as IconChevron, IcCaptions as IconCaptions } from './icons'
 import { Tour, tourSeen } from './tour'
 import { HelpChat } from './helpchat'
 import { SecretField } from './controls'
@@ -8,7 +11,7 @@ import { rangeFill } from './uikit'
 import type { HelpAction } from '../electron/helpdesk'
 import { SfxPanel, MarkerPanel, KaraokeBooth, NarrationModal, RecipeSection, ThumbnailModal, ConnectModal, DEFAULT_RECIPE, recipeActive, newMarker, saveTake, type Marker, type SfxItem, type RecipeSettings } from './extras'
 import { Model3DModal, KEY_GREEN, KEY_MAGENTA, type Model3DApi } from './model3d'
-import { HelpModal, InfoNote, type HelpPanel } from './help'
+import { HelpModal, HelpMenu, InfoNote, type HelpPanel, type HelpTab } from './help'
 import { TakesModal, takeStats, type TakeAnalysis } from './takes'
 import { groupTakes, removalRanges, removedSeconds, chunksFromWords, wordsOf } from '../electron/takes'
 import { snapToGrid, describeSnap } from '../electron/grid'
@@ -295,46 +298,6 @@ const TRACK_LAYER: Record<string, number> = { v1: 0, v2: 1, a1: 2, a2: 3 }
 const layerOrder = <T extends { trackId: string }>(list: T[]): T[] => [...list].sort((a, b) => TRACK_LAYER[a.trackId] - TRACK_LAYER[b.trackId])
 // drag payload for an item pulled out of the Media panel onto the timeline
 const MEDIA_DRAG = 'application/x-vidhelm-media'
-
-// Icons
-const IconExport = () => <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
-const IconPlus = () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14M5 12h14"/></svg>
-const IconAudio = () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
-const IconFolder = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>
-const IconScissors = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><line x1="20" y1="4" x2="8.12" y2="15.88"/><line x1="14.47" y1="14.48" x2="20" y2="20"/><line x1="8.12" y1="8.12" x2="12" y2="12"/></svg>
-const IconTrash = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-const IconPlay = () => <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M8 5v14l11-7z"/></svg>
-const IconPause = () => <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M6 4h4v16H6zM14 4h4v16h-4z"/></svg>
-const IconText = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 7V4h16v3M9 20h6M12 4v16"/></svg>
-const IconMic = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v3"/></svg>
-const IconExpand = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>
-const IconVolume = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 5 6 9H2v6h4l5 4V5Z"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
-const IconUndo = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"/></svg>
-const IconRedo = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 7v6h-6"/><path d="M3 17a9 9 0 0 1 9-9 9 9 0 0 1 6 2.3L21 13"/></svg>
-const IconChevron = ({ open }: { open: boolean }) => <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" style={{ transform: open ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 0.15s' }}><path d="m9 18 6-6-6-6"/></svg>
-const IconCaptions = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M7 13h2M7 10h2M13 10h4M13 13h4"/></svg>
-const IconInfo = () => <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-5M12 8h.01"/></svg>
-
-// Everything that used to sit as a row of bare icons in the header, now behind the (i)
-const LINKS: { label: string; sub: string; url: string; icon: React.ReactNode; note?: string }[] = [
-  { label: 'vidhelm.com', sub: 'downloads and news', url: 'https://vidhelm.com',
-    icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg> },
-  { label: 'GitHub', sub: 'star the repo, report a bug', url: 'https://github.com/RandoTechNerd/VidHelm',
-    icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.58.11.79-.25.79-.55v-1.94c-3.2.7-3.87-1.54-3.87-1.54-.52-1.33-1.28-1.68-1.28-1.68-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.19 1.76 1.19 1.03 1.75 2.69 1.25 3.34.95.1-.74.4-1.25.72-1.54-2.55-.29-5.23-1.28-5.23-5.68 0-1.26.45-2.28 1.19-3.09-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.17 1.18a11 11 0 0 1 5.78 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.83 1.19 3.09 0 4.42-2.69 5.39-5.25 5.67.41.35.77 1.05.77 2.12v3.15c0 .3.21.66.8.55A11.5 11.5 0 0 0 23.5 12C23.5 5.65 18.35.5 12 .5z"/></svg> },
-  { label: 'YouTube', sub: '@randotechnerd', url: 'https://www.youtube.com/@randotechnerd',
-    icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M23.5 6.2a3 3 0 0 0-2.1-2.1C19.5 3.5 12 3.5 12 3.5s-7.5 0-9.4.6A3 3 0 0 0 .5 6.2 31.3 31.3 0 0 0 0 12a31.3 31.3 0 0 0 .5 5.8 3 3 0 0 0 2.1 2.1c1.9.6 9.4.6 9.4.6s7.5 0 9.4-.6a3 3 0 0 0 2.1-2.1A31.3 31.3 0 0 0 24 12a31.3 31.3 0 0 0-.5-5.8zM9.5 15.5v-7L15.8 12l-6.3 3.5z"/></svg> },
-  { label: 'Instagram', sub: '@randotechnerd', url: 'https://www.instagram.com/randotechnerd/',
-    icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="2" y="2" width="20" height="20" rx="5"/><circle cx="12" cy="12" r="4"/><circle cx="17.5" cy="6.5" r="1" fill="currentColor" stroke="none"/></svg> },
-  { label: 'Buy me a coffee', sub: 'keeps the updates coming', url: 'https://buymeacoffee.com/randotechnerd',
-    icon: <span style={{ fontSize: 15 }}>☕</span>,
-    note: 'Please put "VidHelm" in the comment, there are a few projects on that page, plus any feature you want next. Requests that arrive with a coffee tend to jump the queue.' },
-  { label: 'Discord', sub: 'help, ideas and show-and-tell', url: 'https://discord.gg/8fjQHDX8PQ',
-    icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M20.3 4.4A19.6 19.6 0 0 0 15.4 3l-.6 1.3a18.2 18.2 0 0 0-5.6 0L8.6 3a19.5 19.5 0 0 0-4.9 1.5C.6 9.1-.3 13.6.1 18a19.7 19.7 0 0 0 6 3l1.3-2a12.7 12.7 0 0 1-2-1l.5-.4a14 14 0 0 0 12.2 0l.5.4c-.6.4-1.3.7-2 1l1.3 2a19.6 19.6 0 0 0 6-3c.5-5.1-.8-9.5-3.6-13.6ZM8 15.3c-1.2 0-2.2-1.1-2.2-2.4S6.8 10.5 8 10.5s2.2 1.1 2.2 2.4-1 2.4-2.2 2.4Zm8 0c-1.2 0-2.2-1.1-2.2-2.4s1-2.4 2.2-2.4 2.2 1.1 2.2 2.4-1 2.4-2.2 2.4Z"/></svg> },
-  { label: 'Email', sub: 'randotechnerd@gmail.com', url: 'mailto:randotechnerd@gmail.com',
-    icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-10 6L2 7"/></svg> },
-]
-
-const IconGear = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg>
 
 // Inline volume-automation editor: draggable line of gain points over a clip's duration.
 function VolumeGraph({ points, duration, base, onChange }: { points: { t: number; v: number }[]; duration: number; base: number; onChange: (pts: { t: number; v: number }[]) => void }) {
@@ -674,7 +637,8 @@ function Editor() {
   const [model3DPath, setModel3DPath] = useState<string | null>(null)
   const [boothScript, setBoothScript] = useState('')
   const [showHelp, setShowHelp] = useState(false)
-  const [showLinks, setShowLinks] = useState(false)
+  const [helpTab, setHelpTab] = useState<HelpTab>('start')
+  const [showHelpMenu, setShowHelpMenu] = useState(false)
   const [projects, setProjects] = useState<{ name: string; path: string; media: number; saved: boolean; modified: number }[]>([])
   const [currentProject, setCurrentProject] = useState<{ dir: string; name: string } | null>(null)
   // Where Save writes when no project folder is open: the single project file it was opened from
@@ -1011,13 +975,14 @@ function Editor() {
   // picking something on the timeline brings its controls up
   useEffect(() => { if (selectedId) setRightTab('inspect') }, [selectedId])
 
-  // Dismiss the links popover on any click elsewhere (its own clicks stop propagation)
+  // Dismiss the Help menu on any click elsewhere (its own clicks stop propagation)
   useEffect(() => {
-    if (!showLinks) return
-    const close = () => setShowLinks(false)
+    if (!showHelpMenu) return
+    const close = () => setShowHelpMenu(false)
     window.addEventListener('click', close)
     return () => window.removeEventListener('click', close)
-  }, [showLinks])
+  }, [showHelpMenu])
+  const closeHelpMenu = useCallback(() => setShowHelpMenu(false), [])
 
   // Close the right-click context menu on any outside click
   useEffect(() => {
@@ -1189,7 +1154,7 @@ function Editor() {
   const placeSfx = async (item: SfxItem) => {
     let media = mediaBin.find(m => m.path === item.path)
     if (!media) {
-      media = { id: rid(), name: `${item.name} ✦`, path: item.path, type: 'audio', duration: item.duration, hasVideo: false, hasAudio: true }
+      media = { id: rid(), name: `${item.name} (SFX)`, path: item.path, type: 'audio', duration: item.duration, hasVideo: false, hasAudio: true }
       setMediaBin(prev => [...prev, media!])
     }
     setClips(prev => [...prev, { id: rid(), mediaId: media!.id, type: 'audio', trackId: 'a2', start: currentTime, duration: item.duration, sourceStart: 0, volume: 1, fadeIn: 0, fadeOut: 0 }])
@@ -1237,7 +1202,7 @@ function Editor() {
   // Place the configured intro audio at 0:00 on the voice track (skips if it's already there)
   const applyIntroAudio = async (): Promise<string> => {
     const p = settings.recipe.introAudioPath
-    if (!p) return 'intro-audio: no file chosen (Settings → Start Recipe)'
+    if (!p) return 'intro-audio: no file chosen (Settings > Start Recipe)'
     let media = mediaBin.find(m => m.path === p)
     if (!media) {
       const meta = await window.ipcRenderer.getMetadata(p).catch(() => null)
@@ -1253,7 +1218,7 @@ function Editor() {
   // Run the app-native steps of the start recipe; AI-facing lines are reported for the agent/chat
   const runRecipe = async () => {
     if (totalDuration <= 0 && !mediaBin.some(m => m.type === 'video')) {
-      notify('🚀 Start Recipe needs footage first, drag a video into the Media Bin (or ask your AI to load one), then hit Recipe again.', 9000)
+      notify('The Start Recipe needs footage first. Add a video to the Media Bin (or ask your AI to load one), then press Recipe again.', 9000)
       return
     }
     const active = recipeActive(settings.recipe.text)
@@ -1265,7 +1230,7 @@ function Editor() {
     if (active['intro-audio']) notes.push(await applyIntroAudio())
     if (active['logo']) {
       if (settings.brand.logoPath) { setSettings(s => ({ ...s, brand: { ...s.brand, enabled: true } })); notes.push('logo: watermark enabled') }
-      else notes.push('logo: none set (Settings → Brand Kit)')
+      else notes.push('logo: none set (Settings > Brand Kit)')
     }
     const aiSteps = ['titles', 'subtitle', 'captions'].filter(k => active[k])
     if (aiSteps.length) notes.push(`for your AI (or do manually): ${aiSteps.join(', ')}`)
@@ -1320,7 +1285,7 @@ function Editor() {
           },
         }
       case 'generate_clip': {
-        if (!settings.aiGen?.falKey && !settings.aiGen?.geminiKey) return { error: 'no AI video key yet: ask the human to add a fal.ai key in the ✨ AI clip panel (fal.ai → Keys)' }
+        if (!settings.aiGen?.falKey && !settings.aiGen?.geminiKey) return { error: 'no AI video key yet: ask the human to add a fal.ai key in the AI clip panel (fal.ai > Keys)' }
         const resolve = (ref?: string) => { if (!ref) return undefined; const m = findMedia(ref); return m ? m.path : ref }
         let fromPath = resolve(cmd.from), fromTime = typeof cmd.at === 'number' ? cmd.at : undefined
         if (cmd.from === 'playhead') { const f = frameUnderPlayhead(); if (!f) return { error: 'nothing under the playhead' }; fromPath = f.path; fromTime = f.time }
@@ -1517,7 +1482,7 @@ function Editor() {
         const item = lib.items.find(i => i.name.toLowerCase() === String(cmd.name).toLowerCase())
         if (!item) return { error: `sfx not found: ${cmd.name}. Available: ${lib.items.map(i => i.name).join(', ')}` }
         let media = mediaBin.find(m => m.path === item.path)
-        if (!media) { media = { id: rid(), name: `${item.name} ✦`, path: item.path, type: 'audio', duration: item.duration, hasVideo: false, hasAudio: true }; setMediaBin(prev => [...prev, media!]) }
+        if (!media) { media = { id: rid(), name: `${item.name} (SFX)`, path: item.path, type: 'audio', duration: item.duration, hasVideo: false, hasAudio: true }; setMediaBin(prev => [...prev, media!]) }
         const clip: TimelineClip = { id: rid(), mediaId: media.id, type: 'audio', trackId: 'a2', start: cmd.t ?? currentTime, duration: item.duration, sourceStart: 0, volume: cmd.volume ?? 1, fadeIn: 0, fadeOut: 0 }
         setClips(prev => [...prev, clip])
         return { ok: true, clipId: clip.id, at: clip.start }
@@ -1907,7 +1872,7 @@ function Editor() {
       }
       case 'open_project': {
         const root = settings.workspace.root
-        if (!root) return { error: 'no project folder set, the human picks one in Settings → Project folder' }
+        if (!root) return { error: 'no project folder set, the human picks one in Settings > Project folder' }
         const r = await window.ipcRenderer.listProjects(root)
         const list = r.projects || []
         if (!cmd.name) return { ok: true, root, projects: list.map(p => ({ name: p.name, media: p.media, saved: p.saved })), current: currentProject?.name || null }
@@ -3077,7 +3042,7 @@ function Editor() {
       setCurrentProject({ dir: r.path, name: r.name || name }); setSaveFile(null)
       try { localStorage.setItem(LAST_PROJECT_KEY, JSON.stringify({ dir: r.path, name: r.name || name })) } catch { /* fine */ }
       markClean(applyProjectData({}, []))   // a clean start, with a clean undo history
-      notify(`Created ${r.name}. Drop footage into that folder and press ↻ to bring it in, no import needed.`)
+      notify(`Created ${r.name}. Drop footage into that folder and press the refresh button above the Media Bin to bring it in, no import needed.`)
       window.ipcRenderer.revealFolder(r.path)
     } finally { endSwitch() }
   }
@@ -3392,26 +3357,18 @@ function Editor() {
           <button className="hdr-btn hdr-connect" onClick={() => setShowConnect(true)} title="Connect your AI, one-click setup + troubleshooter"><IcBot /><span>Connect AI</span></button>
           <span className="hdr-sep" />
           <button className="hdr-btn icon" onClick={() => setUiTheme(t => t === 'dark' ? 'light' : 'dark')} title={uiTheme === 'dark' ? 'Switch to the light theme' : 'Switch to the dark theme'}>{uiTheme === 'dark' ? <IcSun /> : <IcMoon />}</button>
-          <button className="hdr-btn icon" onClick={e => { e.stopPropagation(); setShowLinks(v => !v) }} title="Links and contact"><IconInfo /></button>
-          <button className="hdr-btn icon" onClick={() => setShowHelp(true)} title="Getting started, the tour, credits and licences"><IcHelp /></button>
-          <button className="hdr-btn icon" onClick={() => setShowSettings(true)} title="Brand kit & settings"><IconGear /></button>
+          <button className={`hdr-btn icon ${showHelpMenu ? 'on' : ''}`} onClick={e => { e.stopPropagation(); setShowHelpMenu(v => !v) }}
+            title="Help: the chat, getting started and the tour, community links, credits" aria-haspopup="menu" aria-expanded={showHelpMenu}><IcHelp /></button>
+          <button className="hdr-btn icon" onClick={() => setShowSettings(true)} title="Brand kit & settings"><IcGear /></button>
           <button className="hdr-export" onClick={handleExport} disabled={(clips.length === 0 && texts.length === 0) || exportProgress !== null}
             title="Render the video with the settings in the Export panel">
             <IconExport /><span>{exportProgress !== null ? `${Math.round(exportProgress)}%` : 'Export'}</span>
           </button>
-          {showLinks && (
-            <div className="links-pop" onClick={e => e.stopPropagation()}>
-              {LINKS.map(l => (
-                <button key={l.url} onClick={() => { window.ipcRenderer.openExternal(l.url); setShowLinks(false) }}>
-                  <span className="links-ico">{l.icon}</span>
-                  <span className="links-txt">
-                    <b>{l.label}</b><i>{l.sub}</i>
-                    {l.note && <em className="links-note">{l.note}</em>}
-                  </span>
-                </button>
-              ))}
-              <div className="links-foot">VidHelm {appVersion} · built by RandoTechNerd</div>
-            </div>
+          {showHelpMenu && (
+            <HelpMenu onClose={closeHelpMenu} version={appVersion}
+              onChat={() => setShowChat(true)}
+              onStart={() => { setHelpTab('start'); setShowHelp(true) }}
+              onCredits={() => { setHelpTab('credits'); setShowHelp(true) }} />
           )}
         </div>
       </header>
@@ -3438,7 +3395,7 @@ function Editor() {
                 <select value={currentProject?.dir || ''} title="Each sub-folder of your project folder is a project"
                   onChange={e => { const p = projects.find(x => x.path === e.target.value); if (p) void openProjectFolder(p.path, p.name) }}>
                   <option value="" disabled>Open a project…</option>
-                  {projects.map(p => <option key={p.path} value={p.path}>{p.name}{p.media ? ` · ${p.media} file${p.media > 1 ? 's' : ''}` : ''}{p.saved ? ' ✓' : ''}</option>)}
+                  {projects.map(p => <option key={p.path} value={p.path}>{p.name}{p.media ? ` · ${p.media} file${p.media > 1 ? 's' : ''}` : ''}{p.saved ? ' · saved' : ''}</option>)}
                 </select>
                 <button onClick={newProjectFolder} title="Create a new project folder"><IcPlus /></button>
                 <button title="Bring in new files from this folder and look again for missing ones (your timeline stays as it is)" disabled={!currentProject || rescanning}
@@ -3453,7 +3410,7 @@ function Editor() {
                 <InfoNote label="What can I add?">
                   Double-click an item, or drop files straight onto the timeline, to use it.<br /><br />
                   Video, audio and images in just about any format, plus 3D models (STL · 3MF · OBJ · GLB), which open in the 3D Studio instead of the timeline.<br /><br />
-                  New here? The <b>?</b> button up top walks you through a first video.
+                  New here? The Help menu (the <b>?</b> at the top right) has a short tour and a first video in five moves.
                 </InfoNote>
               </div>}
               {mediaBin.map(m => (
@@ -3778,7 +3735,7 @@ function Editor() {
         onGenerated={narrationGenerated} />
 
       <ConnectModal open={showConnect} onClose={() => setShowConnect(false)} />
-      <HelpModal open={showHelp} onClose={() => setShowHelp(false)} version={appVersion}
+      <HelpModal key={showHelp ? helpTab : 'closed'} open={showHelp} startTab={helpTab} onClose={() => setShowHelp(false)} version={appVersion}
         onOpenPanel={openPanel} onTour={() => setShowTour(true)} onChat={() => setShowChat(true)} />
       <Model3DModal open={showModel3D} onClose={() => setShowModel3D(false)} initialPath={model3DPath} apiRef={model3dApi}
         getFrame={async () => {
@@ -3844,7 +3801,7 @@ function Editor() {
       {showAiClip && (
         <div className="modal-backdrop" onClick={() => { if (!aiClipBusy) setShowAiClip(false) }}>
           <div className="modal" onClick={e => e.stopPropagation()}>
-            <div className="modal-head"><h2>AI clip</h2><button className="modal-close" onClick={() => setShowAiClip(false)}>✕</button></div>
+            <div className="modal-head"><h2>AI clip</h2><button className="modal-close" aria-label="Close" onClick={() => setShowAiClip(false)}><IcClose /></button></div>
             <div className="modal-body">
               <section>
                 <p style={{ opacity: .8 }}>Describe a shot, or start from a picture (or the frame under the playhead) and end on another picture: the clip morphs one into the other. It lands in the Media Bin and at the end of v1, in the project's format. Kling and Luma run through fal.ai; Veo 3.1 (with sound) through Gemini.</p>
@@ -3862,7 +3819,7 @@ function Editor() {
                   <p className="hint">Keys are kept in VidHelm's settings on this PC and sent only to that provider, when you generate a clip.</p>
                 </div>
                 <div style={{ display: 'flex', gap: 10, marginTop: 10, alignItems: 'center' }}>
-                  <button className="hdr-btn" disabled={aiClipBusy} onClick={async () => {
+                  <button className="btn primary" disabled={aiClipBusy} onClick={async () => {
                     if (!aiPrompt.trim() && !aiFrom) { notify('Describe the clip, or pick a picture to start from.'); return }
                     let fromPath: string | undefined, fromTime: number | undefined
                     if (aiFrom === '__frame') { const f = frameUnderPlayhead(); if (!f) { notify('Nothing under the playhead.'); return } fromPath = f.path; fromTime = f.time }
@@ -3877,7 +3834,7 @@ function Editor() {
                     }
                     notify(`AI clip ready (${r.model}, ${r.seconds}s${r.hasAudio ? ', with sound' : ''}, about $${r.estimateUsd}). It is in the bin and on v1.`)
                     setShowAiClip(false)
-                  }}>{aiClipBusy ? 'Generating…' : '✨ Generate'}</button>
+                  }}>{aiClipBusy ? 'Generating…' : <><IcSparkle /> Generate clip</>}</button>
                   <span style={{ opacity: .7, fontSize: 12 }}>Roughly 35 to 75 cents per 5 seconds, charged by the provider.</span>
                 </div>
               </section>
@@ -3888,7 +3845,7 @@ function Editor() {
       {showSettings && (
         <div className="modal-backdrop" onClick={() => setShowSettings(false)}>
           <div className="modal" onClick={e => e.stopPropagation()}>
-            <div className="modal-head"><h2>Brand Kit & Settings</h2><button className="modal-close" onClick={() => setShowSettings(false)}>✕</button></div>
+            <div className="modal-head"><h2>Brand Kit & Settings</h2><button className="modal-close" aria-label="Close" onClick={() => setShowSettings(false)}><IcClose /></button></div>
             <div className="modal-body">
               <section>
                 <div className="sec-title">
@@ -3924,14 +3881,14 @@ function Editor() {
                 <div className="sec-title">
                   <h3>Project folder <span className="hint" style={{ fontWeight: 400 }}> -  skip importing altogether</span></h3>
                 </div>
-                <p className="hint">Point VidHelm at one folder you keep your video work in. Every sub-folder inside it is a project, and opening one loads whatever footage is sitting in that folder. Drop more files in with Explorer and press ↻ in the Media Bin: they’re added, no import step, and your timeline stays as it is. Saving writes back into the same folder, so a project is just a folder you can copy, back up or move (moved files are found again by name).</p>
+                <p className="hint">Point VidHelm at one folder you keep your video work in. Every sub-folder inside it is a project, and opening one loads whatever footage is sitting in that folder. Drop more files in with Explorer and press the refresh button above the Media Bin: they’re added, no import step, and your timeline stays as it is. Saving writes back into the same folder, so a project is just a folder you can copy, back up or move (moved files are found again by name).</p>
                 <div className="recipe-files">
                   <div className="recipe-file">
                     <span>Folder:</span>
                     <button onClick={async () => { const p = await window.ipcRenderer.pickFolder('Choose the folder that holds your projects'); if (p) setSettings(s => ({ ...s, workspace: { ...s.workspace, root: p } })) }}>
                       {settings.workspace.root || 'Choose a folder…'}
                     </button>
-                    {settings.workspace.root && <button title="Stop using a project folder" onClick={() => { setSettings(s => ({ ...s, workspace: { ...s.workspace, root: null } })); setCurrentProject(null) }}>✕</button>}
+                    {settings.workspace.root && <button title="Stop using a project folder" aria-label="Stop using a project folder" onClick={() => { setSettings(s => ({ ...s, workspace: { ...s.workspace, root: null } })); setCurrentProject(null) }}><IcClose /></button>}
                   </div>
                   <label className="toggle-row" title="Load every media file in the project folder when you open it">
                     <input type="checkbox" className="toggle" checked={settings.workspace.autoLoad} onChange={e => setSettings(s => ({ ...s, workspace: { ...s.workspace, autoLoad: e.target.checked } }))} /><span>Load the folder’s media automatically</span>
@@ -3958,7 +3915,7 @@ function Editor() {
                     <select value={settings.intro.treatment} onChange={e => setSettings(s => ({ ...s, intro: { ...s.intro, treatment: e.target.value as any } }))}><option value="ripple">Push everything later</option><option value="overlay">Overlay on top</option></select>
                   </label>
                 </div>
-                <p className="hint">Right-click any media item → “Add as intro clip” to apply these.</p>
+                <p className="hint">Right-click any media item and choose “Add as intro clip” to apply these.</p>
               </section>
 
               <section>
@@ -4101,7 +4058,7 @@ function Editor() {
           <div className="modal qc" onClick={e => e.stopPropagation()}>
             <div className="modal-head">
               <h2>Watch &amp; Verify {qcReport && !qcReport.error && <span className={`verdict ${qcReport.verdict}`}>{qcReport.verdict === 'pass' ? 'YouTube-ready' : qcReport.verdict === 'warn' ? 'Minor warnings' : 'Issues found'}</span>}</h2>
-              <button className="modal-close" onClick={() => setShowQC(false)}>✕</button>
+              <button className="modal-close" aria-label="Close" onClick={() => setShowQC(false)}><IcClose /></button>
             </div>
             <div className="modal-body">
               {qcRunning && <div className="qc-loading">Analyzing render, loudness, peaks, black frames, sampling frames…</div>}
