@@ -1322,3 +1322,8 @@ textarea.duration-input { height: auto; padding: 7px 9px; resize: vertical; line
   background: var(--bg-surface-elevated); color: var(--text-main); border: 1px solid var(--border-strong); box-shadow: var(--shadow-md);
   font-family: 'JetBrains Mono', 'Cascadia Mono', Consolas, ui-monospace, monospace; font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums;
 }
+
+/* The grip on a selected (accent) handle reads in the accent's own foreground, on every clip
+   colour including the yellow text row, whose ink is dark (W1-05) */
+:root { --on-accent: #ffffff; }
+.clip.selected .trim-handle { color: var(--on-accent); }

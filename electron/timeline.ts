@@ -216,3 +216,23 @@ export function stripFits(have: number, widthPx: number, tileH: number, aspect =
   if (have === stripTiles(widthPx, tileH, aspect, max)) return true
   return Math.abs(widthPx / (have * tileH * aspect) - 1) <= 0.15
 }
+
+// ---- titles and captions on the text row ----
+
+/**
+ * A themed caption's word timings are seconds from its own start. When its LEFT edge is trimmed
+ * the words must keep their spoken times, so they shift back by however far the start moved
+ * (a word now before the start was simply said before the caption appears). A move leaves them
+ * alone: the words go with the caption.
+ */
+export function shiftWords<W extends { s: number; e: number }>(words: W[] | undefined, by: number): W[] | undefined {
+  if (!words || !by) return words
+  return words.map(w => ({ ...w, s: +(w.s - by).toFixed(3), e: +(w.e - by).toFixed(3) }))
+}
+
+/** The note a dragged caption carries once it has left the speech it was made from ('' while on it). */
+export function offSpeechNote(start: number, heardAt: number | null | undefined, tolerance = 0.05): string {
+  if (heardAt === null || heardAt === undefined || !Number.isFinite(heardAt)) return ''
+  const d = Math.abs(start - heardAt)
+  return d >= tolerance ? `off speech by ${d < 10 ? d.toFixed(1) : Math.round(d)} s` : ''
+}

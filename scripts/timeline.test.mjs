@@ -136,5 +136,20 @@ console.log('filmstrips keep 16:9 frames')
   ok(!T.stripFits(0, 500, 46), 'no strip yet: make one')
 }
 
+console.log('titles and captions')
+{
+  const words = [{ s: 0.1, e: 0.4, t: 'hello' }, { s: 0.5, e: 0.9, t: 'there' }]
+  const moved = T.shiftWords(words, 0.3)   // left edge trimmed 0.3 s later: words keep their spoken times
+  ok(near(moved[0].s, -0.2) && near(moved[1].s, 0.2) && near(moved[1].e, 0.6) && moved[1].t === 'there', 'a left trim shifts word times back by the trim')
+  ok(T.shiftWords(words, 0) === words && T.shiftWords(undefined, 1) === undefined, 'nothing to shift: same array back')
+  ok(words[0].s === 0.1, 'the original is not mutated')
+  ok(T.offSpeechNote(12.4, 12.0) === 'off speech by 0.4 s', `off speech (${T.offSpeechNote(12.4, 12.0)})`)
+  ok(T.offSpeechNote(11.6, 12.0) === 'off speech by 0.4 s', 'either direction')
+  ok(T.offSpeechNote(12.02, 12.0) === '' && T.offSpeechNote(5, null) === '', 'on speech, or not a caption: no note')
+  ok(T.offSpeechNote(40, 12) === 'off speech by 28 s', 'whole seconds once it is far off')
+  const title = T.trimTo({ start: 3, duration: 2 }, 'left', 1, { hasSource: false, minDuration: 0.2 })
+  ok(near(title.start, 1) && near(title.duration, 4) && title.limit === null, 'a title trims out to the left freely')
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

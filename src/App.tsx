@@ -18,7 +18,7 @@ import { spanForPhrase, sentenceSpans, type Word as SpeechWord, type Span } from
 import { planBroll, snapToWords, describePlan, type BrollAsset, type Placement } from '../electron/broll'
 import { looksLikeThumbPhoto } from '../electron/thumbpick'
 import { resolveProfile, describeProfile, type PerfProfile, type Tier, type TierPreference } from '../electron/capability'
-import { tickStepFor, contentWidth, collectSnapTargets, nearestTarget, snapMove, trimTo, clampToSource, maxDurationFrom, moveReadout, trimReadout, stripTiles, stripFits } from '../electron/timeline'
+import { tickStepFor, contentWidth, collectSnapTargets, nearestTarget, snapMove, trimTo, clampToSource, maxDurationFrom, moveReadout, trimReadout, stripTiles, stripFits, shiftWords, offSpeechNote } from '../electron/timeline'
 import { TimeRuler } from './ruler'
 
 interface MediaFile {
@@ -783,6 +783,10 @@ function Editor() {
   // A trim handle that just hit the end of its footage glows red briefly, so the stop reads as a wall
   const [limitHit, setLimitHit] = useState<{ id: string; side: 'left' | 'right' } | null>(null)
   const limitTimer = useRef(0)
+  // Where each dragged caption sat the first time it was grabbed, taken as where its speech is. Any
+  // change to the clips (a cut, a trim, a move) can shift that speech, so they start over then.
+  const capHeardAt = useRef(new Map<string, number>())
+  useEffect(() => { capHeardAt.current.clear() }, [clips])
   // the current saveProject, for handlers registered once (keyboard, the close-window prompt)
   const saveRef = useRef<(as?: boolean) => Promise<boolean>>(async () => false)
 
@@ -3257,46 +3261,65 @@ function Editor() {
     window.addEventListener('mousemove', move); window.addEventListener('mouseup', up)
   }
 
-  const startClipMove = (e: React.MouseEvent, clip: TimelineClip) => {
+  // Move a clip or a title/caption along the timeline. Nothing moves until the pointer has gone a
+  // few pixels, so a plain click selects, a double-click on text still opens typing, and snapping
+  // cannot hop an item onto the playhead from a click.
+  const startMove = (e: React.MouseEvent, kind: 'clip' | 'text', id: string) => {
     if (e.button !== 0) return
     e.stopPropagation()
-    setSelectedId(clip.id)
+    setSelectedId(id)
+    const clip = kind === 'clip' ? clips.find(c => c.id === id) : undefined
+    const text = kind === 'text' ? texts.find(t => t.id === id) : undefined
+    const it = clip ?? text
+    if (!it) return
     const startX = e.clientX
-    const origStart = clip.start
+    const origStart = it.start
     draggingRef.current = false
-    // Up or down moves it between the rows it may live on: picture between video and b-roll,
-    // sound between voice/music and SFX. The row under the pointer says which.
-    const isAudio = clip.type === 'audio'
-    let track = clip.trackId
-    const targets = snapTargetsFor(clip.id)
+    // Up or down moves a clip between the rows it may live on: picture between video and b-roll,
+    // sound between voice/music and SFX. The row under the pointer says which. Text has one row.
+    const isAudio = clip?.type === 'audio'
+    let track = clip?.trackId
+    const targets = snapTargetsFor(id)
+    // a caption carries its words with it, so moving it takes them off the speech they were heard
+    // at; the readout says by how much, from where it sat the first time it was grabbed
+    if (text?.caption && !capHeardAt.current.has(id)) capHeardAt.current.set(id, text.start)
+    const heardAt = text?.caption ? capHeardAt.current.get(id) : null
     const rowAt = (m: MouseEvent) => (document.elementFromPoint(m.clientX, m.clientY) as HTMLElement | null)?.closest('[data-track]')?.getAttribute('data-track') as TimelineClip['trackId'] | undefined
     const move = (m: MouseEvent) => {
       const dx = m.clientX - startX
       if (Math.abs(dx) > 3) draggingRef.current = true
-      const row = rowAt(m)
+      const row = clip ? rowAt(m) : undefined
       if (row && row !== track && (isAudio ? row === 'a1' || row === 'a2' : row === 'v1' || row === 'v2')) { track = row; draggingRef.current = true }
-      // nothing moves until it is a real drag: with snapping a plain click could otherwise hop a clip onto the playhead
       if (!draggingRef.current) return
       // either edge snaps (Alt drags freely); the guide shows which time it caught
-      const r = m.altKey ? { start: Math.max(0, origStart + dx / pxPerSec), line: null } : snapMove(origStart + dx / pxPerSec, clip.duration, targets, SNAP_PX / pxPerSec)
-      setClips(prev => prev.map(c => c.id === clip.id ? { ...c, start: r.start, trackId: track } : c))
-      setDrag({ id: clip.id, snap: r.line, hud: { x: m.clientX, y: m.clientY, text: moveReadout(r.start, origStart) } })
+      const r = m.altKey ? { start: Math.max(0, origStart + dx / pxPerSec), line: null } : snapMove(origStart + dx / pxPerSec, it.duration, targets, SNAP_PX / pxPerSec)
+      if (clip) setClips(prev => prev.map(c => c.id === id ? { ...c, start: r.start, trackId: track ?? c.trackId } : c))
+      else setTexts(prev => prev.map(t => t.id === id ? { ...t, start: r.start } : t))
+      const note = offSpeechNote(r.start, heardAt)
+      setDrag({ id, snap: r.line, hud: { x: m.clientX, y: m.clientY, text: moveReadout(r.start, origStart) + (note ? ' · ' + note : '') } })
     }
     trackDrag(move, () => setTimeout(() => { draggingRef.current = false }, 0))
   }
 
-  const startTrim = (e: React.MouseEvent, clip: TimelineClip, side: 'left' | 'right') => {
+  // Drag one edge of a clip or a title/caption. Footage stops at the ends of its file; stills,
+  // titles and captions have no such edge.
+  const startTrim = (e: React.MouseEvent, kind: 'clip' | 'text', id: string, side: 'left' | 'right') => {
     if (e.button !== 0) return
     e.stopPropagation()
-    setSelectedId(clip.id)
+    setSelectedId(id)
+    const clip = kind === 'clip' ? clips.find(c => c.id === id) : undefined
+    const text = kind === 'text' ? texts.find(t => t.id === id) : undefined
+    const o = clip ?? text
+    if (!o) return
     const startX = e.clientX
-    const o = { ...clip }
-    const media = mediaBin.find(m => m.id === clip.mediaId)
-    // footage has edges, a still does not (and its in-point means nothing)
-    const opts = { hasSource: media?.type !== 'image', sourceDuration: footageLength(media), minDuration: 0.3 }
-    const targets = snapTargetsFor(clip.id)
+    const media = clip ? mediaBin.find(m => m.id === clip.mediaId) : undefined
+    const opts = clip
+      ? { hasSource: media?.type !== 'image', sourceDuration: footageLength(media), minDuration: 0.3 }
+      : { hasSource: false, minDuration: 0.2 }
+    const targets = snapTargetsFor(id)
     const edge0 = side === 'left' ? o.start : o.start + o.duration
     let live = false
+    let lastStart = o.start
     const move = (m: MouseEvent) => {
       // the same small dead zone as a move, so pressing a handle cannot snap its edge somewhere
       if (!live && Math.abs(m.clientX - startX) <= 2) return
@@ -3305,12 +3328,16 @@ function Editor() {
       const caught = m.altKey ? null : nearestTarget(raw, targets, SNAP_PX / pxPerSec)
       const r = trimTo(o, side, caught ?? raw, opts)
       const edge = side === 'left' ? r.start : r.start + r.duration
-      setClips(prev => prev.map(c => c.id === clip.id ? { ...c, start: r.start, duration: r.duration, sourceStart: r.sourceStart } : c))
+      lastStart = r.start
+      if (clip) setClips(prev => prev.map(c => c.id === id ? { ...c, start: r.start, duration: r.duration, sourceStart: r.sourceStart } : c))
+      // a caption's words keep their spoken times when its start moves (they count from the start)
+      else setTexts(prev => prev.map(t => t.id === id ? { ...t, start: r.start, duration: r.duration, ...(text!.caption ? { caption: { ...text!.caption, words: shiftWords(text!.caption.words, r.start - text!.start) } } : {}) } : t))
       // the guide only when the edge really sits on the target (a wall may have stopped it short)
-      setDrag({ id: clip.id, snap: caught !== null && Math.abs(edge - caught) < 1e-6 ? caught : null, hud: { x: m.clientX, y: m.clientY, text: trimReadout(r.duration, o.duration, r.limit) } })
-      if (r.limit) flashLimit(clip.id, side)
+      setDrag({ id, snap: caught !== null && Math.abs(edge - caught) < 1e-6 ? caught : null, hud: { x: m.clientX, y: m.clientY, text: trimReadout(r.duration, o.duration, r.limit) } })
+      if (r.limit) flashLimit(id, side)
     }
-    trackDrag(move)
+    // a trimmed caption is as far off its speech as before: its first-grab position moves with the start
+    trackDrag(move, () => { const h = capHeardAt.current.get(id); if (h !== undefined) capHeardAt.current.set(id, h + (lastStart - o.start)) })
   }
 
   const startResizeTimeline = (e: React.MouseEvent) => {
@@ -3420,16 +3447,16 @@ function Editor() {
     return (
       <div
         key={c.id}
-        onMouseDown={(e) => startClipMove(e, c)}
+        onMouseDown={(e) => startMove(e, 'clip', c.id)}
         className={`clip ${c.trackId === 'v2' ? 'b-clip' : c.trackId !== 'v1' ? 'a-clip' : 'v-clip'} ${c.type} ${bg ? 'has-thumb' : ''} ${selectedId === c.id ? 'selected' : ''} ${drag?.id === c.id ? 'dragging' : ''} ${lost ? 'offline' : ''}`}
         style={{ left: c.start * pxPerSec, width: c.duration * pxPerSec, backgroundImage: bg, backgroundSize: bgSize, backgroundPosition: 'center', backgroundRepeat: 'no-repeat' }}
         title={!media ? 'Its media was removed from the Media Bin: delete this clip or re-import the file' : media.offline ? `${media.name}: file missing, right-click it in the Media Bin to relink` : media.name}
       >
-        <div className={`trim-handle left${atLimit('left')}`} onMouseDown={(e) => startTrim(e, c, 'left')} />
+        <div className={`trim-handle left${atLimit('left')}`} onMouseDown={(e) => startTrim(e, 'clip', c.id, 'left')} />
         {c.fadeIn > 0 && <div className="fade-tri in" style={{ width: c.fadeIn * pxPerSec }} />}
         <span className="clip-label">{media?.name}</span>
         {c.fadeOut > 0 && <div className="fade-tri out" style={{ width: c.fadeOut * pxPerSec }} />}
-        <div className={`trim-handle right${atLimit('right')}`} onMouseDown={(e) => startTrim(e, c, 'right')} />
+        <div className={`trim-handle right${atLimit('right')}`} onMouseDown={(e) => startTrim(e, 'clip', c.id, 'right')} />
       </div>
     )
   }
@@ -3811,10 +3838,13 @@ function Editor() {
                 {!collapsed.text && (
                   <div className="track text-track">
                     {texts.map(t => (
-                      <div key={t.id} onMouseDown={(e) => { e.stopPropagation(); setSelectedId(t.id) }}
+                      <div key={t.id} onMouseDown={(e) => startMove(e, 'text', t.id)}
                         onDoubleClick={(e) => { e.stopPropagation(); setCurrentTime(t.start + Math.min(0.2, t.duration / 2)); startTextEdit(t.id) }}
-                        className={`clip text-clip ${selectedId === t.id ? 'selected' : ''}`} style={{ left: t.start * pxPerSec, width: t.duration * pxPerSec }} title={`${t.text}  (double-click to type)`}>
+                        className={`clip text-clip ${selectedId === t.id ? 'selected' : ''} ${drag?.id === t.id ? 'dragging' : ''}`} style={{ left: t.start * pxPerSec, width: t.duration * pxPerSec }}
+                        title={`${t.text}\nDrag to move, drag an edge to trim, double-click to type`}>
+                        <div className="trim-handle left" onMouseDown={(e) => startTrim(e, 'text', t.id, 'left')} />
                         <span className="clip-label"><IconText /> {t.text}</span>
+                        <div className="trim-handle right" onMouseDown={(e) => startTrim(e, 'text', t.id, 'right')} />
                       </div>
                     ))}
                   </div>
