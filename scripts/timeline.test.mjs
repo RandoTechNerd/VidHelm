@@ -118,6 +118,20 @@ console.log('saved clips pulled back inside their footage')
   ok(T.maxDurationFrom(3, 10) === 7 && T.maxDurationFrom(3) === Infinity, 'the most a clip can last from its in-point')
 }
 
+console.log('footage length')
+{
+  ok(T.footageLength({ type: 'video', duration: 30 }) === 30, 'a measured clip has its length')
+  ok(T.footageLength({ type: 'image', duration: 5 }) === undefined, 'a still has no edge')
+  ok(T.footageLength({ type: 'audio', duration: 0 }) === undefined && T.footageLength(undefined) === undefined, 'no length, no edge')
+  // a cloud hand-off clip with no length in its manifest arrives as 5 s, flagged as a guess
+  const guess = { type: 'video', duration: 5, durationGuess: true }
+  ok(T.footageLength(guess) === undefined, 'a stand-in length is not an edge')
+  const seg = { start: 0, duration: 30, sourceStart: 12 }
+  ok(T.clampToSource(seg, T.footageLength(guess)) === seg, 'a placeholder length does not shorten a clip on open')
+  ok(T.maxDurationFrom(12, T.footageLength(guess)) === Infinity, 'nor caps how long the Inspector or an agent may make it')
+  ok(near(T.clampToSource(seg, T.footageLength({ type: 'video', duration: 20 })).duration, 8), 'a measured length still pulls an overrun back')
+}
+
 console.log('drag readouts')
 ok(T.moveReadout(12.4, 11.6) === '0:12.40 (+0:00.80)', `move (${T.moveReadout(12.4, 11.6)})`)
 ok(T.moveReadout(3, 4.25) === '0:03.00 (-0:01.25)', 'move left')

@@ -18,7 +18,7 @@ import { spanForPhrase, sentenceSpans, type Word as SpeechWord, type Span } from
 import { planBroll, snapToWords, describePlan, type BrollAsset, type Placement } from '../electron/broll'
 import { looksLikeThumbPhoto } from '../electron/thumbpick'
 import { resolveProfile, describeProfile, type PerfProfile, type Tier, type TierPreference } from '../electron/capability'
-import { tickStepFor, contentWidth, collectSnapTargets, nearestTarget, snapMove, trimTo, clampToSource, maxDurationFrom, moveReadout, trimReadout, stripTiles, stripFits, shiftWords, offSpeechNote, timecode, followScroll, stepFrames, type TimecodeMode } from '../electron/timeline'
+import { tickStepFor, contentWidth, collectSnapTargets, nearestTarget, snapMove, trimTo, clampToSource, maxDurationFrom, footageLength, moveReadout, trimReadout, stripTiles, stripFits, shiftWords, offSpeechNote, timecode, followScroll, stepFrames, type TimecodeMode } from '../electron/timeline'
 import { TimeRuler } from './ruler'
 import { ClipWave, type Peaks } from './clipwave'
 
@@ -44,6 +44,7 @@ interface MediaFile {
   fps?: number         // the source's own frame rate (a 30 fps copy of 30 fps footage loses nothing)
   relPath?: string     // where it sat inside the project folder when saved, so a moved folder relinks
   offline?: boolean    // the file is not where the project says and nothing matched: relink or remove it
+  durationGuess?: boolean   // duration is a stand-in (a cloud clip with no length yet): no trim wall until a probe measures it
 }
 
 interface TimelineClip {
@@ -299,8 +300,6 @@ const SNAP_PX = 8
 // Clip heights on the picture rows (.track height minus the clip's 3px inset each side in App.css):
 // filmstrip frames are sized to these so they keep their 16:9 shape.
 const STRIP_TILE_H: Record<string, number> = { v1: 46, v2: 34 }
-/** A media item's own length when trims must stay inside it; undefined for stills and unknown lengths. */
-const footageLength = (m?: { type: string; duration: number }) => m && m.type !== 'image' && m.duration > 0 ? m.duration : undefined
 // drag payload for an item pulled out of the Media panel onto the timeline
 const MEDIA_DRAG = 'application/x-vidhelm-media'
 
@@ -2961,20 +2960,33 @@ function Editor() {
    *  footage that never needed a copy is not probed again on every open. `recheck` names entries
    *  that now point at a different file (relinked), which are always looked at afresh. */
   const backfillMedia = async (items: MediaFile[], recheck: Set<string> | 'all' = new Set()) => {
-    const needs = (m: MediaFile) => recheck === 'all' || recheck.has(m.id) || m.hdr === undefined || m.fps === undefined
+    const needs = (m: MediaFile) => recheck === 'all' || recheck.has(m.id) || m.hdr === undefined || m.fps === undefined || !!m.durationGuess
       || (m.proxyPath ? !(m.proxyWidth && m.proxyHeight && m.proxyFps) : !!m.proxyNote)   // proxyNote without a copy: it was needed (lost, or the build failed)
-    const vids = items.filter(m => m.type === 'video' && !m.offline && needs(m))
-    if (!vids.length) return
+    // sound is only looked at for a stand-in length; everything else here is about pictures
+    const look = items.filter(m => !m.offline && (m.type === 'video' ? needs(m) : m.type === 'audio' && !!m.durationGuess))
+    if (!look.length) return
     const probes = new Map<string, Probe>()
     const fill: Record<string, Partial<MediaFile>> = {}
-    for (const m of vids) {
+    const measured = new Map<string, number>()   // stand-in lengths replaced by the file's own
+    for (const m of look) {
       const meta = await window.ipcRenderer.getMetadata(m.path).catch(() => null)
       if (!meta || meta.ok === false) continue
       probes.set(m.id, meta as Probe)
-      fill[m.id] = { hdr: isHdr({ colorTransfer: meta.colorTransfer }), ...(meta.fps ? { fps: meta.fps } : {}) }
+      const len = m.durationGuess && Number(meta.duration) > 0 ? Number(meta.duration) : 0
+      if (len) measured.set(m.id, len)
+      fill[m.id] = {
+        ...(m.type === 'video' ? { hdr: isHdr({ colorTransfer: meta.colorTransfer }), ...(meta.fps ? { fps: meta.fps } : {}) } : {}),
+        ...(len ? { duration: len, durationGuess: undefined } : {}),
+      }
     }
     if (Object.keys(fill).length) setMediaBin(prev => prev.map(x => fill[x.id] ? { ...x, ...fill[x.id] } : x))
-    await ensureProxies(vids.filter(m => probes.has(m.id)), probes)
+    // The open skipped the pull-back inside the footage for these (a guess is not an edge); now the
+    // edge is real, the same clamp applies. A save would change, so the project reads as unsaved.
+    if (measured.size) setClips(prev => {
+      const next = prev.map(c => c.type !== 'image' && measured.has(c.mediaId) ? clampToSource(c, measured.get(c.mediaId)) : c)
+      return next.some((c, i) => c !== prev[i]) ? next : prev
+    })
+    await ensureProxies(look.filter(m => m.type === 'video' && probes.has(m.id)), probes)
   }
 
   const refreshProjects = async (root: string | null) => {

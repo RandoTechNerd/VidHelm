@@ -180,6 +180,14 @@ export function clampToSource<T extends SourcedSpan>(c: T, sourceDuration?: numb
   return { ...c, start, duration, sourceStart }
 }
 
+/**
+ * A media item's own length when trims must stay inside it; undefined for stills and unknown
+ * lengths. A stand-in length (durationGuess: a cloud clip the manifest gave no length for) is
+ * unknown too: clamping to it would cut a 30 s clip down to the 5 s placeholder.
+ */
+export const footageLength = (m?: { type: string; duration: number; durationGuess?: boolean }): number | undefined =>
+  m && m.type !== 'image' && !m.durationGuess && m.duration > 0 ? m.duration : undefined
+
 /** The most a clip can last from its in-point, or Infinity when the media has no fixed length. */
 export const maxDurationFrom = (sourceStart: number, sourceDuration?: number): number =>
   sourceDuration !== undefined && sourceDuration > 0 ? Math.max(0, sourceDuration - Math.max(0, sourceStart || 0)) : Infinity

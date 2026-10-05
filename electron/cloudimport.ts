@@ -148,7 +148,11 @@ export function buildProject(m: CloudManifest, plan: CloudPlan | null, files: Re
     const f = c.local ? (narration[c.local] ? { path: narration[c.local], hasAudio: true } : null) : files[c.id]
     if (!f) continue
     const id = rid(); binIdByClip[c.id] = id
-    mediaBin.push({ id, name: c.name, path: f.path, type: c.kind, duration: c.duration ?? (c.kind === 'image' ? 5 : 5), hasVideo: c.kind !== 'audio', hasAudio: c.kind === 'audio' ? true : f.hasAudio })
+    // The cloud has no length for a clip until it is prepared (duration: null). The bin still needs
+    // one (a drop onto the timeline is that long), but it is flagged as a guess: the desktop must
+    // not hold trims to it, or pull a 30 s clip back inside a 5 s "file", until a probe measures it.
+    const known = typeof c.duration === 'number' && c.duration > 0
+    mediaBin.push({ id, name: c.name, path: f.path, type: c.kind, duration: known ? c.duration : 5, ...(!known && c.kind !== 'image' ? { durationGuess: true } : {}), hasVideo: c.kind !== 'audio', hasAudio: c.kind === 'audio' ? true : f.hasAudio })
   }
   const clips: Array<Record<string, unknown>> = []
   const texts: Array<Record<string, unknown>> = []
