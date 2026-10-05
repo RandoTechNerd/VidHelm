@@ -38,7 +38,7 @@ One FFmpeg process, one filtergraph:
 1. Base layers: `color=black` video + `anullsrc` audio at target size/fps/48 kHz.
 2. Every clip becomes an input; video clips are put on the export's frame clock from their in-point (`fps=...:start_time=0`, so a VFR hole cannot pull the picture early), scaled/padded into frame with alpha, shifted by `setpts`, alpha-faded, then chained through `overlay` (so overlapping fades crossfade for real). Stills and the logo are converted to BT.709 by the graph itself (`TO_709`), never by an automatic BT.601 conversion. The chains live in `electron/exportgraph.ts` (`clipVideoChain`, `logoChain`).
 3. Audio clips are laid on the file's clock (`aresample=async=1:first_pts=0`, so late-starting audio is padded rather than pulled early), cut to exactly the clip, mono copied to both sides at full level, then `adelay` + volume (flat or piecewise-linear automation expression) + `afade`, then a single `amix` with `normalize=0` (`clipAudioChain`).
-4. Texts are `drawtext` (textfile-based, so quoting is safe) with alpha expressions.
+4. Texts are `drawtext` (textfile-based, so quoting is safe) with alpha expressions, drawn the way the preview draws them (`titleDrawtext`): the bundled title font (`TITLE_FONT`), every line centred, the same shadow and box, and the preview's line breaks (the renderer measures them before export). Every colour and number a text carries is checked first (`cleanText` in `electron/textlayout.ts`), since they are written into the filter as they are.
 5. Brand logo is a final overlay with its own window/fade logic.
 6. Mastering: optional FFT denoise → master gain → `acompressor` + `loudnorm` (YouTube target) or a plain safety limiter.
 7. x264 High profile, closed 2 s GOP, BT.709 tags, `+faststart`.
@@ -72,11 +72,12 @@ The render is written to `<name>.partial.mp4` beside the target and renamed over
 
 ## Platform notes
 
-Windows-first. The three Windows-isms, all in `electron/main.ts`:
+Windows-first. The two Windows-isms, both in `electron/main.ts`:
 
 1. `ffprobe-static` path uses `bin/win32/x64`: switch on `process.platform` to port.
-2. `drawtext` uses `C:/Windows/Fonts/arial.ttf`: pick a platform font or bundle one.
-3. Voice-clone commands run through the default shell (`cmd`).
+2. Voice-clone commands run through the default shell (`cmd`).
+
+(`drawtext` used to read `C:/Windows/Fonts/arial.ttf`; titles now use the bundled `TITLE_FONT`.)
 
 Everything else (fluent-ffmpeg, Whisper via `@huggingface/transformers`, the renderer) is cross-platform already. PRs welcome.
 

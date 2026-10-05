@@ -1,7 +1,8 @@
 /* Pieces of the export filtergraph (electron/main.ts, export-video) that are easy to get subtly
  * wrong and silently: a still in the wrong demuxer fails the whole render, an untrimmed audio branch
  * plays past its out-point, a '%' in a title draws nothing. Pure (no Electron), so the decisions are
- * tested against the real bundled ffmpeg: node electron/exportgraph.test.mjs */
+ * tested against the real bundled ffmpeg: npm run test:exportgraph */
+import { BOX_PAD, type cleanText } from './textlayout'
 
 /** Audio-only ramp at a splice (about 12 ms): long enough that the waveform reaches zero, short enough that nobody hears it. */
 export const DEPOP_S = 0.012
@@ -80,6 +81,46 @@ export function clipVideoChain(input: string, c: VideoClip, o: { W: number; H: n
   if ((c.fadeIn ?? 0) > 0) v += `,fade=t=in:st=${c.start}:d=${c.fadeIn}:alpha=1`
   if ((c.fadeOut ?? 0) > 0) v += `,fade=t=out:st=${(end - (c.fadeOut ?? 0)).toFixed(3)}:d=${c.fadeOut}:alpha=1`
   return `${v}[${out}]`
+}
+
+/**
+ * drawtext options for one title, drawn the way the preview draws it (the .text-layer styles in
+ * src/App.tsx): every line centred on the text's x, a hard drop shadow under bare text (drawtext
+ * cannot blur, so the preview's shadow is hard too), a square box padded BOX_PAD em. The export used
+ * to left-align every line of a multi-line title, draw no shadow and pad the box evenly.
+ *
+ * `t` must have been through cleanText: its colours and numbers go into the filter as they are.
+ * `fontFile` and `textFile` arrive escaped for a filtergraph; `alpha` is the fade expression.
+ */
+export function titleDrawtext(t: ReturnType<typeof cleanText>, o: { H: number; W: number; fontFile: string; textFile: string; alpha: string }): string {
+  const ff = (hex: string) => '0x' + hex.replace('#', '')
+  const size = Math.max(8, Math.round((t.fontSize / 1080) * o.H))
+  const end = t.start + t.duration
+  const boxed = t.box === true
+  const outline = typeof t.outline === 'number' && t.outline > 0 && !boxed
+    ? [`borderw=${Math.max(1, Math.round(size * t.outline))}`, `bordercolor=${ff(String(t.outlineColor || '#000000'))}`] : []
+  const shadow = boxed ? [] : ['shadowcolor=black@0.6', 'shadowx=0', `shadowy=${Math.max(1, Math.round(size * 0.04))}`]
+  const box = boxed
+    ? ['box=1', `boxcolor=${ff(String(t.boxColor || '#000000'))}@${typeof t.boxOpacity === 'number' ? t.boxOpacity : 0.5}`,
+      `boxborderw=${Math.round(size * BOX_PAD.y)}|${Math.round(size * BOX_PAD.x)}`]
+    : ['box=0']
+  return [
+    `fontfile='${o.fontFile}'`,
+    ...outline,
+    `textfile='${o.textFile}'`,
+    // the text is the user's, literally: under the default expansion a '%' ('100% PLA', 'Save 20%')
+    // made drawtext draw NOTHING for the whole overlay (exit 0, no error), and backslashes vanished
+    'expansion=none',
+    'text_align=C',
+    `fontcolor=${ff(t.color)}`,
+    `fontsize=${size}`,
+    `x=${Math.round(t.x * o.W)}-text_w/2`,
+    `y=${Math.round(t.y * o.H)}-text_h/2`,
+    ...shadow,
+    ...box,
+    `enable='between(t,${t.start},${end})'`,
+    `alpha='${o.alpha}'`,
+  ].join(':')
 }
 
 /**

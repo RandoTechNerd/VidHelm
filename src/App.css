@@ -381,16 +381,20 @@ main {
 
 /* preview layers + text */
 .layer { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+/* A title is drawn the way the export burns it (titleDrawtext in electron/exportgraph.ts): face,
+   shadow and box come inline from the same constants. max-content plus max-width makes it wrap at
+   92% of the frame (WRAP_WIDTH), where the export breaks its lines; without max-content a centred
+   title wrapped at the distance to the frame's right edge, half the frame. line-height normal is
+   the font's own line spacing, which is what drawtext uses between lines. */
 .text-layer {
   position: absolute;
   transform: translate(-50%, -50%);
   white-space: pre-wrap;
   text-align: center;
-  font-weight: 800;
-  line-height: 1.1;
-  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
+  line-height: normal;
   cursor: move;
   z-index: 5;
+  width: max-content;
   max-width: 92%;
   user-select: none;
 }

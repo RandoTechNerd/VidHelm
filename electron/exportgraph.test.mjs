@@ -10,11 +10,12 @@ import { fileURLToPath } from 'node:url'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const load = async f => {
-  const out = await build({ entryPoints: [path.join(here, f)], bundle: false, write: false, format: 'esm', target: 'node18' })
+  const out = await build({ entryPoints: [path.join(here, f)], bundle: true, write: false, format: 'esm', platform: 'node', target: 'node18' })
   return import('data:text/javascript;base64,' + Buffer.from(out.outputFiles[0].text).toString('base64'))
 }
-const { stillInput, clipAudioChain, clipVideoChain, logoChain, masterChain, friendlyExportError, stderrTail, DEPOP_S, UNREADABLE_STILL } = await load('exportgraph.ts')
+const { stillInput, clipAudioChain, clipVideoChain, logoChain, titleDrawtext, masterChain, friendlyExportError, stderrTail, DEPOP_S, UNREADABLE_STILL } = await load('exportgraph.ts')
 const { planProxy, proxyFilter, proxyFits, HDR_TO_SDR } = await load('playable.ts')
+const { cleanText, TITLE_FONT } = await load('textlayout.ts')
 
 const FF = path.join(here, '..', 'node_modules', 'ffmpeg-static', 'ffmpeg.exe')
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vh-exportgraph-'))
@@ -218,6 +219,44 @@ try {
   }
   ok(drawn('100% PLA') > 200, "'100% PLA' is drawn (the default expansion drew nothing)")
   ok(drawn('Save 20%') > 150 && drawn('C:\\path') > 150, "'Save 20%' and a backslash are drawn too")
+
+  console.log('\n-- titles are drawn the way the preview draws them --')
+  const esc = p => p.replace(/\\/g, '/').replace(/:/g, '\\:').replace(/'/g, "\\'")
+  const titleFont = path.join(here, '..', 'public', 'fonts', TITLE_FONT.file)
+  ok(fs.existsSync(titleFont), `the title font ships with the app (public/fonts/${TITLE_FONT.file})`)
+  const { THEME_FONTS } = await load('styletheme.ts')
+  ok(Object.values(THEME_FONTS).some(f => f.file === TITLE_FONT.file && f.family === TITLE_FONT.family && !f.bold),
+    'the preview has the same face: it is a theme font, registered at weight 400 (so nothing fakes a bold the export cannot)')
+  /** one title through titleDrawtext on a grey 640x360 frame, as gray bytes (null if ffmpeg refused it) */
+  const title = (t) => {
+    const c = cleanText(t)
+    fs.writeFileSync(T('title.txt'), c.text, 'utf8')
+    const opts = titleDrawtext(c, { W: 640, H: 360, fontFile: esc(titleFont), textFile: esc(T('title.txt')), alpha: '1' })
+    const run = ffBuf(['-f', 'lavfi', '-i', 'color=c=0x808080:s=640x360:d=1', '-vf', `drawtext=${opts},format=gray`, '-frames:v', '1', '-f', 'rawvideo', '-'])
+    return { opts, px: run.status === 0 && run.stdout.length === 640 * 360 ? run.stdout : null, err: String(run.stderr || '') }
+  }
+  const base = { text: 'A\nMUCH LONGER LINE', x: 0.5, y: 0.5, fontSize: 120, start: 0, duration: 1, color: '#ffffff' }
+  const plain = title(base)
+  ok(plain.px !== null, 'centred, shadowed title renders' + (plain.px ? '' : ': ' + plain.err.slice(-300)))
+  if (plain.px) {
+    // each line's ink, centred on the same x (the export used to left-align them)
+    const inkCentre = (rows) => { let x0 = 640, x1 = -1; for (const y of rows) for (let x = 0; x < 640; x++) if (plain.px[y * 640 + x] > 230) { x0 = Math.min(x0, x); x1 = Math.max(x1, x) } return (x0 + x1) / 2 }
+    const lit = []; for (let y = 0; y < 360; y++) { for (let x = 0; x < 640; x++) if (plain.px[y * 640 + x] > 230) { lit.push(y); break } }
+    const split = lit.findIndex((y, i) => i > 0 && y - lit[i - 1] > 3)
+    const c1 = inkCentre(lit.slice(0, split)), c2 = inkCentre(lit.slice(split))
+    ok(split > 0 && Math.abs(c1 - c2) < 3 && Math.abs(c2 - 320) < 4, `every line is centred on x (line centres ${c1}, ${c2}; frame centre 320)`)
+    let dark = 0; for (const v of plain.px) if (v < 100) dark++
+    ok(dark > 200, `bare text casts the preview's drop shadow (${dark} shadow pixels on the grey)`)
+  }
+  ok(/shadowy=\d+/.test(plain.opts) && !/shadow/.test(title({ ...base, box: true }).opts), 'a boxed title has no shadow, as in the preview')
+  const boxed = title({ ...base, text: 'BOX', box: true, boxColor: '#000000', boxOpacity: 1 })
+  ok(boxed.px !== null && /boxborderw=6\|16:/.test(boxed.opts), `the box is padded 0.15em top and bottom, 0.4em at the sides (${/boxborderw=[^:]+/.exec(boxed.opts)?.[0]})` + (boxed.px ? '' : ': ' + boxed.err.slice(-300)))
+  // the injection: a colour that smuggles a second textfile in (measured: it drew that file into the video)
+  fs.writeFileSync(T('secret.txt'), 'SECRET SECRET SECRET', 'utf8')
+  const sneaky = title({ ...base, text: 'Hi', box: true, color: `white:textfile='${esc(T('secret.txt'))}'`, boxColor: 'red:x=0', start: "0,1)':textfile=x:enable='1" })
+  const honest = title({ ...base, text: 'Hi', box: true, boxColor: '#000000' })
+  ok(!/secret/i.test(sneaky.opts) && !/x=0[:']/.test(sneaky.opts) && /enable='between\(t,0,1\)'/.test(sneaky.opts), 'colour and time fields cannot add options to the filter')
+  ok(sneaky.px && honest.px && Buffer.compare(sneaky.px, honest.px) === 0, 'the crafted colour renders exactly like a plain white title')
 
   console.log('\n-- a portrait phone proxy is not blown up --')
   ff(['-f', 'lavfi', '-i', 'testsrc=s=640x360:r=30:d=1', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', T('coded.mp4')])

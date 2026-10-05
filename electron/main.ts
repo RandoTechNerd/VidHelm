@@ -17,7 +17,8 @@ import { planVisualIndex, timecode, stackLayout } from './visual'
 import { readZip, parseHandoff, downloadList, buildProject, entriesToWrite, isCloudMediaUrl, CLOUD_ORIGINS } from './cloudimport'
 import { generateClip, videoGenAvailable, estimateUsd, VIDEO_MODELS, GenTimeout } from './videogen'
 import { bridgeTimeoutMs, QUICK_MS } from '../agent/timeouts.mjs'
-import { stillInput, clipAudioChain, clipVideoChain, logoChain, masterChain, friendlyExportError, stderrTail, UNREADABLE_STILL, TO_709 } from './exportgraph'
+import { stillInput, clipAudioChain, clipVideoChain, logoChain, titleDrawtext, masterChain, friendlyExportError, stderrTail, UNREADABLE_STILL, TO_709 } from './exportgraph'
+import { cleanText, TITLE_FONT } from './textlayout'
 import { bridgeRefusal, commandForEditor, replyAlias, replyKey, type PendingReply } from './bridgeguard'
 import { progressPct, partialPath, nextVersion, exportFileName } from './exportjob'
 import path from 'node:path'
@@ -2686,7 +2687,9 @@ const exportError = (reason: string, detail = '') => new Error(`Export failed: $
 
 ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outputPath, settings }: { clips: any[], texts: any[], brand: any, audio: any, outputPath: string, settings: any }) => {
   clips = clips || []
-  texts = texts || []
+  // Every colour and number a text carries goes into a drawtext filter as written, so each one is
+  // checked first (an unchecked colour could make the export draw any file on disk into the video).
+  texts = (Array.isArray(texts) ? texts : []).map(t => cleanText(t || {}))
   if (clips.length === 0 && texts.length === 0) throw exportError('there is nothing on the timeline to export')
   // A video container only. Besides failing late inside ffmpeg, a bridge caller could otherwise aim
   // the render at any file name it liked (a .cmd in the Startup folder, say).
@@ -2729,7 +2732,8 @@ ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outp
     const H = Math.round(settings?.height) || 1080
     const FPS = [24, 30, 60].includes(settings?.fps) ? settings.fps : 30
     const master = typeof settings?.masterVolume === 'number' ? settings.masterVolume : 1
-    const fontFile = escFilter(path.join(process.env.WINDIR || 'C:/Windows', 'Fonts', 'arial.ttf'))
+    // a title with no theme font: the bundled face the preview shows, not the system's Arial
+    const fontFile = escFilter(path.join(themeFontsDir(), TITLE_FONT.file))
     const ends = [...clips.map(c => c.start + c.duration), ...texts.map(t => t.start + t.duration)]
     const totalDuration = ends.length ? Math.max(...ends) : 1
 
@@ -2810,31 +2814,13 @@ ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outp
       assNo++
     }
 
-    // Burn in text overlays on top of the video chain
+    // Burn in text overlays on top of the video chain, drawn as the preview draws them (titleDrawtext)
     texts.forEach((t, i) => {
       if (t.caption && t.caption.spec) return   // burned above with its theme
-      const end = t.start + t.duration
-      const txtFile = path.join(tmpDir, `t_${i}_${Date.now()}.txt`)
-      fs.writeFileSync(txtFile, String(t.text ?? ''), 'utf8')
-      const color = `0x${(t.color || '#ffffff').replace('#', '')}`
-      const size = Math.max(8, Math.round((t.fontSize / 1080) * H))
+      const txtFile = path.join(tmpDir, `t_${i}.txt`)
+      fs.writeFileSync(txtFile, t.text, 'utf8')
       const themeFont = t.font && THEME_FONTS[t.font as ThemeFont] ? escFilter(path.join(themeFontsDir(), THEME_FONTS[t.font as ThemeFont].file)) : null
-      const outline = typeof t.outline === 'number' && t.outline > 0 && !t.box ? [`borderw=${Math.max(1, Math.round(size * t.outline))}`, `bordercolor=0x${String(t.outlineColor || '#000000').replace('#', '')}`] : []
-      const dt = [
-        `fontfile='${themeFont || fontFile}'`,
-        ...outline,
-        `textfile='${escFilter(txtFile)}'`,
-        // the text is the user's, literally: under the default expansion a '%' ('100% PLA', 'Save 20%')
-        // made drawtext draw NOTHING for the whole overlay (exit 0, no error), and backslashes vanished
-        `expansion=none`,
-        `fontcolor=${color}`,
-        `fontsize=${size}`,
-        `x=${Math.round(t.x * W)}-text_w/2`,
-        `y=${Math.round(t.y * H)}-text_h/2`,
-        ...(t.box ? [`box=1`, `boxcolor=${t.boxColor ? '0x' + String(t.boxColor).replace('#', '') : 'black'}@${typeof t.boxOpacity === 'number' ? t.boxOpacity : 0.5}`, `boxborderw=${Math.round(size * 0.25)}`] : [`box=0`]),
-        `enable='between(t,${t.start},${end})'`,
-        `alpha='${alphaExpr(t.start, end, t.fadeIn || 0, t.fadeOut || 0)}'`,
-      ].join(':')
+      const dt = titleDrawtext(t, { W, H, fontFile: themeFont || fontFile, textFile: escFilter(txtFile), alpha: alphaExpr(t.start, t.start + t.duration, t.fadeIn, t.fadeOut) })
       filterComplex.push(`[${currentVOut}]drawtext=${dt}[v_txt_${i}]`)
       currentVOut = `v_txt_${i}`
     })

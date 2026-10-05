@@ -11,7 +11,7 @@ import { TakesModal, takeStats, type TakeAnalysis } from './takes'
 import { groupTakes, removalRanges, removedSeconds, chunksFromWords, wordsOf } from '../electron/takes'
 import { snapToGrid, describeSnap } from '../electron/grid'
 import { fitBpm } from '../electron/score'
-import { layoutReport, presetFor, fitFontSize } from '../electron/textlayout'
+import { layoutReport, presetFor, fitFontSize, cleanText, wrapText, TITLE_FONT, BOX_PAD, WRAP_WIDTH } from '../electron/textlayout'
 import { THEMES, THEME_FONTS, CAPTION_Y as THEME_CAP_Y, chooseTheme, phrasesFromWords, captionFrame, captionCss, captionPx, fontFaceCss, type CaptionSpec, type CapWord, type ThemeFont, type CapCue } from '../electron/styletheme'
 import { planProxy, isHdr } from '../electron/playable'
 import { spanForPhrase, sentenceSpans, type Word as SpeechWord, type Span } from '../electron/speech'
@@ -1438,10 +1438,12 @@ function Editor() {
           if (ti.uppercase) t.text = t.text.toUpperCase()
         }
         if (cmd.font && THEME_FONTS[cmd.font as ThemeFont]) t.font = cmd.font
-        setTexts(prev => [...prev, t])
-        const rep = layoutReport([...texts, t], w, h)
-        const mine = rep.notes.filter(n => n.includes(`"${t.id}"`))
-        return { ok: true, textId: t.id, fontSize, start: t.start, ...(cmd.anchored ? { anchored: cmd.anchored } : {}), ...(mine.length ? { warnings: mine } : {}) }
+        // colours and numbers checked on the way in: they end up inside the export's drawtext filter
+        const added = cleanText(t)
+        setTexts(prev => [...prev, added])
+        const rep = layoutReport([...texts, added], w, h)
+        const mine = rep.notes.filter(n => n.includes(`"${added.id}"`))
+        return { ok: true, textId: added.id, fontSize: added.fontSize, start: added.start, ...(cmd.anchored ? { anchored: cmd.anchored } : {}), ...(mine.length ? { warnings: mine } : {}) }
       }
       case 'find_word': {
         if (!cmd.text) return { error: 'text required' }
@@ -1498,7 +1500,7 @@ function Editor() {
         if (!texts.find(t => t.id === cmd.textId)) return { error: `text not found: ${cmd.textId}` }
         const patch: Partial<TextClip> = {}
         for (const k of ['text', 'start', 'duration', 'x', 'y', 'fontSize', 'color', 'fadeIn', 'fadeOut', 'box', 'boxOpacity', 'boxColor', 'font', 'outline', 'outlineColor'] as const) if (cmd[k] !== undefined) (patch as any)[k] = cmd[k]
-        setTexts(prev => prev.map(t => t.id === cmd.textId ? { ...t, ...patch } : t))
+        setTexts(prev => prev.map(t => t.id === cmd.textId ? cleanText({ ...t, ...patch }) : t))
         return { ok: true }
       }
       case 'add_tag': {
@@ -2014,7 +2016,7 @@ function Editor() {
         try {
           const done = await window.ipcRenderer.exportVideo({
             clips: exportClips(1280, 720, 30, 'analysis'),
-            texts, brand: { ...settings.brand, enabled: false }, audio: settings.audio, outputPath: out,
+            texts: await exportTexts(1280, 720), brand: { ...settings.brand, enabled: false }, audio: settings.audio, outputPath: out,
             settings: { width: 1280, height: 720, fps: 30, quality: 'analysis', masterVolume },
           })
           if (done?.cancelled) { setExportProgress(null); setEta(null); return { error: 'the analysis render was cancelled in VidHelm (the Cancel button)' } }
@@ -2042,7 +2044,7 @@ function Editor() {
         setIsPlaying(false)
         const payload = {
           clips: exportClips(w, h, fps, exportQuality),
-          texts, brand: settings.brand, audio: settings.audio, outputPath: cmd.outputPath,
+          texts: await exportTexts(w, h), brand: settings.brand, audio: settings.audio, outputPath: cmd.outputPath,
           settings: { width: w, height: h, fps, quality: exportQuality, masterVolume },
         }
         // Drive the same progress state the button uses: the human watches it render, and
@@ -2211,6 +2213,26 @@ function Editor() {
       const picture = c.trackId === 'v1' || c.trackId === 'v2'
       return { ...c, path: src.path, hdr: src.hdr, hasVideo: picture && !!media?.hasVideo, hasAudio: c.trackId === 'v2' ? false : media?.hasAudio, chromaKey: media?.chromaKey }
     })
+
+  // A title wraps in the preview at 92% of the frame; drawtext has no wrapping of its own, so a title
+  // that took two lines on screen ran off both edges of the video. Each one gets the preview's line
+  // breaks, measured in its own face at the export's size. Captions are laid out by their theme.
+  const exportTexts = async (W: number, H: number): Promise<TextClip[]> => {
+    const ctx = document.createElement('canvas').getContext('2d')
+    if (!ctx) return texts
+    const out: TextClip[] = []
+    for (const t of texts) {
+      if (t.caption) { out.push(t); continue }
+      const fi = t.font ? THEME_FONTS[t.font] : undefined
+      const px = Math.max(8, Math.round(t.fontSize / 1080 * H))
+      const font = `${fi?.bold ? 700 : 400} ${px}px '${fi ? fi.family : TITLE_FONT.family}'`
+      try { await document.fonts.load(font) } catch { /* measured in the fallback face: still close */ }
+      ctx.font = font
+      const room = W * WRAP_WIDTH - (t.box ? 2 * px * BOX_PAD.x : 0)
+      out.push({ ...t, text: wrapText(t.text, room, s => ctx.measureText(s).width) })
+    }
+    return out
+  }
 
   // The exporter opens the source once per clip, and on a long cut of 4K HEVC HDR that is a lot of
   // heavy decodes plus tone maps. The preview copy is light and already SDR, but it is also smaller
@@ -2661,7 +2683,7 @@ function Editor() {
       }
       const payload = {
         clips: exportClips(w, h, fps, exportQuality),
-        texts,
+        texts: await exportTexts(w, h),
         brand: settings.brand,
         audio: settings.audio,
         outputPath: finalPath,
@@ -2793,7 +2815,8 @@ function Editor() {
     const arr = <T,>(v: unknown): T[] => Array.isArray(v) ? v as T[] : []
     const doc: DocFields = {
       mediaBin: bin ?? arr<MediaFile>(data?.mediaBin),
-      clips: arr<TimelineClip>(data?.clips), texts: arr<TextClip>(data?.texts), markers: arr<Marker>(data?.markers),
+      // texts checked like an agent's: a project file is just as able to carry a crafted colour
+      clips: arr<TimelineClip>(data?.clips), texts: arr<TextClip>(data?.texts).map(t => cleanText(t)), markers: arr<Marker>(data?.markers),
       orientation: normOrientation(data?.orientation) ?? orientation,
       resolution: normResolution(data?.resolution) ?? resolution,
       fps: normFps(data?.fps) ?? fps,
@@ -3546,8 +3569,10 @@ function Editor() {
                 <CaptionLayer key={t.id} t={t} time={currentTime} groupBase={texts.indexOf(t)} outW={w} outH={h} stageH={stageH} selected={selectedId === t.id && !isPlaying} onSelect={() => { if (!isPlaying) setSelectedId(t.id) }} />
               ) : (
                 <div key={t.id} className={`text-layer ${selectedId === t.id && !isPlaying ? 'editing' : ''} ${editingTextId === t.id ? 'typing' : ''}`}
-                  style={{ left: `${t.x * 100}%`, top: `${t.y * 100}%`, fontSize: `${t.fontSize / 1080 * stageH}px`, color: t.color, opacity: fadeFactor(t, currentTime), background: t.box ? (t.boxColor ? `${t.boxColor}${Math.round((t.boxOpacity ?? 0.5) * 255).toString(16).padStart(2, '0')}` : `rgba(0,0,0,${t.boxOpacity ?? 0.5})`) : 'transparent', padding: t.box ? '0.15em 0.4em' : 0, borderRadius: t.box ? '4px' : 0,
-                    ...(t.font && THEME_FONTS[t.font] ? { fontFamily: `'${THEME_FONTS[t.font].family}', sans-serif`, fontWeight: THEME_FONTS[t.font].bold ? 700 : 400 } : {}),
+                  style={{ left: `${t.x * 100}%`, top: `${t.y * 100}%`, fontSize: `${t.fontSize / 1080 * stageH}px`, color: t.color, opacity: fadeFactor(t, currentTime), background: t.box ? (t.boxColor ? `${t.boxColor}${Math.round((t.boxOpacity ?? 0.5) * 255).toString(16).padStart(2, '0')}` : `rgba(0,0,0,${t.boxOpacity ?? 0.5})`) : 'transparent',
+                    // the export's drawtext twins (titleDrawtext): square box padded BOX_PAD, a hard shadow under bare text only
+                    padding: t.box ? `${BOX_PAD.y}em ${BOX_PAD.x}em` : 0, textShadow: t.box ? 'none' : '0 0.04em 0 rgba(0, 0, 0, 0.6)',
+                    ...(t.font && THEME_FONTS[t.font] ? { fontFamily: `'${THEME_FONTS[t.font].family}', sans-serif`, fontWeight: THEME_FONTS[t.font].bold ? 700 : 400 } : { fontFamily: `'${TITLE_FONT.family}', sans-serif`, fontWeight: 400 }),
                     ...(t.outline && !t.box ? { WebkitTextStroke: `${(t.outline * 2 * t.fontSize / 1080 * stageH).toFixed(1)}px ${t.outlineColor || '#000'}`, paintOrder: 'stroke fill' } : {}) }}
                   ref={editingTextId === t.id ? editRef : undefined}
                   contentEditable={editingTextId === t.id}
@@ -3572,11 +3597,15 @@ function Editor() {
                   || (b.showMode === 'outro' && currentTime >= totalDuration - b.windowSec)
                 if (!inWindow) return null
                 const posStyle: React.CSSProperties = { position: 'absolute', width: `${b.sizePct}%`, opacity: b.opacity, pointerEvents: 'none' }
-                const mg = `${(b.margin / 1080) * 100 * (ORIENTATIONS[orientation].ratio >= 1 ? 1 / ORIENTATIONS[orientation].ratio : 1)}%`
-                if (b.position.includes('t')) posStyle.top = '4%'; else if (b.position.includes('b')) posStyle.bottom = '4%'
-                if (b.position.includes('l')) posStyle.left = '3%'; else if (b.position.includes('r')) posStyle.right = '3%'
+                // the export's margin: margin/1080 of the frame HEIGHT in from each edge, the same pixels
+                // on both axes (a fixed 4% / 3% matched the export on no frame shape, worst in portrait)
+                const m = (b.margin ?? 40) / 1080
+                const mY = `${m * 100}%`, mX = `${m * (h / w) * 100}%`
                 if (b.position === 'center') { posStyle.top = '50%'; posStyle.left = '50%'; posStyle.transform = 'translate(-50%,-50%)' }
-                void mg
+                else {
+                  if (b.position.includes('t')) posStyle.top = mY; else posStyle.bottom = mY
+                  if (b.position.includes('l')) posStyle.left = mX; else posStyle.right = mX
+                }
                 return <img className="brand-logo" style={posStyle} src={fileUrl(b.logoPath)} alt="logo" />
               })()}
             </div>

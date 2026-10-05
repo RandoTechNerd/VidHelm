@@ -32,6 +32,12 @@ include `LICENSE.electron.txt` and `LICENSES.chromium.html` beside the executabl
 The interface asks for [Inter](https://rsms.me/inter/) (SIL Open Font License 1.1) through Google
 Fonts and falls back to the system UI font when it is unavailable.
 
+Titles, captions and thumbnails are set in fonts that ship with the app, in the `fonts` folder, all
+under the SIL Open Font License 1.1 (the licence text is `fonts/OFL.txt`): [Inter](https://rsms.me/inter/)
+SemiBold (every title that names no theme font, in the preview and the export), Anton, Bangers, Bebas
+Neue, Fredoka, JetBrains Mono, Montserrat, Orbitron, Permanent Marker, Playfair Display, Share Tech
+Mono and Space Grotesk.
+
 ## Models
 
 Captions and script drafting run [Whisper](https://github.com/openai/whisper) (MIT) on your machine
