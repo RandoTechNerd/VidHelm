@@ -155,5 +155,49 @@ console.log('caption edits keep word timing (retimeWords)')
   ok(T.cueWords(cue).every((w, i) => w.s === kept[i].s), 'cueWords uses the kept timings (the word count matches the text)')
 }
 
+console.log('a caption typed letter by letter lands where a pasted one does (typeCaption)')
+{
+  const old = [{ s: 0.0, e: 0.3, t: 'Meet' }, { s: 0.35, e: 0.7, t: 'Crux' }, { s: 0.7, e: 1.1, t: 'Study' }, { s: 1.2, e: 1.6, t: 'SAT,' }, { s: 1.7, e: 2.2, t: 'PSAT,' }, { s: 2.25, e: 2.4, t: 'and' }, { s: 2.45, e: 2.9, t: 'ACT' }, { s: 2.95, e: 3.3, t: 'prep,' }]
+  const line = old.map(w => w.t).join(' ')
+  const sameWords = (a, b) => a.length === b.length && a.every((w, i) => w.t === b[i].t && Math.abs(w.s - b[i].s) < 1e-9 && Math.abs(w.e - b[i].e) < 1e-9)
+  // the Inspector's Content box: the caption as the document holds it, and the session in a ref
+  const box = () => {
+    let session = null
+    return {
+      cap: { id: 'c1', text: line, duration: 3.4, words: old },
+      key(text) { const r = T.typeCaption(session, this.cap, text); session = r.session; this.cap = { ...this.cap, text, words: r.words }; return this.cap.words },
+      type(target) { for (let i = 1; i <= target.length; i++) this.key(target.slice(0, i)); return this.cap.words },
+    }
+  }
+  const target = 'The quick brown fox jumps over it'
+  const pasted = T.retimeWords(old, target, 0, 3.4)
+  const typed = box().type(target)
+  ok(sameWords(typed, pasted), 'typing a rewrite letter by letter gives exactly the pasted result')
+  ok(typed[0].s === 0 && Math.abs(typed[typed.length - 1].e - 3.3) < 1e-6, 'and it is spread over the spoken stretch')
+  ok(typed.every(w => w.e - w.s > 0.2), `no word squeezed into a sliver (shortest ${Math.min(...typed.map(w => w.e - w.s)).toFixed(3)} s)`)
+  const cleared = box()
+  ok(cleared.key('').length === 0, 'an empty box has no word times')
+  ok(sameWords(cleared.type(target), pasted), 'and clearing it first, then typing, lands the same way')
+  const typo = box()
+  typo.key(line + 'x')
+  ok(sameWords(typo.key(line), old), 'a letter typed and deleted again leaves every spoken time exactly as it was')
+  // a fix made in place: delete the space in "Crux Study", then type a colon after it
+  const fix = box()
+  fix.key('Meet CruxStudy SAT, PSAT, and ACT prep,')
+  const inPlace = fix.key('Meet CruxStudy: SAT, PSAT, and ACT prep,')
+  const cs = inPlace.find(w => w.t === 'CruxStudy:'), act = inPlace.find(w => w.t === 'ACT')
+  ok(Math.abs(cs.s - 0.35) < 1e-9 && Math.abs(cs.e - 1.1) < 1e-9 && Math.abs(act.s - 2.45) < 1e-9, 'a small fix typed in place keeps the words on the voice')
+  // someone else changes the caption mid-session (an undo, an agent edit): the box starts from that
+  const other = box()
+  other.type('Meet the team')
+  other.cap = { ...other.cap, text: 'Hello there', words: [{ s: 1, e: 1.5, t: 'Hello' }, { s: 1.6, e: 2.4, t: 'there' }] }
+  const after = other.key('Hello there!')
+  ok(Math.abs(after[0].s - 1) < 1e-9 && Math.abs(after[1].e - 2.4) < 1e-9, 'a change made elsewhere starts a fresh base instead of being reverted')
+  const r = T.typeCaption({ id: 'someone-else', base: { text: 'x', duration: 1 }, wrote: old }, { id: 'c1', text: line, duration: 3.4, words: old }, line + ' now')
+  ok(r.session.id === 'c1' && r.session.base.text === line, 'a session for another caption is never applied to this one')
+  ok(T.typeCaption(null, { id: 'c1', text: line, duration: 3.4, words: old }, line).words === old, 'no change, the very same words')
+  ok(T.retimeCaptionText({ text: line, words: old, duration: 3.4 }, 'Meet Crux', 2).every(w => w.e <= 2), 'a shorter caption keeps every word inside it')
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

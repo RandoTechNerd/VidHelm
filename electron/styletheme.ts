@@ -477,6 +477,42 @@ export function retimeWords(old: CapWord[], text: string, start: number, end: nu
   })
 }
 
+/** A caption as it stood when an edit began: its text, its word times (seconds from its start)
+ *  and its length. */
+export interface CaptionEditBase { text: string; words?: CapWord[]; duration: number }
+
+/**
+ * Word times for a caption's new text, aligned against `base`: the caption as it was when the
+ * edit began, not as the previous keystroke left it. A text box sends a change per keystroke,
+ * and retiming each one against the last threw the rewrite rule away: the first letter typed is
+ * one word against the whole line, so it lands on a single old slot, and every word after it is
+ * an insertion that halves its neighbour. A typed rewrite ended up crammed into the last word's
+ * slot (nothing highlighted for most of the line, then seven words flashing past at the end),
+ * where the same text pasted in one go was spread over the speech. Against the pre-edit base the
+ * result depends only on the final text, however it arrived.
+ */
+export function retimeCaptionText(base: CaptionEditBase, text: string, duration: number): CapWord[] {
+  const old = cueWords({ start: 0, end: base.duration, text: base.text, words: base.words })
+  return retimeWords(old, text, 0, duration)
+}
+
+/** A keystroke-by-keystroke edit of one caption: where it began, and the words it last wrote. */
+export interface CaptionTyping { id: string; base: CaptionEditBase; wrote?: CapWord[] }
+
+/**
+ * One keystroke in a caption's text box: the caption's new word times, and the typing session to
+ * pass to the next keystroke. The session carries on only while the caption's words are still the
+ * very array it last wrote (an identity check, so it is cheap and cannot be fooled by equal-looking
+ * times); an undo, an agent edit or a cut in between replaces that array, and the next keystroke
+ * starts afresh from the caption as it now stands rather than reverting it to a stale base.
+ */
+export function typeCaption(session: CaptionTyping | null, cap: { id: string; text: string; duration: number; words?: CapWord[] }, text: string): { session: CaptionTyping; words: CapWord[] | undefined } {
+  const s = session && session.id === cap.id && session.wrote === cap.words ? session
+    : { id: cap.id, base: { text: cap.text, words: cap.words, duration: cap.duration } }
+  const words = text === cap.text ? cap.words : retimeCaptionText(s.base, text, cap.duration)
+  return { session: { ...s, wrote: words }, words }
+}
+
 /** Up to `max` words, broken after punctuation, never more than ~maxChars of big text. */
 export function groupWords(words: CapWord[], max = 3, maxChars = 14): CapWord[][] {
   const out: CapWord[][] = []

@@ -15,7 +15,7 @@ import { groupTakes, removalRanges, removedSeconds, chunksFromWords, wordsOf } f
 import { snapToGrid, describeSnap } from '../electron/grid'
 import { fitBpm } from '../electron/score'
 import { layoutReport, presetFor, fitFontSize } from '../electron/textlayout'
-import { THEMES, THEME_FONTS, CAPTION_Y as THEME_CAP_Y, chooseTheme, phrasesFromWords, cueWords, retimeWords, captionFrame, captionCss, captionPx, fontFaceCss, type CaptionSpec, type CapWord, type ThemeFont, type CapCue } from '../electron/styletheme'
+import { THEMES, THEME_FONTS, CAPTION_Y as THEME_CAP_Y, chooseTheme, phrasesFromWords, retimeCaptionText, typeCaption, captionFrame, captionCss, captionPx, fontFaceCss, type CaptionSpec, type CapWord, type ThemeFont, type CapCue, type CaptionTyping } from '../electron/styletheme'
 import { planProxy, isHdr } from '../electron/playable'
 import { spanForPhrase, sentenceSpans, type Word as SpeechWord, type Span } from '../electron/speech'
 import { planBroll, snapToWords, describePlan, type BrollAsset, type Placement } from '../electron/broll'
@@ -242,12 +242,14 @@ function captionClip(p: CapCue, spec: CaptionSpec, theme: string, outW: number, 
 }
 /** A text item with an edit applied. When a themed caption's words change, the words still there
  *  keep their spoken times (retimeWords); fixing "Crux Study" to "CruxStudy" or deleting an "um"
- *  used to spread every word evenly and pull the highlight off the voice. */
+ *  used to spread every word evenly and pull the highlight off the voice. This is the one-shot
+ *  path (an agent's update_text, an edit typed onto the picture); the Inspector's Content box,
+ *  which changes per keystroke, goes through typeContent instead. */
 function patchTextClip(t: TextClip, patch: Partial<TextClip>): TextClip {
   const next = { ...t, ...patch }
   if (!t.caption || patch.text === undefined || patch.text === t.text || patch.caption) return next
-  const old = cueWords({ start: 0, end: t.duration, text: t.text, words: t.caption.words })
-  return { ...next, caption: { ...t.caption, words: retimeWords(old, patch.text, 0, next.duration) } }
+  const base = { text: t.text, words: t.caption.words, duration: t.duration }
+  return { ...next, caption: { ...t.caption, words: retimeCaptionText(base, patch.text, next.duration) } }
 }
 /** A themed caption in the preview, drawn from the same per-frame description the export follows. */
 function CaptionLayer({ t, time, groupBase, outW, outH, stageH, selected, onSelect }: { t: TextClip; time: number; groupBase: number; outW: number; outH: number; stageH: number; selected: boolean; onSelect: () => void }) {
@@ -684,6 +686,8 @@ function Editor() {
   const [editingTextId, setEditingTextId] = useState<string | null>(null)
   const editRef = useRef<HTMLDivElement | null>(null)
   const editTextRef = useRef<string>('')   // what to seed the editable div with
+  // the caption the Inspector's Content box is typing into, as it stood before the typing began
+  const contentTyping = useRef<CaptionTyping | null>(null)
   const [showTakes, setShowTakes] = useState(false)
   const [takes, setTakes] = useState<TakeAnalysis | null>(null)
   const [takesBusy, setTakesBusy] = useState<string | null>(null)
@@ -3262,6 +3266,15 @@ function Editor() {
 
   const patchClip = (patch: Partial<TimelineClip>) => setClips(prev => prev.map(c => c.id === selectedId ? { ...c, ...patch } : c))
   const patchText = (patch: Partial<TextClip>) => setTexts(prev => prev.map(t => t.id === selectedId ? patchTextClip(t, patch) : t))
+  /** The Content box, one change per keystroke. A themed caption is retimed against its words as
+   *  they were before the typing began, never against the last keystroke's result, or a typed
+   *  rewrite piles up in the last word's slot (typeCaption, retimeCaptionText). */
+  const typeContent = (t: TextClip, text: string) => {
+    if (!t.caption) { setTexts(prev => prev.map(x => x.id === t.id ? { ...x, text } : x)); return }
+    const r = typeCaption(contentTyping.current, { id: t.id, text: t.text, duration: t.duration, words: t.caption.words }, text)
+    contentTyping.current = r.session
+    setTexts(prev => prev.map(x => x.id !== t.id ? x : { ...x, text, ...(x.caption ? { caption: { ...x.caption, words: r.words } } : {}) }))
+  }
 
   /** One place that knows how to bring up each panel: Help, the tour and the help chat all use it. */
   const openPanel = (p: HelpPanel | HelpAction) => {
@@ -3593,7 +3606,7 @@ function Editor() {
               {rightTab === 'inspect' && selText && (
                 <div className="panel-section">
                   <h3 className="group-title">Text</h3>
-                  <div className="field"><label>Content</label><textarea className="duration-input" rows={2} value={selText.text} onChange={e => patchText({ text: e.target.value })} /></div>
+                  <div className="field"><label>Content</label><textarea className="duration-input" rows={2} value={selText.text} onChange={e => typeContent(selText, e.target.value)} /></div>
                   <div className="field row">
                     <div><label>Size</label><input type="number" min="8" step="2" className="duration-input" value={selText.fontSize} onChange={e => patchText({ fontSize: parseFloat(e.target.value) || 12 })} /></div>
                     <div><label>Color</label><input type="color" className="color-input" value={selText.color} onChange={e => patchText({ color: e.target.value })} /></div>
