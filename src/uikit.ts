@@ -25,11 +25,41 @@ export const savedKeyLabel = (name: string, key: string | null | undefined): str
   return tail ? `${name} saved, ends in ${tail}` : `${name} saved`
 }
 
-/** Is this drag carrying files from Explorer? A clip dragged out of the Media Bin carries only
- *  VidHelm's own type, and text or a link dragged from a page carries neither: the window-wide
- *  drop target lights up for real files only. */
-export const dragHasFiles = (types: ArrayLike<string> | null | undefined): boolean =>
-  Array.from(types ?? []).includes('Files')
+/** The drag payload of an item pulled out of the Media Bin onto the timeline: its bin id. */
+export const MEDIA_DRAG = 'application/x-vidhelm-media'
+
+/** Is this drag carrying files from Explorer? Text or a link dragged from a page carries none: the
+ *  window-wide drop target lights up for real files only. VidHelm's own type outranks 'Files',
+ *  because a picture dragged inside the window lists both (Chromium hands the image over as a
+ *  file), and that is a clip on its way to the timeline, not footage to import. */
+export const dragHasFiles = (types: ArrayLike<string> | null | undefined): boolean => {
+  const t = Array.from(types ?? [])
+  return t.includes('Files') && !t.includes(MEDIA_DRAG)
+}
+
+// Input types Chromium types into, and so drops text into. Number is left out: it refuses most
+// of what anyone would drag at it.
+const TEXT_INPUTS = new Set(['text', 'search', 'url', 'email', 'tel', 'password'])
+
+/** Does this element take typing, and so take dropped text? Shaped like a DOM element but read
+ *  field by field, so it runs without one. */
+export const isTextEntry = (el: { tagName?: string; type?: string; readOnly?: boolean; disabled?: boolean; isContentEditable?: boolean } | null | undefined): boolean => {
+  if (!el) return false
+  if (el.isContentEditable) return true
+  const tag = (el.tagName ?? '').toUpperCase()
+  const typed = tag === 'TEXTAREA' || (tag === 'INPUT' && TEXT_INPUTS.has((el.type || 'text').toLowerCase()))
+  return typed && !el.readOnly && !el.disabled
+}
+
+/** What a drop that no panel claimed should do. Files are imported. Text dropped on a field is
+ *  left to the field: cancelling the drop also cancels Chromium inserting it, which broke dragging
+ *  a line into the booth script or a prompt. Anything else is swallowed, since an uncancelled drop
+ *  of a link navigates the whole window away from the edit. */
+export type DropIntent = 'import' | 'field' | 'swallow'
+export const dropIntent = (types: ArrayLike<string> | null | undefined, onTextEntry: boolean): DropIntent =>
+  Array.from(types ?? []).includes(MEDIA_DRAG) ? 'swallow' // a bin item has nothing to type
+    : dragHasFiles(types) ? 'import'
+    : onTextEntry ? 'field' : 'swallow'
 
 /** The clip a first import starts the timeline with: the first video, in the order the files
  *  came. Stills, sound and 3D wait in the bin; a lone song is not the start of an edit. */

@@ -8,7 +8,7 @@ import { Tour, tourSeen } from './tour'
 import { HelpChat } from './helpchat'
 import { SecretField } from './controls'
 import { StageEmpty, MediaEmpty, DropOverlay } from './welcome'
-import { rangeFill, dragHasFiles, firstVideoOf, recentProjects, formatLine } from './uikit'
+import { rangeFill, dragHasFiles, dropIntent, isTextEntry, MEDIA_DRAG, firstVideoOf, recentProjects, formatLine } from './uikit'
 import type { HelpAction } from '../electron/helpdesk'
 import { SfxPanel, MarkerPanel, KaraokeBooth, NarrationModal, RecipeSection, ThumbnailModal, ConnectModal, DEFAULT_RECIPE, recipeActive, newMarker, saveTake, type Marker, type SfxItem, type RecipeSettings } from './extras'
 import { Model3DModal, KEY_GREEN, KEY_MAGENTA, type Model3DApi } from './model3d'
@@ -298,8 +298,6 @@ const frameDims = (o: OrientationKey, r: ResolutionKey): [number, number] => ORI
 // render) dropped UNDER the next cut in the render while the preview showed it on top.
 const TRACK_LAYER: Record<string, number> = { v1: 0, v2: 1, a1: 2, a2: 3 }
 const layerOrder = <T extends { trackId: string }>(list: T[]): T[] => [...list].sort((a, b) => TRACK_LAYER[a.trackId] - TRACK_LAYER[b.trackId])
-// drag payload for an item pulled out of the Media panel onto the timeline
-const MEDIA_DRAG = 'application/x-vidhelm-media'
 
 // Inline volume-automation editor: draggable line of gain points over a clip's duration.
 function VolumeGraph({ points, duration, base, onChange }: { points: { t: number; v: number }[]; duration: number; base: number; onChange: (pts: { t: number; v: number }[]) => void }) {
@@ -3358,12 +3356,14 @@ function Editor() {
       onDragEnter={e => { if (dragHasFiles(e.dataTransfer.types)) { dragDepth.current++; setDragFiles(true) } }}
       onDragLeave={e => { if (dragHasFiles(e.dataTransfer.types) && --dragDepth.current <= 0) { dragDepth.current = 0; setDragFiles(false) } }}
       // The Media Bin, the timeline and the 3D Studio take their own drops (and preventDefault);
-      // anything dropped anywhere else is imported rather than opened in place of the editor.
+      // files dropped anywhere else are imported rather than opened in place of the editor, and
+      // text dropped on a field is let through so it lands there (see dropIntent).
       onDrop={e => {
         if (e.defaultPrevented) return
+        const intent = dropIntent(e.dataTransfer.types, isTextEntry(e.target as HTMLElement))
+        if (intent === 'field') return
         e.preventDefault()
-        const files = Array.from(e.dataTransfer.files)
-        if (files.length) void importAndStart(files)
+        if (intent === 'import') void importAndStart(Array.from(e.dataTransfer.files))
       }}>
       <ChromaKeyFilters />
       {(window as unknown as { __vhWeb?: boolean }).__vhWeb && (
@@ -3469,7 +3469,7 @@ function Editor() {
                   onClick={() => currentProject && window.ipcRenderer.revealFolder(currentProject.dir)}><IcFolder /></button>
               </div>
             )}
-            {sidebarTab === 'media' && <div className="media-list" onDrop={async (e) => { e.preventDefault(); await importAndStart(Array.from(e.dataTransfer.files)) }} onDragOver={(e) => e.preventDefault()}>
+            {sidebarTab === 'media' && <div className="media-list" onDrop={e => { e.preventDefault(); if (dragHasFiles(e.dataTransfer.types)) void importAndStart(Array.from(e.dataTransfer.files)) }} onDragOver={(e) => e.preventDefault()}>
               {mediaBin.length === 0 && <MediaEmpty onImport={() => importInputRef.current?.click()}>
                 <InfoNote label="What can I add?">
                   Double-click an item, or drop files straight onto the timeline, to use it.<br /><br />

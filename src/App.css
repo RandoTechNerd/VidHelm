@@ -129,6 +129,11 @@ body, html, #root {
   -webkit-font-smoothing: antialiased;
 }
 button, input, select, textarea { font-family: inherit; }
+/* No picture in the editor is a drag source of its own. Chromium drags an <img> in preference to
+   the draggable Media Bin row around it and hands the picture over as a file, so a still pulled
+   toward the timeline lit up the Explorer drop overlay, and dropped off a track row it was
+   imported again and refused as unreadable. The row is the drag source; the stage is not one. */
+img { -webkit-user-drag: none; }
 :focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
 
 /* Windows' "Show animations" off (and the OS equivalents) means no slides, pops or pulses. State
