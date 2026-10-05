@@ -1338,3 +1338,9 @@ textarea.duration-input { height: auto; padding: 7px 9px; resize: vertical; line
 .clip.has-wave { align-items: flex-start; }
 .clip.has-wave .clip-label { margin-top: 3px; }
 .clip.has-wave.has-thumb .clip-label { margin-top: 2px; padding: 1px 6px; }
+
+/* The playhead moves by transform (W1-20): no layout on every playback frame */
+.scrubber { left: 0; will-change: transform; }
+/* the toolbar clock switches between tenths and frames on a click */
+.timecode[role="button"] { cursor: pointer; border-radius: var(--radius-sm); padding: 2px 4px; margin-left: 6px; }
+.timecode[role="button"]:hover { background: rgb(var(--ink) / 0.07); }

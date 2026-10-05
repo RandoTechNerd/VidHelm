@@ -151,5 +151,25 @@ console.log('titles and captions')
   ok(near(title.start, 1) && near(title.duration, 4) && title.limit === null, 'a title trims out to the left freely')
 }
 
+console.log('playhead follow and frame steps')
+ok(T.followScroll(500, 0, 1000) === null, 'in view: leave the view alone')
+ok(T.followScroll(950, 0, 1000) === 886, `near the right edge: page so it sits 64 px in (${T.followScroll(950, 0, 1000)})`)
+ok(T.followScroll(100, 2000, 1000) === 36, 'behind the left edge (a jump back): bring it into view')
+ok(T.followScroll(30, 200, 1000) === 0, 'never scrolls before 0')
+ok(T.followScroll(500, 0, 100) === null, 'a view too small to page in is left alone')
+ok(near(T.frameStep(24), 1 / 24) && near(T.frameStep(0), 1 / 30), 'a frame at the project rate (30 when unknown)')
+ok(near(T.stepFrames(1, 1, 30), 31 / 30) && near(T.stepFrames(1, -1, 30), 29 / 30), 'one frame either way from a frame line')
+ok(near(T.stepFrames(1.01, 1, 30), 31 / 30) && near(T.stepFrames(1.01, -1, 30), 1), 'from between frames, the first step lands on the next frame line')
+ok(near(T.stepFrames(30 / 30, 1, 24), 25 / 24), 'steps follow the project rate (24 fps)')
+ok(T.stepFrames(0, -1, 30) === 0 && near(T.stepFrames(9.99, 5, 30, 10), 10), 'clamped to the timeline')
+{
+  let t = 0
+  for (let i = 0; i < 90; i++) t = T.stepFrames(t, 1, 30)
+  ok(near(t, 3, 1e-9) && T.timecode(t, 'frames', 30) === '0:03:00', `90 steps at 30 fps is exactly 3 s (${t}, ${T.timecode(t, 'frames', 30)})`)
+  let u = 3
+  for (let i = 0; i < 7; i++) u = T.stepFrames(u, -1, 60)
+  ok(T.timecode(u, 'frames', 60) === '0:02:53', `stepping back at 60 fps reads frame by frame (${T.timecode(u, 'frames', 60)})`)
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

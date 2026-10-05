@@ -236,3 +236,31 @@ export function offSpeechNote(start: number, heardAt: number | null | undefined,
   const d = Math.abs(start - heardAt)
   return d >= tolerance ? `off speech by ${d < 10 ? d.toFixed(1) : Math.round(d)} s` : ''
 }
+
+// ---- playback: following the playhead, stepping by frames ----
+
+/**
+ * Where to scroll so a playing playhead stays in view, or null to leave the view alone. When it
+ * nears the right edge (or is behind the left one, after a jump) the view pages so the playhead
+ * sits `margin` px in from the left, rather than creeping a pixel a frame.
+ */
+export function followScroll(x: number, scrollLeft: number, viewW: number, margin = 64): number | null {
+  if (!(viewW > margin * 2)) return null
+  if (x > scrollLeft + viewW - margin || x < scrollLeft) return Math.max(0, x - margin)
+  return null
+}
+
+/** One frame at the project rate, in seconds (the arrow-key step). */
+export const frameStep = (fps: number): number => 1 / (fps > 0 ? fps : 30)
+
+/**
+ * The playhead moved n frames, on the project's frame grid. From a time between two frames (a
+ * click, a scrub) the first step lands on the next frame line in that direction, so stepping
+ * always shows real frame boundaries; 1/30 s steps at 24 or 60 fps never did.
+ */
+export function stepFrames(t: number, n: number, fps: number, max = Infinity): number {
+  const rate = fps > 0 ? fps : 30
+  const f = (Number.isFinite(t) ? t : 0) * rate
+  const base = n > 0 ? Math.floor(f + 1e-6) : n < 0 ? Math.ceil(f - 1e-6) : Math.round(f)
+  return Math.max(0, Math.min(max, (base + n) / rate))
+}

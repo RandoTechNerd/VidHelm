@@ -18,7 +18,7 @@ import { spanForPhrase, sentenceSpans, type Word as SpeechWord, type Span } from
 import { planBroll, snapToWords, describePlan, type BrollAsset, type Placement } from '../electron/broll'
 import { looksLikeThumbPhoto } from '../electron/thumbpick'
 import { resolveProfile, describeProfile, type PerfProfile, type Tier, type TierPreference } from '../electron/capability'
-import { tickStepFor, contentWidth, collectSnapTargets, nearestTarget, snapMove, trimTo, clampToSource, maxDurationFrom, moveReadout, trimReadout, stripTiles, stripFits, shiftWords, offSpeechNote } from '../electron/timeline'
+import { tickStepFor, contentWidth, collectSnapTargets, nearestTarget, snapMove, trimTo, clampToSource, maxDurationFrom, moveReadout, trimReadout, stripTiles, stripFits, shiftWords, offSpeechNote, timecode, followScroll, stepFrames, type TimecodeMode } from '../electron/timeline'
 import { TimeRuler } from './ruler'
 import { ClipWave, type Peaks } from './clipwave'
 
@@ -393,7 +393,8 @@ const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v
 const fileUrl = (p?: string | null) => p
   ? 'file:///' + p.replace(/\\/g, '/').split('/').map((seg, i) => i === 0 ? seg : encodeURIComponent(seg)).join('/')
   : ''
-const fmt = (s: number) => `${Math.floor(s / 60)}:${Math.floor(s % 60).toString().padStart(2, '0')}.${Math.floor((s % 1) * 10)}`
+// m:ss.t, counted in whole tenths (electron/timeline.ts): (2.3 % 1) * 10 floors to 2 in floating point
+const fmt = (s: number) => timecode(s, 'tenths')
 const fmtEta = (s: number) => s >= 60 ? `${Math.floor(s / 60)}:${Math.floor(s % 60).toString().padStart(2, '0')}` : `${Math.ceil(s)}s`
 
 /** One bin entry from an ffprobe result. Every way media comes in goes through here, so none of
@@ -776,6 +777,14 @@ function Editor() {
 
   const timelineRef = useRef<HTMLDivElement>(null)
   const [tlView, setTlView] = useState({ w: 1200, h: 300 })
+  // The playhead clock in tenths (m:ss.t) or frames (m:ss:ff); a click on it switches, and the
+  // choice is this machine's, like the UI theme
+  const [tcMode, setTcMode] = useState<TimecodeMode>(() => { try { return localStorage.getItem('vh-timecode') === 'frames' ? 'frames' : 'tenths' } catch { return 'tenths' } })
+  useEffect(() => { try { localStorage.setItem('vh-timecode', tcMode) } catch { /* private storage */ } }, [tcMode])
+  // When the user last scrolled the timeline themselves, and where the follow last put it (so its
+  // own scroll is not mistaken for theirs)
+  const userScrollAt = useRef(0)
+  const autoScrollTo = useRef<number | null>(null)
   const stageRef = useRef<HTMLDivElement>(null)
   const [stageH, setStageH] = useState(400)
   const videoEls = useRef<Map<string, HTMLVideoElement>>(new Map())
@@ -872,8 +881,29 @@ function Editor() {
     if (!el) return
     const ro = new ResizeObserver(() => setTlView(v => (v.w === el.clientWidth && v.h === el.clientHeight ? v : { w: el.clientWidth, h: el.clientHeight })))
     ro.observe(el)
-    return () => ro.disconnect()
+    // a wheel, or a scroll that is not the follow's own, hands the view to the user for a moment
+    const onWheel = () => { userScrollAt.current = performance.now() }
+    const onScroll = () => {
+      if (autoScrollTo.current !== null && Math.abs(el.scrollLeft - autoScrollTo.current) <= 1) { autoScrollTo.current = null; return }
+      userScrollAt.current = performance.now()
+    }
+    el.addEventListener('wheel', onWheel, { passive: true })
+    el.addEventListener('scroll', onScroll, { passive: true })
+    return () => { ro.disconnect(); el.removeEventListener('wheel', onWheel); el.removeEventListener('scroll', onScroll) }
   }, [])
+
+  // The playhead stays on screen while it plays: at any zoom but Fit it used to run off the right
+  // edge seconds after Space. The view pages along, and holds off for 1.5 s after the user scrolls
+  // so it never fights them.
+  useEffect(() => {
+    if (!isPlaying) return
+    const el = timelineRef.current
+    if (!el || performance.now() - userScrollAt.current < 1500) return
+    const next = followScroll(currentTime * pxPerSec, el.scrollLeft, el.clientWidth)
+    if (next === null) return
+    el.scrollLeft = next
+    autoScrollTo.current = el.scrollLeft   // read back: the browser clamps past the end
+  }, [currentTime, isPlaying, pxPerSec])
 
   // Playback clock
   useEffect(() => {
@@ -996,14 +1026,15 @@ function Editor() {
       if (e.code === 'Space') { e.preventDefault(); if (totalDuration > 0) setIsPlaying(p => !p) }
       else if (e.key === 'Delete' || e.key === 'Backspace') { if (selectedId) { e.preventDefault(); deleteSelected() } }
       else if (e.key.toLowerCase() === 's') { if (selClip) { e.preventDefault(); splitAtPlayhead() } }
-      else if (e.key === 'ArrowLeft') { e.preventDefault(); setCurrentTime(t => Math.max(0, t - (e.shiftKey ? 1 : 1 / 30))) }
-      else if (e.key === 'ArrowRight') { e.preventDefault(); setCurrentTime(t => Math.min(totalDuration, t + (e.shiftKey ? 1 : 1 / 30))) }
+      // one frame at the project rate, on the frame grid (Shift: a second)
+      else if (e.key === 'ArrowLeft') { e.preventDefault(); setCurrentTime(t => e.shiftKey ? Math.max(0, t - 1) : stepFrames(t, -1, fps, totalDuration)) }
+      else if (e.key === 'ArrowRight') { e.preventDefault(); setCurrentTime(t => e.shiftKey ? Math.min(totalDuration, t + 1) : stepFrames(t, 1, fps, totalDuration)) }
       else if (e.key === 'Home') { e.preventDefault(); setCurrentTime(0) }
       else if (e.key.toLowerCase() === 'm') { e.preventDefault(); setMarkers(m => [...m, newMarker(currentTime)]) }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [totalDuration, selectedId, selClip, currentTime])
+  }, [totalDuration, selectedId, selClip, currentTime, fps])
 
   // Load persistent settings (brand kit, intro defaults, audio) once
   useEffect(() => {
@@ -1228,7 +1259,9 @@ function Editor() {
       setTexts(prev => prev.map(t => ({ ...t, start: t.start + dur })))
       setMarkers(prev => prev.map(m => ({ ...m, t: m.t + dur })))   // tags stay on their beats
     } else {
-      setClips(prev => [intro, ...prev])
+      // Later in the list draws on top within a track, in the preview and the export alike
+      // (layerOrder), so an overlay intro goes last: first, it sat UNDER the clip it was meant to cover.
+      setClips(prev => [...prev, intro])
     }
     setSelectedId(intro.id)
     setCurrentTime(0)
@@ -2261,7 +2294,9 @@ function Editor() {
     .map(c => {
       const media = mediaBin.find(m => m.id === c.mediaId)
       const src = exportSource(media, W, H, FPS, quality)
-      return { ...c, path: src.path, hdr: src.hdr, hasVideo: media?.hasVideo, hasAudio: c.trackId === 'v2' ? false : media?.hasAudio, chromaKey: media?.chromaKey }
+      // Only the picture rows draw a picture: a video file on a sound row plays as sound in the
+      // preview, and used to cover the frame in the export alone
+      return { ...c, path: src.path, hdr: src.hdr, hasVideo: (c.trackId === 'v1' || c.trackId === 'v2') && !!media?.hasVideo, hasAudio: c.trackId === 'v2' ? false : media?.hasAudio, chromaKey: media?.chromaKey }
     })
 
   // The exporter opens the source once per clip, and on a long cut of 4K HEVC HDR that is a lot of
@@ -3455,6 +3490,10 @@ function Editor() {
   // The ruler (src/ruler.tsx) picks a tick spacing that leaves room for its labels; the lanes span
   // the same width it does, so backgrounds, drops and the scrub area reach past the last clip.
   const tlWidth = contentWidth(totalDuration, pxPerSec, tlView.w, tickStepFor(pxPerSec))
+  // Whether the Takes panel may re-apply: the whole timeline serialised and compared. It ran on every
+  // render, which is every frame while playing; now only when the document or the scan changes
+  // (takeSnap is only ever set together with one of those).
+  const canReapply = useMemo(() => !!takeSnap.current && takeSnap.current.after === stateKey(), [clips, texts, markers, takes])   // eslint-disable-line react-hooks/exhaustive-deps
 
   const renderClip = (c: TimelineClip) => {
     const media = mediaBin.find(m => m.id === c.mediaId)
@@ -3795,7 +3834,9 @@ function Editor() {
                 which also keeps the dropdown clear of the scroll container's clipping. */}
             <div className="tool-group">
             <button className="tool-btn play" onClick={() => setIsPlaying(p => !p)} disabled={totalDuration <= 0}>{isPlaying ? <IconPause /> : <IconPlay />} {isPlaying ? 'Pause' : 'Play'}</button>
-            <span className="timecode" title="Playhead / total length"><b>{fmt(currentTime)}</b><i>/</i>{fmt(totalDuration)}</span>
+            <span className="timecode" role="button" tabIndex={0} title={`Playhead / total length. Click to show ${tcMode === 'frames' ? 'tenths of a second' : 'frames'}`}
+              onClick={() => setTcMode(m => (m === 'frames' ? 'tenths' : 'frames'))} onKeyDown={e => { if (e.key === 'Enter') setTcMode(m => (m === 'frames' ? 'tenths' : 'frames')) }}>
+              <b>{timecode(currentTime, tcMode, fps)}</b><i>/</i>{timecode(totalDuration, tcMode, fps)}</span>
             <div className="divider" />
             <button className="tool-btn compactable" onClick={undo} disabled={!canUndo} title="Undo (Ctrl+Z)"><IconUndo /> <span className="tb-label">Undo</span></button>
             <button className="tool-btn compactable" onClick={redo} disabled={!canRedo} title="Redo (Ctrl+Shift+Z)"><IconRedo /> <span className="tb-label">Redo</span></button>
@@ -3843,7 +3884,7 @@ function Editor() {
                 requestAnimationFrame(() => { el.scrollLeft = Math.max(0, tAtCursor * next - (e.clientX - el.getBoundingClientRect().left)) })
               }}>
               <div className="tl-content" style={{ width: tlWidth }}>
-              <TimeRuler pxPerSec={pxPerSec} widthPx={tlWidth} viewW={tlView.w} viewH={tlView.h} fps={fps} mode="tenths" scroller={timelineRef} handlers={rulerHandlers} />
+              <TimeRuler pxPerSec={pxPerSec} widthPx={tlWidth} viewW={tlView.w} viewH={tlView.h} fps={fps} mode={tcMode} scroller={timelineRef} handlers={rulerHandlers} />
               {markers.map(m => (
                 <div key={m.id} className="marker-flag" style={{ left: m.t * pxPerSec, background: m.color }} title={m.label || 'tag point'}
                   onClick={e => { e.stopPropagation(); setCurrentTime(m.t) }}
@@ -3858,7 +3899,7 @@ function Editor() {
                   {m.label && <span className="marker-flag-label">{m.label}</span>}
                 </div>
               ))}
-              <div className="scrubber" style={{ left: currentTime * pxPerSec }}>
+              <div className="scrubber" style={{ transform: `translateX(${currentTime * pxPerSec}px)` }}>
                 <div className="scrubber-grab" title="Drag to scrub" {...scrubHandlers} />
               </div>
               {drag?.snap != null && <div className="snap-line" style={{ left: drag.snap * pxPerSec }} />}
@@ -3955,7 +3996,7 @@ function Editor() {
         photos={thumbPhotos()} theme={thumbTheme()} themeName={chooseTheme(thumbTheme()).theme.name} />
 
       <TakesModal open={showTakes} onClose={() => setShowTakes(false)} analysis={takes} busy={takesBusy}
-        canReapply={!!takeSnap.current && takeSnap.current.after === stateKey()}
+        canReapply={canReapply}
         onScan={async () => { const r = await scanTakes(); if (r.error) notify(r.error); else notify(r.groups ? `Found ${r.groups} repeated spot${r.groups === 1 ? '' : 's'} across ${r.lines} lines. Pick the takes you want, then cut.` : `No repeated takes in ${r.lines} lines. You can still strike out any line by hand.`) }}
         onApply={() => { const r = applyTakes(); if (r.error) notify(r.error); else notify(`Cut ${r.cuts} spot${r.cuts === 1 ? '' : 's'} (~${r.seconds}s). Undo with Ctrl+Z, or change a take in Takes & history.`) }}
         onSetKeep={setTakeKeep} onToggleDrop={toggleTakeDrop} onSeek={t => setCurrentTime(t)} />
