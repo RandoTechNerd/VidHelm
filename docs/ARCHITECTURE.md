@@ -43,7 +43,7 @@ One FFmpeg process, one filtergraph:
 6. Mastering: optional FFT denoise → master gain → `acompressor` + `loudnorm` (YouTube target) or a plain safety limiter.
 7. x264 High profile, closed 2 s GOP, BT.709 tags, `+faststart`.
 
-Progress streams to the renderer; a **quality check** pass (`quality-check`) then measures loudness/true peak, scans for black frames, and samples stills.
+The render is written to `<name>.partial.mp4` beside the target and renamed over it only once it succeeds (a failed or cancelled export never touches the last good file; a target held open by a player gets the next `_vN` name instead). Progress is ffmpeg's own time mark against the timeline length, streamed to the renderer and the taskbar; the Export button cancels while a render runs. Those decisions live in `electron/exportjob.ts`. Afterwards a **quality check** pass (`quality-check`) measures loudness/true peak, scans for black frames, and samples stills.
 
 ## The new subsystems (v1.0)
 

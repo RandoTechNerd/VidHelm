@@ -26,8 +26,13 @@ interface Window {
     renderMixAudio: (data: { clips: any[] }) => Promise<{ path?: string; error?: string }>
     detectSilence: (data: { filePath: string; thresholdDb: number; minPause: number }) => Promise<{ intervals?: { start: number; end: number }[]; error?: string }>
     detectFreeze: (data: { filePath: string; sourceStart: number; duration: number; freezeDb: number; minDur: number }) => Promise<{ intervals?: { start: number; end: number }[]; error?: string }>
-    /** rejects with an Error whose message is "Export failed: <reason>" plus the end of ffmpeg's log on following lines */
-    exportVideo: (data: { clips: any[], texts: any[], brand: any, audio: any, outputPath: string, settings: any }) => Promise<{ success: boolean; warnings?: string[] }>
+    /** rejects with an Error whose message is "Export failed: <reason>" plus the end of ffmpeg's log on following lines;
+     *  resolves { cancelled: true } when the user cancelled it, and `path` is where the file really landed */
+    exportVideo: (data: { clips: any[], texts: any[], brand: any, audio: any, outputPath: string, settings: any }) => Promise<{ success?: boolean; cancelled?: boolean; path?: string; warnings?: string[] }>
+    /** stops every export in flight; each one resolves { cancelled: true } and leaves no file behind */
+    cancelExport: () => Promise<{ cancelled: number }>
+    /** where an export will be written (the picked file, or the project's exports folder) and whether that replaces a file */
+    exportTarget: (data: { projectDir?: string | null; name?: string | null; orientation: string; custom?: string | null; create?: boolean }) => Promise<{ path?: string; exists?: boolean; nextVersion?: string | null; error?: string }>
     sfxLibrary: () => Promise<{ dir: string; items: { name: string; path: string; duration: number; builtin: boolean }[] }>
     pickAudio: () => Promise<string | null>
     openExternal: (url: string) => Promise<void>

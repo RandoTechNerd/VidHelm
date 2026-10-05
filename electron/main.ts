@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, shell, screen, nativeTheme } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog, shell, screen, nativeTheme, Notification } from 'electron'
 import { restoreDragOffset, plainDragOffset, shouldSnapMaximize } from './dragMath'
 import { findModelInHtml } from './modelSniff'
 import { buildAss, chooseTheme, THEME_FONTS, type ThemeFont } from './styletheme'
@@ -19,6 +19,7 @@ import { generateClip, videoGenAvailable, estimateUsd, VIDEO_MODELS, GenTimeout 
 import { bridgeTimeoutMs, QUICK_MS } from '../agent/timeouts.mjs'
 import { stillInput, clipAudioChain, clipVideoChain, logoChain, masterChain, friendlyExportError, stderrTail, UNREADABLE_STILL, TO_709 } from './exportgraph'
 import { bridgeRefusal, commandForEditor, replyAlias, replyKey, type PendingReply } from './bridgeguard'
+import { progressPct, partialPath, nextVersion, exportFileName } from './exportjob'
 import path from 'node:path'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -1612,6 +1613,20 @@ ipcMain.handle('import-cloud-zip', async (_event, { root, zipPath }: { root: str
   } catch (e) { return { error: String(e) } }
 })
 
+// Where an export lands when nobody picked a file: <project>/exports while a project folder is open
+// (scan-project only reads the folder itself and voice/, so exports never come back as media), else
+// Videos/VidHelm. One fixed folder used to mean one fixed file, and every export, from any project,
+// replaced the last. `exists` drives the panel's "Will replace" note, `nextVersion` its way out.
+ipcMain.handle('export-target', async (_event, { projectDir, name, orientation, custom, create }: { projectDir?: string | null; name?: string | null; orientation: string; custom?: string | null; create?: boolean }) => {
+  try {
+    const dir = projectDir && fs.existsSync(projectDir) ? path.join(projectDir, 'exports') : path.join(app.getPath('videos'), 'VidHelm')
+    const target = custom || path.join(dir, exportFileName(name, orientation))
+    if (create && !custom) fs.mkdirSync(dir, { recursive: true })
+    const exists = fs.existsSync(target)
+    return { path: target, exists, nextVersion: exists ? nextVersion(target, p => fs.existsSync(p)) : null }
+  } catch (e) { return { error: String(e) } }
+})
+
 // Where flattened renders for video-analysis services go. Kept out of the project folder so
 // they do not get picked up as project media on the next scan.
 ipcMain.handle('analysis-path', async (_event, name: string) => {
@@ -2642,8 +2657,15 @@ ipcMain.handle('voice-clone', async (_event, { command, scriptText, pronounce }:
 })
 
 // Exports in flight, by output file: two renders writing one file produce garbage (an agent retrying
-// after a timeout while the first export still runs is exactly how that happens).
-const exportsRunning = new Set<string>()
+// after a timeout while the first export still runs is exactly how that happens). Each one can be
+// cancelled from the Export button, which kills ffmpeg outright: a render has nothing worth saving.
+const exportsRunning = new Map<string, { cancelled: boolean; kill?: () => void }>()
+
+ipcMain.handle('cancel-export', async () => {
+  let n = 0
+  for (const job of exportsRunning.values()) { job.cancelled = true; try { job.kill?.() } catch { /* already gone */ } n++ }
+  return { cancelled: n }
+})
 
 /** Channels in the first audio stream of each file (absent when it cannot be read), a few probes at a
  *  time. Asked of the exact file being rendered, which may be the preview copy, not the original. */
@@ -2663,7 +2685,6 @@ async function audioChannelsOf(files: string[]): Promise<Map<string, number>> {
 const exportError = (reason: string, detail = '') => new Error(`Export failed: ${reason}${detail ? `\n${detail}` : ''}`)
 
 ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outputPath, settings }: { clips: any[], texts: any[], brand: any, audio: any, outputPath: string, settings: any }) => {
-  let cleanupGraph = ''   // the filtergraph is written to a file, see below
   clips = clips || []
   texts = texts || []
   if (clips.length === 0 && texts.length === 0) throw exportError('there is nothing on the timeline to export')
@@ -2695,8 +2716,13 @@ ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outp
   }
   // again: the probe above yields, and a retry of the same export can arrive meanwhile
   if (exportsRunning.has(outKey)) throw exportError('an export to that file is already running')
-  exportsRunning.add(outKey)
+  const job: { cancelled: boolean; kill?: () => void } = { cancelled: false }
+  exportsRunning.set(outKey, job)
+  // Text files, caption scripts and the graph for this export only, removed when it ends either way
+  // (they used to pile up in one shared temp folder).
+  let workDir = ''
   return new Promise((resolve, reject) => {
+    workDir = fs.mkdtempSync(path.join(app.getPath('temp'), 'vidhelm-export-'))
     audio = audio || { optimize: settings?.normalizeAudio !== false, noiseReduction: false }
 
     const W = Math.round(settings?.width) || 1920
@@ -2707,11 +2733,10 @@ ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outp
     const ends = [...clips.map(c => c.start + c.duration), ...texts.map(t => t.start + t.duration)]
     const totalDuration = ends.length ? Math.max(...ends) : 1
 
-    const tmpDir = path.join(app.getPath('temp'), 'vidhelm_text')
-    if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true })
-
-    // what was at the output path before this run, so a failure only removes a file THIS run wrote
-    const before = (() => { try { const st = fs.statSync(outputPath); return `${st.mtimeMs}|${st.size}` } catch { return null } })()
+    const tmpDir = workDir
+    // Rendered beside the target and renamed over it only once it has succeeded, so a failed or
+    // cancelled export never touches the last good file (no moov-less half file left in its place).
+    const partial = partialPath(outputPath)
     let command = ffmpeg()
     // 0: black base video at target resolution/fps, 1: silent base audio at 48kHz (YouTube spec)
     command.input(`color=c=black:s=${W}x${H}:r=${FPS}:d=${totalDuration}`).inputFormat('lavfi')
@@ -2857,9 +2882,28 @@ ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outp
     // roughly 25k on its own, which on top of the inputs blows straight past that and the process
     // simply fails to start. Hand ffmpeg the graph as a file instead: same graph, tiny argv.
     const graph = filterComplex.map(f => (typeof f === 'string' ? f : String(f))).join(';')
-    const graphPath = path.join(app.getPath('temp'), `vidhelm_graph_${Date.now()}.txt`)
+    const graphPath = path.join(workDir, 'graph.txt')
     fs.writeFileSync(graphPath, graph)
-    cleanupGraph = graphPath
+
+    const setBar = (v: number) => { try { win?.setProgressBar(v) } catch { /* window closing */ } }
+    // A finished export nobody is looking at: flash the taskbar button and say so, and a click on the
+    // notice shows the file. Not for the throwaway analysis render an agent asks for.
+    const announce = (file: string) => {
+      if (!win || win.isDestroyed() || win.isFocused() || settings?.quality === 'analysis') return
+      win.flashFrame(true)
+      win.once('focus', () => { if (win && !win.isDestroyed()) win.flashFrame(false) })
+      if (Notification.isSupported()) {
+        const note = new Notification({ title: 'Export finished', body: path.basename(file) })
+        note.on('click', () => { shell.showItemInFolder(file); if (win && !win.isDestroyed()) { win.show(); win.focus() } })
+        note.show()
+      }
+    }
+    // ffmpeg can hold the file for a moment after it is killed
+    const removePartial = () => {
+      try { fs.rmSync(partial, { force: true }) } catch { setTimeout(() => { try { fs.rmSync(partial, { force: true }) } catch { /* still locked */ } }, 1000) }
+    }
+    if (job.cancelled) { resolve({ cancelled: true }); return }   // cancelled while the sources were probed
+    job.kill = () => command.kill('SIGKILL')
     command
       .outputOptions(['-filter_complex_script', graphPath])
       .map(`[${currentVOut}]`)
@@ -2884,21 +2928,47 @@ ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outp
         '-colorspace', 'bt709', '-color_primaries', 'bt709', '-color_trc', 'bt709', '-color_range', 'tv',
         '-movflags', '+faststart',
         '-t', totalDuration.toString(),
+        '-stats_period', '0.25',   // a position four times a second, so the bar moves smoothly
       ])
       .on('start', (cmd) => console.log('FFmpeg started:', cmd))
-      .on('progress', (progress) => { if (win) win.webContents.send('export-progress', progress.percent) })
-      .on('end', () => { exportsRunning.delete(outKey); if (cleanupGraph) { try { fs.unlinkSync(cleanupGraph) } catch { /* already gone */ } } resolve({ success: true, ...(warnings.length ? { warnings } : {}) }) })
+      // fluent-ffmpeg's own percent needs every input's length and the lavfi base has none, so it was
+      // undefined for the whole render (the bar sat at 0%): measure from ffmpeg's position instead
+      .on('progress', (progress) => {
+        const pct = progressPct(progress.timemark, totalDuration)
+        if (pct === null) return
+        if (win && !win.isDestroyed()) win.webContents.send('export-progress', { pct, fps: progress.currentFps })
+        setBar(pct / 100)
+      })
+      .on('end', () => {
+        setBar(-1)
+        let final = outputPath
+        try { fs.renameSync(partial, outputPath) } catch {
+          // The last export is open in a player (or Explorer's preview pane holds it). Keep this
+          // render under the next free name rather than throw it away.
+          try {
+            final = nextVersion(outputPath, p => fs.existsSync(p))
+            fs.renameSync(partial, final)
+            warnings.push(`${path.basename(outputPath)} is open in another program, so this export was saved as ${path.basename(final)}`)
+          } catch (e) {
+            reject(exportError(`the finished video could not be moved into place; it is at ${partial}`, String((e as Error)?.message || e)))
+            return
+          }
+        }
+        announce(final)
+        resolve({ success: true, path: final, ...(warnings.length ? { warnings } : {}) })
+      })
       .on('error', (err: Error, _stdout: string, stderr: string) => {
-        exportsRunning.delete(outKey)
-        if (cleanupGraph) { try { fs.unlinkSync(cleanupGraph) } catch { /* already gone */ } }
-        // A half-written file would otherwise sit there looking like a finished export. Only one this
-        // run actually wrote: a failure while opening the inputs never touches the output, and an
-        // earlier good export at the same path must survive that.
-        try { const st = fs.statSync(outputPath); if (`${st.mtimeMs}|${st.size}` !== before) fs.rmSync(outputPath, { force: true }) } catch { /* locked or never created */ }
+        setBar(-1)
+        // only the partial: the file at outputPath is the last good export and was never opened
+        removePartial()
+        if (job.cancelled) { resolve({ cancelled: true }); return }
         console.error('FFmpeg error:', err, stderr)
         const raw = `${err?.message || err}\n${stderr || ''}`
-        reject(exportError(friendlyExportError(raw, outputPath), stderrTail(stderr || String(err?.message || ''))))
+        reject(exportError(friendlyExportError(raw, partial), stderrTail(stderr || String(err?.message || ''))))
       })
-      .save(outputPath)
-  }).finally(() => exportsRunning.delete(outKey))
+      .save(partial)
+  }).finally(() => {
+    exportsRunning.delete(outKey)
+    if (workDir) { try { fs.rmSync(workDir, { recursive: true, force: true }) } catch { /* in use; the OS cleans temp */ } }
+  })
 })
