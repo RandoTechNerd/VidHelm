@@ -3377,10 +3377,13 @@ function Editor() {
     const edge0 = side === 'left' ? o.start : o.start + o.duration
     let live = false
     let lastStart = o.start
+    draggingRef.current = false
     const move = (m: MouseEvent) => {
       // the same small dead zone as a move, so pressing a handle cannot snap its edge somewhere
       if (!live && Math.abs(m.clientX - startX) <= 2) return
-      live = true
+      // a wall or a snap stops the edge short of the pointer, so the release lands on empty lane
+      // and its click would seek there and drop the selection: flagged as a drag, like a move
+      live = true; draggingRef.current = true
       const raw = edge0 + (m.clientX - startX) / pxPerSec
       const caught = m.altKey ? null : nearestTarget(raw, targets, SNAP_PX / pxPerSec)
       const r = trimTo(o, side, caught ?? raw, opts)
@@ -3394,7 +3397,10 @@ function Editor() {
       if (r.limit) flashLimit(id, side)
     }
     // a trimmed caption is as far off its speech as before: its first-grab position moves with the start
-    trackDrag(move, () => { const h = capHeardAt.current.get(id); if (h !== undefined) capHeardAt.current.set(id, h + (lastStart - o.start)) })
+    trackDrag(move, () => {
+      const h = capHeardAt.current.get(id); if (h !== undefined) capHeardAt.current.set(id, h + (lastStart - o.start))
+      setTimeout(() => { draggingRef.current = false }, 0)
+    })
   }
 
   const startResizeTimeline = (e: React.MouseEvent) => {
