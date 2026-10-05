@@ -1116,14 +1116,11 @@ function Editor() {
     }
   }, [perf.proxyMaxWidth, perf.proxyMaxFps])
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files) await importFiles(Array.from(e.target.files))
-    e.target.value = ''
-  }
-
-  // Footage from the first screen, the header's Import, or a drop anywhere in the window. On an
-  // empty timeline the first video also goes onto v1 at 0:00, so one drop is a project you can
-  // start cutting; once there are clips, imports wait in the Media Bin like every other editor's.
+  // Footage from the first screen, the header's Import, the Media tab's +, or a drop anywhere but
+  // a timeline row (that places files where they land): all of these behave the same, as the help
+  // and the drop overlay promise. On an empty timeline the first video also goes onto v1 at 0:00,
+  // so one drop is a project you can start cutting; once there are clips, imports wait in the
+  // Media Bin like every other editor's.
   const importAndStart = async (files: File[]) => {
     const wasEmpty = clips.length === 0 && texts.length === 0
     const added = await importFiles(files)
@@ -3445,7 +3442,7 @@ function Editor() {
             <div className="section-header tabs">
               <button className={`tab ${sidebarTab === 'media' ? 'active' : ''}`} onClick={() => setSidebarTab('media')}>Media</button>
               <button className={`tab ${sidebarTab === 'sfx' ? 'active' : ''}`} onClick={() => setSidebarTab('sfx')} title="Sound effects, audition and drop on the SFX track">Sound FX</button>
-              {sidebarTab === 'media' && <label className="add-btn" title="Add video, audio or images, or a 3D model (STL / 3MF / OBJ / GLB)"><IconPlus /><input type="file" accept={ACCEPT_ATTR} multiple onChange={handleFileUpload} hidden /></label>}
+              {sidebarTab === 'media' && <label className="add-btn" title="Add video, audio or images, or a 3D model (STL / 3MF / OBJ / GLB). On an empty timeline the first video goes straight onto it."><IconPlus /><input type="file" accept={ACCEPT_ATTR} multiple onChange={pickAndImport} hidden /></label>}
             </div>
             {sidebarTab === 'sfx' && <SfxPanel onPlace={placeSfx}
               genCommand={settings.sfxGen.command} onGenCommand={c => setSettings(s => ({ ...s, sfxGen: { ...s.sfxGen, command: c } }))}

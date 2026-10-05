@@ -76,6 +76,13 @@ ok(U.firstVideoOf(bin)?.id === 'v1', 'the first video in drop order, past the so
 ok(U.firstVideoOf([{ type: 'audio' }, { type: 'image' }]) === null, 'no video, nothing goes on the timeline')
 ok(U.firstVideoOf([]) === null, 'nothing imported, nothing placed')
 
+// The help, the empty stage and the drop overlay all say the first video goes onto the timeline,
+// so every media file picker has to import the way they describe (the Media tab's + once did not).
+const app = fs.readFileSync(path.join(srcDir, 'App.tsx'), 'utf8')
+const pickers = [...app.matchAll(/accept=\{ACCEPT_ATTR\}/g)].map(m => app.slice(app.lastIndexOf('<input', m.index), app.indexOf('/>', m.index)))
+ok(pickers.length >= 2, `the source scan finds the media pickers (${pickers.length})`)
+ok(pickers.every(t => t.includes('onChange={pickAndImport}')), 'every media picker imports through pickAndImport, so the first video starts the timeline')
+
 console.log('recentProjects')
 const projects = [{ name: 'old', modified: 100 }, { name: 'newest', modified: 900 }, { name: 'undated' }, { name: 'mid', modified: 500 }, { name: 'newer', modified: 700 }]
 ok(U.recentProjects(projects).map(p => p.name).join() === 'newest,newer,mid', 'three, most recently changed first')
