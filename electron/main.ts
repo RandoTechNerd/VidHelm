@@ -387,7 +387,9 @@ ipcMain.handle('make-thumbnails', async (_event, { filePath, sourceStart, durati
   const dir = path.join(app.getPath('temp'), 'vidhelm_thumbs')
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
   const out = path.join(dir, `t_${Date.now()}_${Math.random().toString(36).slice(2, 7)}.jpg`)
-  const count = Math.max(4, Math.min(120, Math.round(want || 8)))
+  // the renderer sizes the count so each 160x90 frame keeps its shape on the clip; a short clip
+  // needs one or two, and forcing four squeezed them
+  const count = Math.max(1, Math.min(120, Math.round(want || 8)))
   const dur = Math.max(0.5, duration)
   const fps = Math.max(0.1, count / dur)
   await new Promise<void>((resolve) => {

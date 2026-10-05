@@ -1298,3 +1298,27 @@ textarea.duration-input { height: auto; padding: 7px 9px; resize: vertical; line
   background: var(--bg-surface-elevated); color: var(--text-main);
   border: 1px solid var(--border-strong); box-shadow: var(--shadow-sm);
 }
+
+/* Trim handles you can see: a grip appears on hover, the selected clip shows both edges in the
+   accent, and an edge that hit the end of its footage flashes red (W1-04) */
+.trim-handle { width: 8px; }
+.trim-handle::after {
+  content: ''; position: absolute; top: 50%; width: 3px; height: 16px; max-height: calc(100% - 6px);
+  transform: translateY(-50%); border-radius: 2px; background: currentColor; opacity: 0; transition: opacity 0.12s;
+}
+.trim-handle.left::after { left: 2px; }
+.trim-handle.right::after { right: 2px; }
+.clip:hover .trim-handle::after { opacity: 0.7; }
+.clip.selected .trim-handle { background: var(--accent-primary); }
+.clip.selected .trim-handle::after { opacity: 0.9; width: 1px; box-shadow: 2px 0 0 currentColor; left: 2.5px; right: auto; }
+.trim-handle.at-limit, .clip.selected .trim-handle.at-limit { background: var(--accent-error); }
+.clip.dragging { cursor: grabbing; opacity: 0.94; z-index: 10; box-shadow: 0 0 0 2px var(--accent-primary), var(--shadow-lg); }
+/* where a dragged edge snapped */
+.snap-line { position: absolute; top: 0; bottom: 0; width: 1px; margin-left: -0.5px; background: var(--accent-warning); box-shadow: 0 0 4px var(--accent-warning); z-index: 15; pointer-events: none; }
+/* the time readout that rides above the pointer while dragging */
+.drag-hud {
+  position: fixed; z-index: 300; transform: translate(-50%, -100%); pointer-events: none;
+  padding: 3px 8px; border-radius: 999px; white-space: nowrap;
+  background: var(--bg-surface-elevated); color: var(--text-main); border: 1px solid var(--border-strong); box-shadow: var(--shadow-md);
+  font-family: 'JetBrains Mono', 'Cascadia Mono', Consolas, ui-monospace, monospace; font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums;
+}
