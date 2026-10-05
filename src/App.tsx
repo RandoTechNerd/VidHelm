@@ -19,6 +19,7 @@ import { planBroll, snapToWords, describePlan, type BrollAsset, type Placement }
 import { looksLikeThumbPhoto } from '../electron/thumbpick'
 import { resolveProfile, describeProfile, type PerfProfile, type Tier, type TierPreference } from '../electron/capability'
 import { shortcutFor, focusKind, stepTime, type Shortcut } from '../electron/shortcuts'
+import { DEPOP, splitClip, removeRange, planPauseCuts, rescaleAutomation } from '../electron/edit'
 
 interface MediaFile {
   id: string
@@ -571,70 +572,10 @@ function gainAt(c: TimelineClip, tAbs: number) {
   return c.volume ?? 1
 }
 
-// Remove timeline range [s,e] and ripple everything after it left. Used to cut silent dead space.
-// If `transition` > 0, surviving edges get a short fade for a smoother seam.
-// Twelve milliseconds: far too short to hear as a fade, long enough that the
-// waveform reaches zero before the splice. Without it a cut lands mid-cycle and
-// the step reads as a click ("poofs" between phrases).
-const DEPOP = 0.012
-
-// Tag points ride along when time is removed: after the cut they shift left by its length, and a
-// tag inside the removed stretch lands on the join (or goes, when a whole head or tail is trimmed
-// off). Tagging first and cutting second is the documented workflow, so tags must not drift.
-function rippleMarkers(markers: Marker[], s: number, e: number, dropInside = false): Marker[] {
-  const len = e - s
-  const out: Marker[] = []
-  for (const m of markers) {
-    if (m.t < s) out.push(m)
-    else if (m.t >= e) out.push({ ...m, t: +(m.t - len).toFixed(4) })
-    else if (!dropInside) out.push({ ...m, t: s })
-  }
-  return out
-}
-
-function removeRange(clips: TimelineClip[], texts: TextClip[], s: number, e: number, transition: number, markers: Marker[] = [], dropTagsInside = false) {
-  const len = e - s
-  const td = Math.max(0, Math.min(transition, len, 0.3))
-  const outClips: TimelineClip[] = []
-  for (const c of clips) {
-    const cs = c.start, ce = c.start + c.duration
-    if (ce <= s) { outClips.push(c); continue }
-    if (cs >= e) { outClips.push({ ...c, start: cs - len }); continue }
-    const left = s - cs, right = ce - e
-    // Both halves used to sit end to end, each with its own fade. Video composites over a black
-    // base, so fading A out and B in at the very same instant dips through black: on a talking
-    // head with a hundred pause cuts that reads as the picture blinking at you all the way
-    // through. Overlap them instead and let B dissolve in ON TOP of A, which never sees black.
-    const overlap = Math.max(0, Math.min(td, left - 0.05, e - cs))
-    // The picture keeps whatever the transition setting asked for (including 0, and
-    // including the deliberate no-fadeOut under an overlap so it never dips through
-    // black). The AUDIO always gets at least DEPOP either side of the join.
-    if (left > 0.05) outClips.push({
-      ...c, duration: left,
-      fadeOut: overlap > 0 ? 0 : (td > 0 ? td : c.fadeOut),
-      aFadeOut: Math.max(DEPOP, overlap > 0 ? 0 : (td > 0 ? td : c.fadeOut)),
-    })
-    if (right > 0.05) outClips.push({
-      ...c, id: rid(),
-      start: s - overlap,
-      duration: right + overlap,
-      sourceStart: c.sourceStart + (e - cs) - overlap,   // pull the source back so motion stays continuous
-      fadeIn: overlap > 0 ? overlap : (td > 0 ? td : c.fadeIn),
-      aFadeIn: Math.max(DEPOP, overlap > 0 ? overlap : (td > 0 ? td : c.fadeIn)),
-      volumePoints: undefined,
-    })
-  }
-  const outTexts: TextClip[] = []
-  for (const t of texts) {
-    const ts = t.start, te = t.start + t.duration
-    if (te <= s) { outTexts.push(t); continue }
-    if (ts >= e) { outTexts.push({ ...t, start: ts - len }); continue }
-    const left = s - ts, right = te - e
-    if (left > 0.05) outTexts.push({ ...t, duration: left })
-    if (right > 0.05) outTexts.push({ ...t, id: rid(), start: s, duration: right })
-  }
-  return { clips: outClips, texts: outTexts, markers: rippleMarkers(markers, s, e, dropTagsInside) }
-}
+// Cutting time out of the timeline (a split, removeRange and the tags that ride along with it,
+// which pauses Cut Pauses takes, the DEPOP ramps on every new edge) lives in electron/edit.ts,
+// with its own test suite (npm run test:edit).
+const STALE_TIMELINE = 'The timeline changed while this was being worked out (an edit landed in the meantime), so nothing was cut. Run it again.'
 
 function Editor() {
   const [mediaBin, setMediaBin] = useState<MediaFile[]>([])
@@ -779,6 +720,14 @@ function Editor() {
   const skipRecord = useRef(false)
   const [canUndo, setCanUndo] = useState(false)
   const [canRedo, setCanRedo] = useState(false)
+  // The timeline as last committed, for the long jobs (Cut Pauses, cut_at_phrase) that read it,
+  // wait on ffmpeg or Whisper, then write back a result built from what they read: an edit that
+  // landed in between (the human's, or another agent call's) would be quietly thrown away.
+  const liveTimeline = useRef<{ clips: TimelineClip[]; texts: TextClip[]; markers: Marker[] }>({ clips: [], texts: [], markers: [] })
+  useEffect(() => { liveTimeline.current = { clips, texts, markers } }, [clips, texts, markers])
+  /** The timeline this render sees, as a key to compare against later. */
+  const timelineKey = () => JSON.stringify([clips, texts, markers])
+  const timelineMoved = (since: string) => { const d = liveTimeline.current; return JSON.stringify([d.clips, d.texts, d.markers]) !== since }
 
   const [w, h] = frameDims(orientation, resolution)
   const totalDuration = (() => {
@@ -1354,7 +1303,10 @@ function Editor() {
         if (cmd.trackId !== undefined && !['v1', 'v2', 'a1', 'a2'].includes(cmd.trackId)) return { error: `trackId must be v1, v2, a1 or a2, not "${cmd.trackId}"` }
         const patch: Partial<TimelineClip> = {}
         for (const k of ['start', 'duration', 'sourceStart', 'volume', 'fadeIn', 'fadeOut', 'trackId'] as const) if (cmd[k] !== undefined) (patch as any)[k] = cmd[k]
-        setClips(prev => prev.map(c => c.id === cmd.clipId ? { ...c, ...patch } : c))
+        // on a clip with automation the line is what plays, so a new volume moves the whole line
+        // (as the Volume slider does); setting only the flat value would change nothing you hear
+        setClips(prev => prev.map(c => c.id !== cmd.clipId ? c
+          : { ...c, ...patch, ...(patch.volume !== undefined && c.volumePoints?.length ? { volumePoints: rescaleAutomation(c.volumePoints, c.volume, patch.volume) } : {}) }))
         return { ok: true }
       }
       case 'delete_item':
@@ -1366,11 +1318,10 @@ function Editor() {
         const c0 = clips.find(c => c.id === cmd.clipId)
         if (!c0) return { error: `clip not found: ${cmd.clipId}` }
         const t = cmd.t
-        if (t <= c0.start || t >= c0.start + c0.duration) return { error: `t=${t} outside clip [${c0.start}, ${c0.start + c0.duration}]` }
-        const off = t - c0.start
-        // hard cut on the picture, but ramp the waveform or the join clicks
-        const a = { ...c0, id: rid(), duration: off, fadeOut: 0, aFadeOut: DEPOP }
-        const b = { ...c0, id: rid(), start: t, duration: c0.duration - off, sourceStart: c0.sourceStart + off, fadeIn: 0, aFadeIn: DEPOP }
+        // hard cut on the picture, de-pop ramps on the waveform, automation cut in two (electron/edit.ts)
+        const halves = splitClip(c0, t, rid)
+        if (!halves) return { error: `t=${t} outside clip [${c0.start}, ${c0.start + c0.duration}]` }
+        const [a, b] = halves
         setClips(prev => { const i = prev.findIndex(c => c.id === c0.id); const n = [...prev]; n.splice(i, 1, a, b); return n })
         return { ok: true, left: a.id, right: b.id }
       }
@@ -1661,6 +1612,7 @@ function Editor() {
       }
       case 'cut_at_phrase': {
         if (!cmd.text) return { error: 'text required' }
+        const atCall = timelineKey()
         const sp = await readSpeech(cmd.model)
         if (sp.error || !sp.words) return { error: sp.error || 'no speech' }
         const hit = spanForPhrase(sp.words, cmd.text, { after: cmd.after, before: cmd.before })
@@ -1669,18 +1621,19 @@ function Editor() {
         const at = mode === 'start'
           ? (cmd.refine === false ? hit.cutIn : await refine(hit.cutIn, 'before'))
           : (cmd.refine === false ? hit.cutOut : await refine(hit.cutOut, 'after'))
+        // the phrase was found in the timeline as it was when this call started; if it was edited
+        // while the speech was read, those seconds now hold other words
+        if (timelineMoved(atCall)) return { error: STALE_TIMELINE }
         if (mode === 'split') {
           const hits = clips.filter(c => at > c.start && at < c.start + c.duration)
           if (!hits.length) return { error: `nothing to split at ${at.toFixed(2)}s` }
           setClips(prev => {
             const next = [...prev]
             for (const c0 of hits) {
-              const off = at - c0.start
-              // hard cut on the picture, but ramp the waveform or the join clicks (as split_clip)
-              const a = { ...c0, id: rid(), duration: off, fadeOut: 0, aFadeOut: DEPOP }
-              const b = { ...c0, id: rid(), start: at, duration: c0.duration - off, sourceStart: c0.sourceStart + off, fadeIn: 0, aFadeIn: DEPOP }
+              // hard cut on the picture, de-pop ramps on the waveform (as split_clip)
+              const halves = splitClip(c0, at, rid)
               const i = next.findIndex(c => c.id === c0.id)
-              next.splice(i, 1, a, b)
+              if (halves && i >= 0) next.splice(i, 1, ...halves)
             }
             return next
           })
@@ -1689,7 +1642,7 @@ function Editor() {
         const range = mode === 'start' ? { start: 0, end: at } : { start: at, end: totalDuration }
         if (range.end - range.start <= 0.05) return { error: 'nothing to remove there' }
         // trimming a whole head or tail drops the tags that were in it rather than piling them on the join
-        const out = removeRange(clips, texts, range.start, range.end, 0, markers, true)
+        const out = removeRange(clips, texts, range.start, range.end, 0, markers, rid, true)
         setClips(out.clips)
         setTexts(out.texts)
         setMarkers(out.markers)
@@ -2127,13 +2080,12 @@ function Editor() {
 
   const splitAtPlayhead = () => {
     if (!selClip) return
-    if (currentTime <= selClip.start || currentTime >= selClip.start + selClip.duration) return
-    const off = currentTime - selClip.start
-    // hard cut on the picture, but ramp the waveform or the join clicks (the same DEPOP as split_clip / removeRange)
-    const a = { ...selClip, id: rid(), duration: off, fadeOut: 0, aFadeOut: DEPOP }
-    const b = { ...selClip, id: rid(), start: currentTime, duration: selClip.duration - off, sourceStart: selClip.sourceStart + off, fadeIn: 0, aFadeIn: DEPOP }
-    setClips(prev => { const i = prev.findIndex(c => c.id === selClip.id); const n = [...prev]; n.splice(i, 1, a, b); return n })
-    setSelectedId(b.id)
+    // hard cut on the picture, de-pop ramps on the waveform, the automation line cut in two (the
+    // same splitClip as split_clip and cut_at_phrase)
+    const halves = splitClip(selClip, currentTime, rid)
+    if (!halves) return
+    setClips(prev => { const i = prev.findIndex(c => c.id === selClip.id); if (i < 0) return prev; const n = [...prev]; n.splice(i, 1, ...halves); return n })
+    setSelectedId(halves[1].id)
   }
 
   // Put the caret in the text on the picture, with the placeholder selected so typing replaces it
@@ -2332,6 +2284,7 @@ function Editor() {
     if (useMotion && !videoClips.length) return { error: 'No video clips to scan for still frames.' }
     if (!useMotion && !hasAudio) return { error: 'No audio to scan. Switch "Detect by" to Visual stillness for silent footage.' }
     setSilenceBusy(useMotion ? 'Scanning frames…' : 'Analyzing audio…')
+    const atScan = timelineKey()
     try {
       let intervals: { start: number; end: number }[] = []
       if (useMotion) {
@@ -2349,35 +2302,17 @@ function Editor() {
         if (res.error) return { error: 'Cut pauses: ' + res.error }
         intervals = res.intervals || []
       }
-      // pad, clamp to the timeline, drop slivers, then MERGE overlaps (overlapping clips / adjacent
-      // detections would otherwise double-cut and corrupt later ranges)
-      let ranges = intervals
-        .map(iv => ({ start: Math.max(0, iv.start + S.pad), end: Math.min(totalDuration, iv.end - S.pad) }))
-        .filter(r => r.end - r.start > 0.1)
-        .sort((a, b) => a.start - b.start)
-      const merged: { start: number; end: number }[] = []
-      for (const r of ranges) {
-        const last = merged[merged.length - 1]
-        if (last && r.start <= last.end + 0.01) last.end = Math.max(last.end, r.end)
-        else merged.push({ ...r })
-      }
-      ranges = merged
-      // Two pauses close together leave an orphan sliver between them: a third of a second of
-      // speech that dissolves in and straight back out, which reads as a stutter rather than an
-      // edit. When a cut would strand a fragment shorter than MIN_KEEP, leave that pause in.
-      // Rhythm beats shaving another half second, and no speech is ever thrown away.
+      // the scan measured the timeline as it was; cut what it measured, or nothing
+      if (timelineMoved(atScan)) return { error: STALE_TIMELINE }
+      // pad, merge, keep the head and tail clean, leave out cuts that would strand a stutter:
+      // planPauseCuts in electron/edit.ts. Rhythm beats shaving another half second, and no
+      // speech is ever thrown away (MIN_KEEP: the shortest fragment worth keeping between two cuts).
       const MIN_KEEP = 0.9
-      const spaced: { start: number; end: number }[] = []
-      for (const r of ranges) {
-        const prevEnd = spaced.length ? spaced[spaced.length - 1].end : 0
-        if (r.start - prevEnd < MIN_KEEP) continue
-        spaced.push(r)
-      }
-      ranges = spaced
+      const ranges = planPauseCuts(intervals, totalDuration, { pad: S.pad, minKeep: MIN_KEEP })
       if (!ranges.length) return { error: useMotion ? 'No long static stretches found (lower the min length or stillness sensitivity in settings).' : 'No long pauses found (try lowering the minimum pause length in settings).' }
       ranges.sort((a, b) => b.start - a.start) // apply last→first so earlier times stay valid
       let nc = clips, nt = texts, nm = markers, removed = 0
-      for (const r of ranges) { const out = removeRange(nc, nt, r.start, r.end, S.smooth ? S.transition : 0, nm); nc = out.clips; nt = out.texts; nm = out.markers; removed += (r.end - r.start) }
+      for (const r of ranges) { const out = removeRange(nc, nt, r.start, r.end, S.smooth ? S.transition : 0, nm, rid); nc = out.clips; nt = out.texts; nm = out.markers; removed += (r.end - r.start) }
       setClips(nc); setTexts(nt); setMarkers(nm); setSelectedId(null); setCurrentTime(0)
       return { removed: ranges.length, seconds: +removed.toFixed(1), mode: useMotion ? 'stillness' : 'silence' }
     } catch (e) { console.error(e); return { error: 'Cut pauses failed: ' + String(e) } }
@@ -2516,7 +2451,7 @@ function Editor() {
     const beforeKey = JSON.stringify({ c: baseClips, t: baseTexts, m: baseMarkers })
     let nc = baseClips, nt = baseTexts, nm = baseMarkers
     for (const r of [...ranges].sort((a, b) => b.start - a.start)) {
-      const out = removeRange(nc, nt, r.start, r.end, settings.silence.smooth ? settings.silence.transition : 0, nm)
+      const out = removeRange(nc, nt, r.start, r.end, settings.silence.smooth ? settings.silence.transition : 0, nm, rid)
       nc = out.clips; nt = out.texts; nm = out.markers
     }
     setClips(nc); setTexts(nt); setMarkers(nm); setSelectedId(null)
@@ -3620,7 +3555,11 @@ function Editor() {
                     {selClip.trackId === 'v2' && <p className="hint">B-roll covers the video underneath while its sound keeps playing; this clip's own sound is not used.</p>}
                   </div>
                   <div className="field"><label>Volume - {Math.round(selClip.volume * 100)}%</label>
-                    <input type="range" min="0" max="2" step="0.05" value={selClip.volume} onChange={e => patchClip({ volume: parseFloat(e.target.value), volumePoints: [] })} style={{ width: '100%', accentColor: 'var(--accent-primary)' }} />
+                    {/* with automation the slider raises or lowers the whole line; Clear is the way to drop it */}
+                    <input type="range" min="0" max="2" step="0.05" value={selClip.volume}
+                      title={selClip.volumePoints?.length ? 'Raises or lowers the whole automation line, keeping its shape' : undefined}
+                      onChange={e => { const v = parseFloat(e.target.value); patchClip(selClip.volumePoints?.length ? { volume: v, volumePoints: rescaleAutomation(selClip.volumePoints, selClip.volume, v) } : { volume: v }) }}
+                      style={{ width: '100%', accentColor: 'var(--accent-primary)' }} />
                   </div>
                   <div className="field">
                     <label>Volume Automation {selClip.volumePoints?.length ? `(${selClip.volumePoints.length} pts)` : ''}</label>

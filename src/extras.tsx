@@ -207,6 +207,15 @@ export function SfxPanel({ onPlace, genCommand, onGenCommand, freesoundToken, on
     a.onended = () => setPlaying(null)
     a.play().catch(() => setPlaying(null))
   }
+  // The button under a playing sound shows Stop, and it used to start the sound again instead
+  const stopAudition = () => {
+    const a = audioRef.current
+    if (a) { a.onended = null; a.onerror = null; a.pause() }
+    audioRef.current = null
+    setPlaying(null)
+  }
+  // and a sound still playing when the panel goes away (another tab) stops with it
+  useEffect(() => () => { audioRef.current?.pause() }, [])
 
   return (
     <div className="sfx-panel">
@@ -215,7 +224,7 @@ export function SfxPanel({ onPlace, genCommand, onGenCommand, freesoundToken, on
       <div className="sfx-list">
         {shown.map(item => (
           <div key={item.path} className={`sfx-item ${playing === item.path ? 'playing' : ''} ${favSet.has(item.name) ? 'fav' : ''}`}>
-            <button className="sfx-play" title="Audition" onClick={() => audition(item)}>{playing === item.path ? <IcStop /> : <IcPlaySm />}</button>
+            <button className="sfx-play" title={playing === item.path ? 'Stop' : 'Audition'} onClick={() => playing === item.path ? stopAudition() : audition(item)}>{playing === item.path ? <IcStop /> : <IcPlaySm />}</button>
             <button className={`sfx-star ${favSet.has(item.name) ? 'on' : ''}`}
               title={favSet.has(item.name) ? 'Remove from favourites' : 'Favourite, keeps it at the top of the list'}
               onClick={() => onToggleFavorite?.(item.name)}>{favSet.has(item.name) ? '★' : '☆'}</button>
@@ -246,8 +255,8 @@ export function SfxPanel({ onPlace, genCommand, onGenCommand, freesoundToken, on
         {hits.length > 0 && <div className="sfx-hits">
           {hits.map(h => (
             <div key={h.provider + h.id} className="sfx-hit">
-              <button className="sfx-play" title="Audition (streams from the library)"
-                onClick={() => auditionUrl(h.audioUrl, h.provider + h.id)}>{playing === h.provider + h.id ? <IcStop /> : <IcPlaySm />}</button>
+              <button className="sfx-play" title={playing === h.provider + h.id ? 'Stop' : 'Audition (streams from the library)'}
+                onClick={() => playing === h.provider + h.id ? stopAudition() : auditionUrl(h.audioUrl, h.provider + h.id)}>{playing === h.provider + h.id ? <IcStop /> : <IcPlaySm />}</button>
               <span className="sfx-name" title={`${h.name}\nby ${h.author} · ${h.provider}`}>{h.name}</span>
               <span className={`sfx-lic ${h.needsAttribution ? 'credit' : 'free'}`} title={h.needsAttribution ? `${h.license}. Credit required, and it goes into CREDITS.txt when you save it.` : `${h.license}. No credit needed.`}>
                 {h.needsAttribution ? 'credit' : 'free'}
