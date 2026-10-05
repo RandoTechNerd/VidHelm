@@ -70,6 +70,8 @@ export const IcTerminal = () => <I size={14}><path d="m4 17 6-6-6-6M12 19h8" /><
 /** a favourite: filled when it is one */
 export const IcStar = ({ filled = false }: { filled?: boolean }) => <I size={14} fill={filled}><path d="M12 2.8l2.85 5.8 6.4.93-4.63 4.5 1.1 6.37L12 17.4l-5.72 3 1.1-6.37-4.63-4.5 6.4-.93Z" /></I>
 export const IcDownload = () => <I size={14}><path d="M12 3v12M7 10l5 5 5-5M5 21h14" /></I>
+/** bring files in: an arrow into a tray, drawn unlike Export's so the two never read the same */
+export const IcImport = ({ size = 15 }: S) => <I size={size}><path d="M12 3v11M8 10l4 4 4-4" /><path d="M8 6H5a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-3" /></I>
 export const IcCopy = () => <I size={14}><rect x="9" y="9" width="12" height="12" rx="2.5" /><path d="M5 15V5.5A2.5 2.5 0 0 1 7.5 3H15" /></I>
 /** a link that leaves the app for the browser */
 export const IcExternal = () => <I size={12}><path d="M7 17 17 7M8 7h9v9" /></I>

@@ -210,8 +210,13 @@ header .hdr-btn, header .orient-btn, header .hdr-export, header .links-pop butto
   background: rgb(var(--ink) / 0.08); color: var(--text-dim); opacity: 1; cursor: not-allowed;
 }
 
+/* Import and the arrow that holds its other sources (the Cloud hand-off zip) */
+.hdr-split { position: relative; display: inline-flex; align-items: center; }
+.hdr-btn.chev { width: 18px; padding: 0; justify-content: center; margin-left: -2px; color: var(--text-dim); }
+.hdr-btn.chev:hover, .hdr-btn.chev.on { color: var(--text-main); }
+
 /* Labels fold away before anything else does, so the bar never wraps. */
-@media (max-width: 1320px) { .hdr-group .hdr-btn span, .orient-label { display: none; } .hdr-group .hdr-btn { width: 28px; padding: 0; justify-content: center; } }
+@media (max-width: 1320px) { .hdr-group .hdr-btn span, .orient-label { display: none; } .hdr-group .hdr-btn { width: 28px; padding: 0; justify-content: center; } .hdr-group .hdr-btn.chev { width: 18px; } }
 @media (max-width: 1140px) { .hdr-chat span, .hdr-connect span { display: none; } }
 
 .orientation-switch {
@@ -361,6 +366,16 @@ main {
 .media-info .name { font-size: 12.5px; font-weight: 500; color: var(--text-main); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .media-info .duration { font-size: 11px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
 
+/* the empty bin: what it takes and a button to fill it, instead of one line of dim text */
+.media-empty { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 22px 10px 12px; text-align: center; }
+.media-empty-types { display: flex; flex-wrap: wrap; justify-content: center; gap: 5px; }
+.media-empty-types span {
+  display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border-radius: 999px;
+  border: 1px solid var(--border-subtle); background: rgb(var(--ink) / 0.04); font-size: 11.5px; color: var(--text-muted);
+}
+.media-empty .hint { margin: 0; }
+.media-empty .info-note { margin-top: 0; }
+
 .prox { color: var(--text-dim); }
 .prox.building { color: var(--accent-text); }
 .prox.warn { color: var(--accent-warning); }
@@ -395,6 +410,46 @@ main {
 .stage img, .stage video { width: 100%; height: 100%; object-fit: contain; display: block; }
 /* the stage is black in both themes, so this grey does not follow the theme */
 .placeholder { font-size: 13px; font-weight: 500; color: rgb(255 255 255 / 0.55); letter-spacing: 0.12em; font-variant-numeric: tabular-nums; }
+
+/* The first screen. Until the timeline has something on it the stage is a drop target with its
+   own buttons, in the panel colour family rather than a black slab (the stage only turns black
+   once there is a picture to show). The card scales with the stage: a narrow portrait stage or a
+   short window drops the extras before anything overflows. */
+.stage.empty { background: var(--bg-stage-empty); box-shadow: 0 0 0 1px var(--border-subtle); }
+.stage.empty .brand-logo { display: none; }
+.stage-empty { position: absolute; inset: 0; container-type: size; }
+.stage-empty-frame {
+  position: absolute; inset: 12px; padding: 16px; overflow: hidden;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; text-align: center;
+  border: 1.5px dashed rgb(var(--ink) / 0.18); border-radius: var(--radius-lg);
+}
+.stage-empty-icon { display: flex; color: var(--text-dim); margin-bottom: 2px; }
+.stage-empty h2 { font-size: 15px; font-weight: 600; color: var(--text-main); }
+.stage-empty p { font-size: 12.5px; line-height: 1.45; color: var(--text-muted); max-width: 320px; }
+.stage-empty-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 4px; }
+.stage-recent { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 2px 4px; max-width: 100%; font-size: 11.5px; color: var(--text-muted); }
+.stage-recent > span { margin-right: 4px; }
+.stage-recent .btn { max-width: 160px; overflow: hidden; text-overflow: ellipsis; display: inline-block; line-height: 26px; }
+.stage-format { margin-top: 2px; font: 500 11px var(--font-mono); color: var(--text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+@container (max-height: 330px) { .stage-recent { display: none; } }
+@container (max-height: 250px) { .stage-empty p, .stage-empty-icon { display: none; } }
+@container (max-width: 300px) { .stage-empty-actions { flex-direction: column; align-items: stretch; } .stage-recent, .stage-format { display: none; } }
+
+/* Files dragged in from Explorer: the whole window says it will take them. It never takes the
+   pointer itself, so the timeline rows and the Media Bin still receive their own drops. */
+.drop-overlay {
+  position: fixed; inset: 46px 6px 6px; z-index: 150; pointer-events: none;
+  display: flex; align-items: center; justify-content: center;
+  border: 2px dashed var(--accent-primary); border-radius: var(--radius-lg); background: var(--accent-soft);
+  animation: pop-in var(--dur-2) var(--ease-out);
+}
+.drop-overlay > div {
+  display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 18px 26px; text-align: center;
+  background: var(--bg-overlay); border: 1px solid var(--border-strong); border-radius: var(--radius-lg); box-shadow: var(--shadow-lg);
+  color: var(--accent-text);
+}
+.drop-overlay b { font-size: 15px; font-weight: 600; color: var(--text-main); }
+.drop-overlay span { font-size: 12px; color: var(--text-muted); }
 
 .expand-btn {
   position: absolute;

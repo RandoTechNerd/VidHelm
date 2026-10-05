@@ -1,13 +1,14 @@
 import { useState, useRef, useEffect, useCallback, Component, type ReactNode } from 'react'
 import './App.css'
-import { VidHelmMark, IcSave, IcOpen, IcCloud, IcRecipe, IcCube, IcSparkle, IcBot, IcSun, IcMoon, IcHelp, IcRefresh, IcFolder, IcPlus, IcBooth, IcVoice, IcCut, IcList, IcCheck, IcEye, IcChat, IcMissing, IcGear, IcClose } from './icons'
+import { VidHelmMark, IcSave, IcOpen, IcCloud, IcRecipe, IcCube, IcSparkle, IcBot, IcSun, IcMoon, IcHelp, IcRefresh, IcFolder, IcPlus, IcBooth, IcVoice, IcCut, IcList, IcCheck, IcEye, IcChat, IcMissing, IcGear, IcClose, IcImport } from './icons'
 // The editor's controls under the names their call sites have always used; they are the shared
 // set now (one stroke, one grid), not a second set drawn here.
 import { IcExport as IconExport, IcPlus as IconPlus, IcAudio as IconAudio, IcFolder as IconFolder, IcCut as IconScissors, IcTrash as IconTrash, IcPlay as IconPlay, IcPause as IconPause, IcText as IconText, IcMic as IconMic, IcExpand as IconExpand, IcVolume as IconVolume, IcUndo as IconUndo, IcRedo as IconRedo, IcChevron as IconChevron, IcCaptions as IconCaptions } from './icons'
 import { Tour, tourSeen } from './tour'
 import { HelpChat } from './helpchat'
 import { SecretField } from './controls'
-import { rangeFill } from './uikit'
+import { StageEmpty, MediaEmpty, DropOverlay } from './welcome'
+import { rangeFill, dragHasFiles, firstVideoOf, recentProjects, formatLine } from './uikit'
 import type { HelpAction } from '../electron/helpdesk'
 import { SfxPanel, MarkerPanel, KaraokeBooth, NarrationModal, RecipeSection, ThumbnailModal, ConnectModal, DEFAULT_RECIPE, recipeActive, newMarker, saveTake, type Marker, type SfxItem, type RecipeSettings } from './extras'
 import { Model3DModal, KEY_GREEN, KEY_MAGENTA, type Model3DApi } from './model3d'
@@ -126,8 +127,9 @@ const ChromaKeyFilters = () => (
   </svg>
 )
 
-// Everything in the header except these moves the window (see electron/dragMath.ts)
-const HDR_CONTROLS = 'button, a, input, select, label, [role="button"]'
+// Everything in the header except these moves the window (see electron/dragMath.ts). The header's
+// dropdown menus count as controls all over, or pressing on a menu's footer dragged the window.
+const HDR_CONTROLS = 'button, a, input, select, label, [role="button"], [role="menu"]'
 
 // What the app accepts. FFmpeg decodes far more than the browser does, so these lists are
 // only a first guess, ffprobe has the final say (see importFiles), which means an unusual
@@ -639,6 +641,13 @@ function Editor() {
   const [showHelp, setShowHelp] = useState(false)
   const [helpTab, setHelpTab] = useState<HelpTab>('start')
   const [showHelpMenu, setShowHelpMenu] = useState(false)
+  const [showImportMenu, setShowImportMenu] = useState(false)
+  const importInputRef = useRef<HTMLInputElement>(null)
+  // Files dragged in from Explorer: the window lights up while they are over it. dragenter and
+  // dragleave fire for every child crossed, so a depth count (not the last event) says whether
+  // the drag is still inside the window.
+  const [dragFiles, setDragFiles] = useState(false)
+  const dragDepth = useRef(0)
   const [projects, setProjects] = useState<{ name: string; path: string; media: number; saved: boolean; modified: number }[]>([])
   const [currentProject, setCurrentProject] = useState<{ dir: string; name: string } | null>(null)
   // Where Save writes when no project folder is open: the single project file it was opened from
@@ -975,14 +984,25 @@ function Editor() {
   // picking something on the timeline brings its controls up
   useEffect(() => { if (selectedId) setRightTab('inspect') }, [selectedId])
 
-  // Dismiss the Help menu on any click elsewhere (its own clicks stop propagation)
+  // Dismiss the header menus (Help, Import's other sources) on any click elsewhere or Esc; their
+  // own clicks stop propagation
   useEffect(() => {
-    if (!showHelpMenu) return
-    const close = () => setShowHelpMenu(false)
+    if (!showHelpMenu && !showImportMenu) return
+    const close = () => { setShowHelpMenu(false); setShowImportMenu(false) }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') close() }
     window.addEventListener('click', close)
-    return () => window.removeEventListener('click', close)
-  }, [showHelpMenu])
+    window.addEventListener('keydown', onKey)
+    return () => { window.removeEventListener('click', close); window.removeEventListener('keydown', onKey) }
+  }, [showHelpMenu, showImportMenu])
   const closeHelpMenu = useCallback(() => setShowHelpMenu(false), [])
+  // A drop anywhere ends the drag, including drops a timeline row stops from bubbling up to the
+  // window's own handler, so the overlay is cleared here, ahead of every element's handler.
+  useEffect(() => {
+    const done = () => { dragDepth.current = 0; setDragFiles(false) }
+    window.addEventListener('drop', done, true)
+    window.addEventListener('dragend', done, true)
+    return () => { window.removeEventListener('drop', done, true); window.removeEventListener('dragend', done, true) }
+  }, [])
 
   // Close the right-click context menu on any outside click
   useEffect(() => {
@@ -1101,6 +1121,21 @@ function Editor() {
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files) await importFiles(Array.from(e.target.files))
     e.target.value = ''
+  }
+
+  // Footage from the first screen, the header's Import, or a drop anywhere in the window. On an
+  // empty timeline the first video also goes onto v1 at 0:00, so one drop is a project you can
+  // start cutting; once there are clips, imports wait in the Media Bin like every other editor's.
+  const importAndStart = async (files: File[]) => {
+    const wasEmpty = clips.length === 0 && texts.length === 0
+    const added = await importFiles(files)
+    const first = wasEmpty ? firstVideoOf(added) : null
+    if (first) { placeOnTimeline(first, 0, 'v1'); setCurrentTime(0) }
+  }
+  const pickAndImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files ? Array.from(e.target.files) : []
+    e.target.value = ''
+    if (files.length) await importAndStart(files)
   }
 
   /** Which track a piece of media may go on: picture lives on video or b-roll, sound on voice/music or SFX. */
@@ -3319,7 +3354,17 @@ function Editor() {
   }
 
   return (
-    <div className="app-container" onDragOver={(e) => e.preventDefault()}>
+    <div className="app-container" onDragOver={(e) => e.preventDefault()}
+      onDragEnter={e => { if (dragHasFiles(e.dataTransfer.types)) { dragDepth.current++; setDragFiles(true) } }}
+      onDragLeave={e => { if (dragHasFiles(e.dataTransfer.types) && --dragDepth.current <= 0) { dragDepth.current = 0; setDragFiles(false) } }}
+      // The Media Bin, the timeline and the 3D Studio take their own drops (and preventDefault);
+      // anything dropped anywhere else is imported rather than opened in place of the editor.
+      onDrop={e => {
+        if (e.defaultPrevented) return
+        e.preventDefault()
+        const files = Array.from(e.dataTransfer.files)
+        if (files.length) void importAndStart(files)
+      }}>
       <ChromaKeyFilters />
       {(window as unknown as { __vhWeb?: boolean }).__vhWeb && (
         <div className="web-banner">
@@ -3336,7 +3381,27 @@ function Editor() {
             <button className={`hdr-btn ${dirty ? 'unsaved' : ''}`} onClick={e => { void saveProject(e.shiftKey) }}
               title={`${dirty ? 'Unsaved changes. ' : ''}Save project (Ctrl+S)${currentProject ? ` into ${currentProject.name}` : saveFile ? ` to ${baseName(saveFile)}` : ''}.${currentProject || saveFile ? ' Shift+click or Ctrl+Shift+S saves a copy as a file; Save keeps writing here.' : ''}`}><IcSave /><span>Save</span></button>
             <button className="hdr-btn" onClick={loadProject} title="Open project"><IcOpen /><span>Open</span></button>
-            <button className="hdr-btn" onClick={() => importCloudZip()} title="Import a VidHelm Cloud hand-off (.zip): clips, plan, notes and narration land in a new project"><IcCloud /><span>Import</span></button>
+            {/* Import means footage, as in every other editor; the Cloud hand-off zip is one
+                click further, under the arrow */}
+            <div className="hdr-split">
+              <button className="hdr-btn" onClick={() => importInputRef.current?.click()}
+                title="Import video, audio, images or a 3D model. On an empty timeline the first video goes straight onto it."><IcImport /><span>Import</span></button>
+              <button className={`hdr-btn chev ${showImportMenu ? 'on' : ''}`} aria-label="More ways to import" aria-haspopup="menu" aria-expanded={showImportMenu}
+                onClick={e => { e.stopPropagation(); setShowHelpMenu(false); setShowImportMenu(v => !v) }}><IconChevron open /></button>
+              <input ref={importInputRef} type="file" accept={ACCEPT_ATTR} multiple hidden onChange={pickAndImport} />
+              {showImportMenu && (
+                <div className="pop-menu from-left" role="menu" aria-label="Import" onClick={e => e.stopPropagation()}>
+                  <button role="menuitem" onClick={() => { setShowImportMenu(false); importInputRef.current?.click() }}>
+                    <span className="links-ico"><IcImport /></span>
+                    <span className="links-txt"><b>Media files…</b><i>video, audio, images, 3D models</i></span>
+                  </button>
+                  <button role="menuitem" onClick={() => { setShowImportMenu(false); void importCloudZip() }}>
+                    <span className="links-ico"><IcCloud /></span>
+                    <span className="links-txt"><b>From VidHelm Cloud (.zip)…</b><i>clips and plan, as a new project</i></span>
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
           <span className="hdr-sep" />
           <div className="hdr-group">
@@ -3357,7 +3422,7 @@ function Editor() {
           <button className="hdr-btn hdr-connect" onClick={() => setShowConnect(true)} title="Connect your AI, one-click setup + troubleshooter"><IcBot /><span>Connect AI</span></button>
           <span className="hdr-sep" />
           <button className="hdr-btn icon" onClick={() => setUiTheme(t => t === 'dark' ? 'light' : 'dark')} title={uiTheme === 'dark' ? 'Switch to the light theme' : 'Switch to the dark theme'}>{uiTheme === 'dark' ? <IcSun /> : <IcMoon />}</button>
-          <button className={`hdr-btn icon ${showHelpMenu ? 'on' : ''}`} onClick={e => { e.stopPropagation(); setShowHelpMenu(v => !v) }}
+          <button className={`hdr-btn icon ${showHelpMenu ? 'on' : ''}`} onClick={e => { e.stopPropagation(); setShowImportMenu(false); setShowHelpMenu(v => !v) }}
             title="Help: the chat, getting started and the tour, community links, credits" aria-haspopup="menu" aria-expanded={showHelpMenu}><IcHelp /></button>
           <button className="hdr-btn icon" onClick={() => setShowSettings(true)} title="Brand kit & settings"><IcGear /></button>
           <button className="hdr-export" onClick={handleExport} disabled={(clips.length === 0 && texts.length === 0) || exportProgress !== null}
@@ -3404,15 +3469,14 @@ function Editor() {
                   onClick={() => currentProject && window.ipcRenderer.revealFolder(currentProject.dir)}><IcFolder /></button>
               </div>
             )}
-            {sidebarTab === 'media' && <div className="media-list" onDrop={async (e) => { e.preventDefault(); await importFiles(Array.from(e.dataTransfer.files)) }} onDragOver={(e) => e.preventDefault()}>
-              {mediaBin.length === 0 && <div className="empty-hint">
-                Click <IconPlus /> or drag files here.
+            {sidebarTab === 'media' && <div className="media-list" onDrop={async (e) => { e.preventDefault(); await importAndStart(Array.from(e.dataTransfer.files)) }} onDragOver={(e) => e.preventDefault()}>
+              {mediaBin.length === 0 && <MediaEmpty onImport={() => importInputRef.current?.click()}>
                 <InfoNote label="What can I add?">
                   Double-click an item, or drop files straight onto the timeline, to use it.<br /><br />
                   Video, audio and images in just about any format, plus 3D models (STL · 3MF · OBJ · GLB), which open in the 3D Studio instead of the timeline.<br /><br />
                   New here? The Help menu (the <b>?</b> at the top right) has a short tour and a first video in five moves.
                 </InfoNote>
-              </div>}
+              </MediaEmpty>}
               {mediaBin.map(m => (
                 <div key={m.id} className={`media-item ${m.offline ? 'offline' : ''}`} draggable={!m.offline}
                   onDragStart={e => { e.dataTransfer.setData(MEDIA_DRAG, m.id); e.dataTransfer.effectAllowed = 'copy' }}
@@ -3445,8 +3509,12 @@ function Editor() {
 
         <div className="center-panel">
           <div className="viewer-container">
-            <div className="stage" ref={stageRef} style={{ aspectRatio: String(ORIENTATIONS[orientation].ratio) }} onMouseDown={() => setSelectedId(null)}>
-              {activeVideoClips.length === 0 && activeTexts.length === 0 && <div className="placeholder">{w}×{h}</div>}
+            <div className={`stage ${clips.length === 0 && texts.length === 0 ? 'empty' : ''}`} ref={stageRef} style={{ aspectRatio: String(ORIENTATIONS[orientation].ratio) }} onMouseDown={() => setSelectedId(null)}>
+              {clips.length === 0 && texts.length === 0
+                ? <StageEmpty format={formatLine(w, h, ORIENTATIONS[orientation].label, fps)} hasMedia={mediaBin.length > 0}
+                    onImport={() => importInputRef.current?.click()} onOpen={() => { void loadProject() }}
+                    recent={settings.workspace.root ? recentProjects(projects) : []} onRecent={p => { void openProjectFolder(p.path, p.name) }} />
+                : activeVideoClips.length === 0 && activeTexts.length === 0 && <div className="placeholder">{w}×{h}</div>}
               {previewVideoClips.map(c => {
                 const media = mediaBin.find(m => m.id === c.mediaId)
                 if (!media) return null
@@ -3712,6 +3780,7 @@ function Editor() {
       <Tour open={showTour} onClose={() => setShowTour(false)} onFinish={() => setShowChat(true)} />
       <HelpChat open={showChat} onClose={() => setShowChat(false)} onAction={openPanel}
         context={{ version: appVersion, clips: clips.length + texts.length, duration: totalDuration, format: ORIENTATIONS[orientation].label, aiKeys: !!(settings.aiGen?.falKey || settings.aiGen?.geminiKey) }} />
+      {dragFiles && <DropOverlay startsTimeline={clips.length === 0 && texts.length === 0} />}
       <div className="toasts">{toasts.map(t => <div key={t.id} className="toast" onClick={() => setToasts(x => x.filter(y => y.id !== t.id))}>{t.text}</div>)}</div>
       {ask && (
         <div className="modal-backdrop ask-backdrop">

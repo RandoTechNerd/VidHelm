@@ -31,5 +31,28 @@ ok(U.savedKeyLabel('fal.ai key', fal) === 'fal.ai key saved, ends in a1b2', 'the
 ok(U.savedKeyLabel('Freesound key', 'abc123') === 'Freesound key saved', 'and drops the tail when there is none to show')
 ok(!U.savedKeyLabel('fal.ai key', fal).includes(fal.slice(0, 8)), 'the start of the key never appears')
 
+console.log('dragHasFiles')
+ok(U.dragHasFiles(['Files']) && U.dragHasFiles(['text/uri-list', 'Files']), 'a drag from Explorer carries Files')
+ok(!U.dragHasFiles(['application/x-vidhelm-media']), 'a clip dragged out of the Media Bin is not a file drop')
+ok(!U.dragHasFiles(['text/plain', 'text/html']), 'text dragged from a page is not a file drop')
+ok(!U.dragHasFiles(undefined) && !U.dragHasFiles(null) && !U.dragHasFiles([]), 'no types, no files')
+
+console.log('firstVideoOf')
+const bin = [{ id: 'a', type: 'audio' }, { id: 'i', type: 'image' }, { id: 'v1', type: 'video' }, { id: 'v2', type: 'video' }]
+ok(U.firstVideoOf(bin)?.id === 'v1', 'the first video in drop order, past the song and the still')
+ok(U.firstVideoOf([{ type: 'audio' }, { type: 'image' }]) === null, 'no video, nothing goes on the timeline')
+ok(U.firstVideoOf([]) === null, 'nothing imported, nothing placed')
+
+console.log('recentProjects')
+const projects = [{ name: 'old', modified: 100 }, { name: 'newest', modified: 900 }, { name: 'undated' }, { name: 'mid', modified: 500 }, { name: 'newer', modified: 700 }]
+ok(U.recentProjects(projects).map(p => p.name).join() === 'newest,newer,mid', 'three, most recently changed first')
+ok(U.recentProjects(projects, 10).at(-1).name === 'undated', 'a project with no date sorts last')
+ok(projects[0].name === 'old', 'the list it was given is left alone')
+ok(U.recentProjects([]).length === 0, 'no projects, no list')
+
+console.log('formatLine')
+ok(U.formatLine(1920, 1080, 'Landscape', 30) === '1920×1080 · Landscape · 30 fps', 'size, shape and rate')
+ok(U.formatLine(1080, 1920, 'Portrait', 60) === '1080×1920 · Portrait · 60 fps', 'portrait reads tall')
+
 console.log(`\n${fail ? 'FAILED' : 'ALL PASSED'} - ${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)
