@@ -101,13 +101,68 @@ export function nextWindow(env: ArrayLike<number>, from: number, total: number, 
 /**
  * After an overlapping window: where the next one should start. A word (or phrase) that began
  * before the cut and ran across it is heard again, whole, by the next window, so this is the start
- * of the earliest piece crossing the cut, or the cut itself when nothing crosses it. Never earlier
- * than `floor` (the window's own start), so a stretched timestamp cannot send it backwards forever.
+ * of the earliest piece crossing the cut, or the cut itself when nothing crosses it.
+ *
+ * Unless that piece began before `floor`: going back that far would have the next window redo most
+ * of this one, and a stretched timestamp could send it backwards forever. Such a piece (a long
+ * phrase-mode line, a word whose timestamp Whisper stretched) is kept whole here instead and the
+ * next window starts where it ends. Never both: keeping a 7 s line whole AND resuming at the floor
+ * had the next window hear its last 5 s again, two stacked captions saying the same sentence.
  */
 export function resumeAt(pieces: { start: number; end: number }[], cut: number, floor = 0): number {
-  let at = cut
-  for (const p of pieces) if (p.start < cut && p.end > cut + 0.02) at = Math.min(at, p.start)
-  return +Math.max(floor, Math.min(cut, at)).toFixed(3)
+  const across = pieces.filter(p => p.start < cut && p.end > cut + 0.02)
+  if (!across.length) return cut
+  const first = Math.min(...across.map(p => p.start))
+  return +(first >= floor ? first : Math.max(...across.map(p => p.end))).toFixed(3)
+}
+
+export interface Span { start: number; end: number }
+/** Where one window handed over to the next: `next` is where the next window's words count from, and it starts `runUp` earlier. */
+export interface Seam { next: number; runUp: number }
+
+/** How far back from a cut with no pause the next window may start, to hear the word on the seam whole. */
+const MAX_REHEAR = 5
+/** The next window starts this much before `next`, so its first word is heard from its onset. */
+const RUN_UP = 0.15
+
+/**
+ * One window's transcript settled against both its seams. `prev` is the seam it started from:
+ * after an overlap it began a run-up early, and anything it heard ending inside that run-up is the
+ * tail of a word the last window already kept. Returns what counts from this window, where the next
+ * one takes over, and whether this was the last.
+ */
+export function settleSeam<T extends Span>(items: T[], w: AsrWindow, total: number, prev?: Seam): Seam & { keep: T[]; last: boolean } {
+  const heard = prev?.runUp ? items.filter(it => it.end > prev.next + 0.05) : items
+  if (w.end >= total - 1e-6) return { keep: heard, next: total, runUp: 0, last: true }
+  // A cut in a pause keeps everything before it. Without a pause, a word that crossed the cut is
+  // dropped here and heard again, whole, at the start of the next window (resumeAt).
+  const next = w.quiet ? w.cut : Math.min(w.end, resumeAt(heard, w.cut, w.cut - MAX_REHEAR))
+  // The run-up is for the onset of the word the next window starts on. A line kept whole that ran
+  // off the end of this window has none there, only the rest of a word this window already heard:
+  // starting early would hear that word twice.
+  const runUp = w.quiet || next >= w.end - 1e-6 ? 0 : Math.min(RUN_UP, next - w.start)
+  return { keep: heard.filter(it => it.start < next), next, runUp, last: false }
+}
+
+/**
+ * Long audio through Whisper, window by window. `hear` transcribes one window and returns what it
+ * heard in timeline seconds (words or lines); the seams are settled here rather than in the IPC
+ * handler, so `npm run test:asr` walks the same bookkeeping the app does. `progress` gets the
+ * seconds done after each window. Returned in time order.
+ */
+export async function transcribeWindows<T extends Span>(env: ArrayLike<number>, total: number, hear: (w: AsrWindow) => Promise<T[]>, progress?: (doneSec: number) => void): Promise<T[]> {
+  const out: T[] = []
+  let from = 0, seam: Seam | undefined
+  for (let guard = 0; from < total - 0.2 && guard < 100000; guard++) {
+    const w = nextWindow(env, from, total)
+    const s = settleSeam(await hear(w), w, total, seam)
+    out.push(...s.keep)
+    progress?.(s.next)
+    if (s.last) break
+    seam = s
+    from = s.next - s.runUp
+  }
+  return out.sort((a, b) => a.start - b.start)
 }
 
 /** A piece as Whisper returns it, already moved to timeline seconds. `raw` keeps its leading space. */

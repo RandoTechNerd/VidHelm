@@ -11,7 +11,7 @@ const load = async f => {
   const out = await build({ entryPoints: [path.join(here, '..', 'electron', f)], bundle: true, write: false, format: 'esm', platform: 'node', target: 'node18' })
   return import('data:text/javascript;base64,' + Buffer.from(out.outputFiles[0].text).toString('base64'))
 }
-const { energyEnvelope, levelDb, nextWindow, resumeAt, mergeWordPieces, ENV_STEP } = await load('asrwindows.ts')
+const { energyEnvelope, levelDb, nextWindow, resumeAt, settleSeam, transcribeWindows, mergeWordPieces, ENV_STEP } = await load('asrwindows.ts')
 const { cleanTranscript } = await load('asrclean.ts')
 const { resolveCaptionModel, migrateCaptionModel, modelLabel, etaSeconds, blendRate, DEFAULT_SEC_PER_MIN } = await load('asrmodel.ts')
 
@@ -101,8 +101,72 @@ console.log('\n-- where a window ends --')
 console.log('\n-- the seam when there is no pause --')
 eq(resumeAt([{ start: 27.4, end: 27.9 }, { start: 27.95, end: 28.6 }, { start: 28.7, end: 29.1 }], 28.2, 23.2), 27.95, 'the word across the cut is heard again from its start')
 eq(resumeAt([{ start: 27.4, end: 27.9 }, { start: 28.3, end: 28.6 }], 28.2, 23.2), 28.2, 'nothing across the cut: resume at the cut')
-eq(resumeAt([{ start: 10, end: 29 }], 28.2, 23.2), 23.2, 'a timestamp stretched over 19 s cannot send the next window back past the floor')
+eq(resumeAt([{ start: 10, end: 29 }], 28.2, 23.2), 29, 'a piece from before the floor is kept whole: the next window starts where it ends, not back at the floor')
 eq(resumeAt([{ start: 28.15, end: 28.21 }], 28.2, 23.2), 28.2, 'a word ending right at the cut is not "across" it')
+{
+  const L = (start, end, text) => ({ start, end, text })
+  const w = { start: 0, end: 28.6, cut: 27.6, quiet: false }
+  // the review's case: Whisper's 7 s line [21, 28] across the cut at 27.6. It used to be kept
+  // whole AND heard again from 22.45, two stacked captions saying the same sentence.
+  const s = settleSeam([L(14, 20.9, 'a'), L(21, 28, 'b'), L(28.05, 28.6, 'c')], w, 60)
+  eq(s.keep.map(x => x.text), ['a', 'b'], 'a 7 s line across the cut is kept whole here...')
+  eq([s.next, s.runUp], [28, 0.15], '...and the next window takes over where it ends (from a run-up just before)')
+  const t = settleSeam([L(27.85, 28.02, 'b-tail'), L(28.05, 33, 'c d e')], { start: 27.85, end: 56.4, cut: 55.4, quiet: false }, 60, s)
+  eq(t.keep.map(x => x.text), ['c d e'], 'the tail of that line heard in the run-up is not kept twice')
+  const r = settleSeam([L(14, 20.9, 'a'), L(23, 28.3, 'b')], w, 60)
+  eq([r.keep.map(x => x.text), r.next], [['a'], 23], 'a line from inside the last 5 s is left for the next window, which hears it whole')
+  const off = settleSeam([L(14, 20.9, 'a'), L(21, 28.6, 'b')], w, 60)
+  eq([off.next, off.runUp], [28.6, 0], 'a long line that ran off the end of the window: the next starts at that end, with no run-up to hear its last word twice')
+  const q = settleSeam([L(10, 20, 'a'), L(20.5, 26.1, 'b')], { start: 0, end: 26.2, cut: 26.2, quiet: true }, 60)
+  eq([q.keep.length, q.next, q.runUp, q.last], [2, 26.2, 0, false], 'a cut in a pause keeps everything before it')
+  const z = settleSeam([L(50, 59, 'a'), L(59, 60, 'b')], { start: 40, end: 60, cut: 60, quiet: true }, 60)
+  eq([z.keep.length, z.next, z.last], [2, 60, true], 'the last window keeps everything')
+}
+
+console.log('\n-- whole runs through a pretend Whisper --')
+{
+  // Nonstop speech over a music bed: a word every 0.4 s and no pause anywhere, so every seam is an
+  // overlap. The pretend Whisper hears a word when its middle is inside the window and, in phrase
+  // mode, returns the sentences it falls in (`seg` seconds long, wherever the speaker breathes).
+  const total = 120, env = envelope(total)
+  const WORDS = []
+  for (let k = 0; k * 0.4 + 0.36 <= total; k++) WORDS.push({ s: +(k * 0.4).toFixed(2), e: +(k * 0.4 + 0.36).toFixed(2), t: 'w' + k })
+  const hearWith = (words, { word, seg = 7, off = 0, stretch = () => null }) => async w => {
+    const heard = words.filter(x => (x.s + x.e) / 2 >= w.start && (x.s + x.e) / 2 < w.end)
+    const groups = word ? heard.map(x => [x]) : [...heard.reduce((m, x) => {
+      const k = Math.floor((x.s + off) / seg); m.set(k, [...(m.get(k) || []), x]); return m
+    }, new Map()).values()]
+    // as main.ts does it: timeline seconds, nothing past the audio this window was given
+    const pieces = groups.map(g => {
+      const [s, e] = stretch(g[0], w) || [g[0].s, g[g.length - 1].e]
+      return { start: Math.min(Math.max(s, w.start), w.end), end: Math.min(e, w.end), raw: ' ' + g.map(x => x.t).join(' ') }
+    })
+    return word ? mergeWordPieces(pieces) : pieces.map(p => ({ start: p.start, end: p.end, text: p.raw.trim() }))
+  }
+  const audit = (out, words) => {
+    const said = out.flatMap(r => r.text.split(' '))
+    let stacked = 0
+    for (let i = 1; i < out.length; i++) if (out[i].start < out[i - 1].end - 0.2) stacked++
+    return { twice: said.length - new Set(said).size, missing: words.filter(x => !said.includes(x.t)).length, stacked }
+  }
+  const clean = { twice: 0, missing: 0, stacked: 0 }
+  for (const seg of [4, 7, 9, 10, 12, 15]) for (const off of [0, 1.3, 2.9]) {
+    eq(audit(await transcribeWindows(env, total, hearWith(WORDS, { word: false, seg, off })), WORDS), clean,
+      `phrase mode, ${seg} s lines (offset ${off}): every word once, no stacked captions`)
+  }
+  eq(audit(await transcribeWindows(env, total, hearWith(WORDS, { word: true })), WORDS), clean, 'word mode: every word once')
+  // music with no words in it (as loud as the speech, so still no pause to cut in)
+  const without = (a, b) => WORDS.filter(x => x.s < a || x.s >= b)
+  const gapA = without(21, 27.5), after = gapA.find(x => x.s >= 27.5)
+  const early = (x, w) => x === after && w.start < 21 ? [21, x.e] : null        // the word after the music gets an early start
+  eq(audit(await transcribeWindows(env, total, hearWith(gapA, { word: true, stretch: early })), gapA), clean, 'word mode: a word whose start Whisper stretched back over the music is not heard twice')
+  const gapB = without(21, 28.6), before = gapB.filter(x => x.s < 21).pop()
+  const late = (x, w) => x === before && w.start < 21 ? [x.s, 28.7] : null     // the word before the music gets a long end
+  eq(audit(await transcribeWindows(env, total, hearWith(gapB, { word: true, stretch: late })), gapB), clean, 'word mode: nor is a word whose end Whisper stretched over the music')
+  const ticks = []
+  await transcribeWindows(env, total, hearWith(WORDS, { word: false }), d => ticks.push(d))
+  ok(ticks.length >= 4 && ticks.every((d, i) => !i || d > ticks[i - 1]) && ticks[ticks.length - 1] === total, `progress only goes forward and ends at the end (${ticks.join(', ')})`)
+}
 
 console.log('\n-- word pieces back into words --')
 const P = (start, end, raw) => ({ start, end, raw })

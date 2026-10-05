@@ -5,7 +5,7 @@ import { buildAss, chooseTheme, THEME_FONTS, type ThemeFont } from './styletheme
 import { scoreFrame, rankFrames, sampleTimes, thumbTextLayout, photoNudge, type FrameScore } from './thumbpick'
 import { planProxy, proxyFits, proxyKey, proxyAttempts, proxyArgs, quarterTurn, isRealVideo, isStillFormat, probeDuration, lastStatsTime, HDR_TO_SDR, type ProbeInfo } from './playable'
 import { refineFromEnvelope } from './speech'
-import { energyEnvelope, nextWindow, resumeAt, mergeWordPieces } from './asrwindows'
+import { energyEnvelope, transcribeWindows, mergeWordPieces } from './asrwindows'
 import { cleanTranscript } from './asrclean'
 import { resolveCaptionModel, migrateCaptionModel, etaSeconds, blendRate, DEFAULT_SEC_PER_MIN, type AsrModel, type CaptionModelSetting } from './asrmodel'
 import { planCrop, cropExpr, type Frame as GrayFrame } from './framing'
@@ -454,11 +454,8 @@ ipcMain.handle('transcribe', async (_event, filePath: string, opts: any = {}) =>
         etaSec: etaSeconds({ audioSec: total, doneSec, elapsedSec: (Date.now() - t0) / 1000, secPerMin }) })
     }
     progress(0)
-    const results: { start: number; end: number; text: string }[] = []
-    // runUp: the start of this window the previous one already covered (only after an overlap)
-    let from = 0, runUp = 0
-    for (let guard = 0; from < total - 0.2 && guard < 100000; guard++) {
-      const w = nextWindow(env, from, total)
+    // the seams between windows are settled in transcribeWindows (asrwindows.ts), where they are tested
+    const results = await transcribeWindows(env, total, async w => {
       const out = await asr(audio.subarray(Math.round(w.start * sr), Math.round(w.end * sr)), genOpts)
       const chunks: { text?: string; timestamp?: (number | null)[] }[] = out?.chunks || []
       // nothing heard can end after the audio this window was given (Whisper stretches its last word)
@@ -466,19 +463,8 @@ ipcMain.handle('transcribe', async (_event, filePath: string, opts: any = {}) =>
         start: Math.min((c.timestamp?.[0] ?? 0) + w.start, w.end), end: Math.min((c.timestamp?.[1] ?? c.timestamp?.[0] ?? 0) + w.start, w.end), raw: String(c.text || ''),
       }))
       // word mode: pieces back into whole words, inside this window only
-      const items = (opts.word ? mergeWordPieces(pieces, lang) : pieces.map(p => ({ start: p.start, end: p.end, text: p.raw.trim() })).filter(p => p.text))
-        .filter(it => !(runUp && it.end <= from + runUp + 0.05))   // only the tail of a word the last window kept
-      const last = w.end >= total - 1e-6
-      // A cut in a pause keeps everything before it. Without a pause, a word that crossed the cut
-      // is dropped here and heard again, whole, at the start of the next window.
-      const next = last ? total : w.quiet ? w.cut : resumeAt(items, w.cut, w.cut - 5)
-      for (const it of items) if (last || it.start < next) results.push(it)
-      progress(next)
-      if (last) break
-      runUp = w.quiet ? 0 : Math.min(0.15, next - w.start)
-      from = next - runUp
-    }
-    results.sort((a, b) => a.start - b.start)
+      return opts.word ? mergeWordPieces(pieces, lang) : pieces.map(p => ({ start: p.start, end: p.end, text: p.raw.trim() })).filter(p => p.text)
+    }, progress)
     const { kept, dropped } = cleanTranscript(results, { total, word: !!opts.word, env })
     if (dropped.length) console.log('transcribe: left out what nobody said:', dropped.map(d => `"${d.text}" at ${d.start.toFixed(2)}s (${d.why})`).join('; '))
     const rate = blendRate(speeds[speedKey], total, (Date.now() - t0) / 1000)
