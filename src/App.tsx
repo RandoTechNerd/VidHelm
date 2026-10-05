@@ -2042,7 +2042,8 @@ function Editor() {
         // Drive the same progress state the button uses: the human watches it render, and
         // the button re-enables afterwards (it stayed stuck and disabled before).
         setExportProgress(0); setEta(null); exportStartRef.current = Date.now()
-        try { await window.ipcRenderer.exportVideo(payload) }
+        let exportWarnings: string[] = []
+        try { exportWarnings = (await window.ipcRenderer.exportVideo(payload))?.warnings ?? [] }
         catch (e) {
           setExportProgress(null); setEta(null); setLastExport(null)
           const f = exportFailure(e)
@@ -2083,7 +2084,7 @@ function Editor() {
             worse(status)
           }
         }
-        return { ok: true, outputPath: cmd.outputPath, qualityCheck: qc || checks.length ? { verdict, checks } : undefined, script, layout: layout.notes.length ? layout.notes : undefined }
+        return { ok: true, outputPath: cmd.outputPath, qualityCheck: qc || checks.length ? { verdict, checks } : undefined, script, layout: layout.notes.length ? layout.notes : undefined, ...(exportWarnings.length ? { warnings: exportWarnings } : {}) }
       }
       default:
         return { error: `unknown action: ${cmd.action}` }
@@ -2188,11 +2189,14 @@ function Editor() {
   // sorts by track only (the same helper the preview uses), which keeps b-roll ON TOP of the A-roll
   // and keeps the order within a track exactly as the preview stacks it. v2 is picture only, so its
   // own audio is dropped here rather than mixed in: the A-roll keeps talking underneath the cutaway.
+  // Picture comes from the video tracks only, as in the preview: a video clip sitting on a1 (an older
+  // save, a hand-edited project) would otherwise burn its picture over the edit.
   const exportClips = (W: number, H: number, FPS: number, quality: string) => layerOrder(clips)
     .map(c => {
       const media = mediaBin.find(m => m.id === c.mediaId)
       const src = exportSource(media, W, H, FPS, quality)
-      return { ...c, path: src.path, hdr: src.hdr, hasVideo: media?.hasVideo, hasAudio: c.trackId === 'v2' ? false : media?.hasAudio, chromaKey: media?.chromaKey }
+      const picture = c.trackId === 'v1' || c.trackId === 'v2'
+      return { ...c, path: src.path, hdr: src.hdr, hasVideo: picture && !!media?.hasVideo, hasAudio: c.trackId === 'v2' ? false : media?.hasAudio, chromaKey: media?.chromaKey }
     })
 
   // The exporter opens the source once per clip, and on a long cut of 4K HEVC HDR that is a lot of
@@ -2631,10 +2635,11 @@ function Editor() {
         settings: { width: w, height: h, fps, quality: exportQuality, masterVolume },
       }
       exportStartRef.current = Date.now()
-      await window.ipcRenderer.exportVideo(payload)
+      const done = await window.ipcRenderer.exportVideo(payload)
       setExportProgress(100)
       setLastExport(finalPath)
       setTimeout(() => setExportProgress(null), 3000)
+      if (done?.warnings?.length) notify(`Exported, but ${done.warnings.join('; ')}.`, 11000)
       runQualityCheck(finalPath) // auto "watch & verify" the result
     } catch (err) {
       // never silent: the bar used to just vanish with no file and no reason. The toast gets the

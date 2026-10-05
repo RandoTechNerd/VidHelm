@@ -27,7 +27,7 @@ interface Window {
     detectSilence: (data: { filePath: string; thresholdDb: number; minPause: number }) => Promise<{ intervals?: { start: number; end: number }[]; error?: string }>
     detectFreeze: (data: { filePath: string; sourceStart: number; duration: number; freezeDb: number; minDur: number }) => Promise<{ intervals?: { start: number; end: number }[]; error?: string }>
     /** rejects with an Error whose message is "Export failed: <reason>" plus the end of ffmpeg's log on following lines */
-    exportVideo: (data: { clips: any[], texts: any[], brand: any, audio: any, outputPath: string, settings: any }) => Promise<{ success: boolean }>
+    exportVideo: (data: { clips: any[], texts: any[], brand: any, audio: any, outputPath: string, settings: any }) => Promise<{ success: boolean; warnings?: string[] }>
     sfxLibrary: () => Promise<{ dir: string; items: { name: string; path: string; duration: number; builtin: boolean }[] }>
     pickAudio: () => Promise<string | null>
     openExternal: (url: string) => Promise<void>

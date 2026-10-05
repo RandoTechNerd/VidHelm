@@ -17,7 +17,7 @@ import { planVisualIndex, timecode, stackLayout } from './visual'
 import { readZip, parseHandoff, downloadList, buildProject, entriesToWrite, isCloudMediaUrl, CLOUD_ORIGINS } from './cloudimport'
 import { generateClip, videoGenAvailable, estimateUsd, VIDEO_MODELS, GenTimeout } from './videogen'
 import { bridgeTimeoutMs, QUICK_MS } from '../agent/timeouts.mjs'
-import { stillInput, clipAudioChain, masterChain, friendlyExportError, stderrTail, UNREADABLE_STILL } from './exportgraph'
+import { stillInput, clipAudioChain, clipVideoChain, logoChain, masterChain, friendlyExportError, stderrTail, UNREADABLE_STILL, TO_709 } from './exportgraph'
 import { bridgeRefusal, commandForEditor, replyAlias, replyKey, type PendingReply } from './bridgeguard'
 import path from 'node:path'
 import fs from 'node:fs'
@@ -930,10 +930,12 @@ ipcMain.handle('render-mix-audio', async (_event, { clips }: { clips: any[] }) =
     withAudio.forEach((c, i) => {
       const idx = i + 1
       cmd.input(c.path)
-      // honor the clip's trim window (sourceStart/duration) so timeline alignment is exact
+      // honor the clip's trim window (sourceStart/duration) so timeline alignment is exact. Laid on
+      // the file's clock first, as the export does: audio that starts late in the file (or has holes)
+      // is padded rather than pulled early, so captions land on the words.
       const ss = c.sourceStart || 0
       const trim = `atrim=start=${ss}:end=${ss + (c.duration || 0) || 999999},asetpts=PTS-STARTPTS,`
-      fc.push(`[${idx}:a]${trim}aresample=48000,volume=${c.volume ?? 1},adelay=${Math.round(c.start * 1000)}|${Math.round(c.start * 1000)}[a${idx}]`)
+      fc.push(`[${idx}:a]aresample=48000:async=1:first_pts=0,${trim}volume=${c.volume ?? 1},adelay=${Math.round(c.start * 1000)}|${Math.round(c.start * 1000)}[a${idx}]`)
       mix.push(`a${idx}`)
     })
     fc.push(`${mix.map(a => `[${a}]`).join('')}amix=inputs=${mix.length}:duration=first:normalize=0[m]`)
@@ -2564,7 +2566,9 @@ ipcMain.handle('capture-site', async (_event, { url, width = 1920, height = 1080
     const total = Math.round(secs * FPS)
     const ff = spawn(paths.ffmpeg, ['-y', '-hide_banner', '-loglevel', 'error',
       '-f', 'image2pipe', '-framerate', String(FPS), '-i', '-',
-      '-vf', `scale=${W - (W % 2)}:${H - (H % 2)}`, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18', '-pix_fmt', 'yuv420p', out])
+      // the page is RGB: converted and tagged as BT.709 like an export, or its colours shift in every player
+      '-vf', `scale=${W - (W % 2)}:${H - (H % 2)}:${TO_709}`, '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18', '-pix_fmt', 'yuv420p',
+      '-colorspace', 'bt709', '-color_primaries', 'bt709', '-color_trc', 'bt709', '-color_range', 'tv', out])
     let ffErr = ''
     ff.stderr?.on('data', d => { ffErr += d })
     const t0 = Date.now()
@@ -2640,6 +2644,20 @@ ipcMain.handle('voice-clone', async (_event, { command, scriptText, pronounce }:
 // Exports in flight, by output file: two renders writing one file produce garbage (an agent retrying
 // after a timeout while the first export still runs is exactly how that happens).
 const exportsRunning = new Set<string>()
+
+/** Channels in the first audio stream of each file (absent when it cannot be read), a few probes at a
+ *  time. Asked of the exact file being rendered, which may be the preview copy, not the original. */
+async function audioChannelsOf(files: string[]): Promise<Map<string, number>> {
+  const found = new Map<string, number>()
+  const todo = [...new Set(files)]
+  const probe = (f: string) => new Promise<void>(res => ffmpeg.ffprobe(f, (err, d) => {
+    const a: any = !err && d ? d.streams.find((s: any) => s.codec_type === 'audio') : null
+    if (a && Number(a.channels) > 0) found.set(f, Number(a.channels))
+    res()
+  }))
+  for (let i = 0; i < todo.length; i += 4) await Promise.all(todo.slice(i, i + 4).map(probe))
+  return found
+}
 // A failure must say WHY, in words, with the end of ffmpeg's log after it: the renderer shows the
 // message in a toast (it used to just make the progress bar disappear).
 const exportError = (reason: string, detail = '') => new Error(`Export failed: ${reason}${detail ? `\n${detail}` : ''}`)
@@ -2664,6 +2682,18 @@ ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outp
   // one problem is the headline by itself; several get a count, then the list
   if (problems.length) throw exportError(problems.length === 1 ? problems[0] : `${problems.length} clips cannot be read`, problems.length === 1 ? '' : problems.slice(0, 6).join('\n'))
   const outKey = path.resolve(outputPath).toLowerCase()
+  if (exportsRunning.has(outKey)) throw exportError('an export to that file is already running')
+  // Things worth telling the user that do not stop the render.
+  const warnings: string[] = []
+  if (brand?.enabled && brand.logoPath && !fs.existsSync(brand.logoPath)) warnings.push(`the brand logo (${path.basename(String(brand.logoPath))}) was not found, so this export has no logo`)
+  // A mono mic has to be copied to both sides at full level (see clipAudioChain), so each source is
+  // asked how many channels it has. One probe per file: a 90-cut timeline of one recording costs one.
+  const unknownCh = clips.filter(c => c.hasAudio && !(Number(c.audioChannels) > 0))
+  if (unknownCh.length) {
+    const ch = await audioChannelsOf(unknownCh.map(c => c.path))
+    for (const c of unknownCh) c.audioChannels = ch.get(c.path)
+  }
+  // again: the probe above yields, and a retry of the same export can arrive meanwhile
   if (exportsRunning.has(outKey)) throw exportError('an export to that file is already running')
   exportsRunning.add(outKey)
   return new Promise((resolve, reject) => {
@@ -2721,24 +2751,10 @@ ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outp
       }
 
       if (clip.hasVideo || clip.type === 'image') {
-        // Clips rendered on a key colour (3D Studio green screen) get it removed first, so
-        // whatever sits below shows through. despill cleans the fringe that 4:2:0 chroma
-        // subsampling leaves around antialiased edges. Costs roughly a second per six
-        // seconds of overlay at 1080p, which is cheap next to the encode itself.
-        const key = typeof clip.chromaKey === 'string' && /^#?[0-9a-f]{6}$/i.test(clip.chromaKey)
-          ? clip.chromaKey.replace('#', '') : null
-        const keyChain = key
-          ? `colorkey=0x${key}:0.30:0.10,${/^00e/i.test(key) ? 'despill=type=green:mix=0.5:expand=0,' : ''}`
-          : ''
-        // HDR footage (phone HLG, PQ) is graded for a different display: dropped straight into a
-        // bt709 export it comes out grey and flat, so convert it the same way the preview proxy
-        // does. Scaling happens after, since tone mapping at output size is the cheaper order.
-        const hdrChain = clip.hdr ? `${HDR_TO_SDR},` : ''
-        // Fit into frame with transparent padding so overlapping clips can crossfade through each other
-        let v = `[${idx}:v]${stillVf}${keyChain}${hdrChain}format=yuva420p,scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=0x00000000,setpts=PTS-STARTPTS+${clip.start}/TB`
-        if (clip.fadeIn > 0) v += `,fade=t=in:st=${clip.start}:d=${clip.fadeIn}:alpha=1`
-        if (clip.fadeOut > 0) v += `,fade=t=out:st=${(end - clip.fadeOut).toFixed(3)}:d=${clip.fadeOut}:alpha=1`
-        filterComplex.push(`${v}[v_scaled_${idx}]`)
+        // Key colour, HDR tone map (phone HLG/PQ is graded for another display and comes out grey
+        // and flat in a bt709 file, so it gets the preview proxy's conversion), frame clock, BT.709
+        // for stills, fit and fades: see clipVideoChain in electron/exportgraph.ts.
+        filterComplex.push(clipVideoChain(`${idx}:v`, clip, { W, H, fps: FPS, stillVf, hdrToSdr: HDR_TO_SDR }, `v_scaled_${idx}`))
         filterComplex.push(`[${currentVOut}][v_scaled_${idx}]overlay=enable='between(t,${clip.start},${end})':eof_action=pass[v_out_${idx}]`)
         currentVOut = `v_out_${idx}`
       }
@@ -2818,9 +2834,8 @@ ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outp
         br: `main_w-overlay_w-${m}:main_h-overlay_h-${m}`,
         center: `(main_w-overlay_w)/2:(main_h-overlay_h)/2`,
       }
-      let lf = `[${logoIdx}:v]${logo.vf}format=rgba,scale=${logoW}:-1,colorchannelmixer=aa=${op}`
-      if (fade > 0) { lf += `,fade=t=in:st=${s}:d=${fade}:alpha=1,fade=t=out:st=${(e - fade).toFixed(3)}:d=${fade}:alpha=1` }
-      filterComplex.push(`${lf}[logo]`)
+      // converted to BT.709 by the graph, not by the overlay (see logoChain)
+      filterComplex.push(logoChain(`${logoIdx}:v`, { stillVf: logo.vf, width: logoW, opacity: op, fade, from: s, to: e }, 'logo'))
       filterComplex.push(`[${currentVOut}][logo]overlay=${posMap[brand.position] || posMap.br}:enable='between(t,${s},${e})'[v_brand]`)
       currentVOut = 'v_brand'
     }
@@ -2866,13 +2881,13 @@ ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outp
         '-g', String(FPS * 2),
         '-keyint_min', String(FPS * 2),
         '-sc_threshold', '0',
-        '-colorspace', 'bt709', '-color_primaries', 'bt709', '-color_trc', 'bt709',
+        '-colorspace', 'bt709', '-color_primaries', 'bt709', '-color_trc', 'bt709', '-color_range', 'tv',
         '-movflags', '+faststart',
         '-t', totalDuration.toString(),
       ])
       .on('start', (cmd) => console.log('FFmpeg started:', cmd))
       .on('progress', (progress) => { if (win) win.webContents.send('export-progress', progress.percent) })
-      .on('end', () => { exportsRunning.delete(outKey); if (cleanupGraph) { try { fs.unlinkSync(cleanupGraph) } catch { /* already gone */ } } resolve({ success: true }) })
+      .on('end', () => { exportsRunning.delete(outKey); if (cleanupGraph) { try { fs.unlinkSync(cleanupGraph) } catch { /* already gone */ } } resolve({ success: true, ...(warnings.length ? { warnings } : {}) }) })
       .on('error', (err: Error, _stdout: string, stderr: string) => {
         exportsRunning.delete(outKey)
         if (cleanupGraph) { try { fs.unlinkSync(cleanupGraph) } catch { /* already gone */ } }

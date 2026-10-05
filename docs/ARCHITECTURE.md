@@ -36,8 +36,8 @@ All editing state lives in `App.tsx` React state, no store library:
 One FFmpeg process, one filtergraph:
 
 1. Base layers: `color=black` video + `anullsrc` audio at target size/fps/48 kHz.
-2. Every clip becomes an input; video clips are scaled/padded into frame with alpha, shifted by `setpts`, alpha-faded, then chained through `overlay` (so overlapping fades crossfade for real).
-3. Audio clips get `adelay` + volume (flat or piecewise-linear automation expression) + `afade`, then a single `amix` with `normalize=0`.
+2. Every clip becomes an input; video clips are put on the export's frame clock from their in-point (`fps=...:start_time=0`, so a VFR hole cannot pull the picture early), scaled/padded into frame with alpha, shifted by `setpts`, alpha-faded, then chained through `overlay` (so overlapping fades crossfade for real). Stills and the logo are converted to BT.709 by the graph itself (`TO_709`), never by an automatic BT.601 conversion. The chains live in `electron/exportgraph.ts` (`clipVideoChain`, `logoChain`).
+3. Audio clips are laid on the file's clock (`aresample=async=1:first_pts=0`, so late-starting audio is padded rather than pulled early), cut to exactly the clip, mono copied to both sides at full level, then `adelay` + volume (flat or piecewise-linear automation expression) + `afade`, then a single `amix` with `normalize=0` (`clipAudioChain`).
 4. Texts are `drawtext` (textfile-based, so quoting is safe) with alpha expressions.
 5. Brand logo is a final overlay with its own window/fade logic.
 6. Mastering: optional FFT denoise → master gain → `acompressor` + `loudnorm` (YouTube target) or a plain safety limiter.

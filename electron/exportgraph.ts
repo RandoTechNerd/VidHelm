@@ -35,19 +35,88 @@ export function stillInput(file: string, seconds: number, fps = 30): { opts: str
 /** Photo formats this ffmpeg build cannot decode at all (and Chromium cannot show either). */
 export const UNREADABLE_STILL = /\.(heic|heif)$/i
 
+/**
+ * scale options for a conversion INTO the export's colour: BT.709, limited range, which is what the
+ * file is tagged as. swscale's default for RGB to YUV is BT.601, so a PNG, a logo or a captured web
+ * page converted without this sat in a BT.709 file with the wrong matrix and every player showed
+ * it shifted (brand orange #FF6A00 played back as #FF7200). Video clips are already YUV and pass
+ * through untouched.
+ */
+export const TO_709 = 'flags=lanczos+accurate_rnd+full_chroma_int:out_color_matrix=bt709:out_range=tv'
+
+export interface VideoClip {
+  type?: string; start: number; duration: number; fadeIn?: number; fadeOut?: number
+  hdr?: boolean; chromaKey?: string
+}
+
+/**
+ * One clip's picture branch, from its input to the overlay: fitted into the frame with transparent
+ * padding (so overlapping clips can crossfade through each other) and placed at its start.
+ *
+ * Video is first put on the export's frame clock from the clip's in-point. A screen recording or
+ * phone clip with variable frame rate can have a hole in it, and an input that starts on the far
+ * side of a hole used to be pulled back to zero, so everything after played early (1.5 s in the
+ * measured case) against its own sound. fps=...:start_time=0 fills from the in-point instead.
+ *
+ * HDR footage is scaled down BEFORE the tone map: about 2x faster from 4K to 1080p, and the picture
+ * differs only by rounding at sharp edges.
+ * Stills go straight from their own colours to BT.709 in one scale (see TO_709).
+ */
+export function clipVideoChain(input: string, c: VideoClip, o: { W: number; H: number; fps: number; stillVf?: string; hdrToSdr?: string }, out: string): string {
+  const { W, H } = o
+  const end = c.start + c.duration
+  // Clips rendered on a key colour (3D Studio green screen) get it removed first, so whatever sits
+  // below shows through. despill cleans the fringe that 4:2:0 chroma subsampling leaves around
+  // antialiased edges. Costs roughly a second per six seconds of overlay at 1080p, cheap next to
+  // the encode itself.
+  const key = typeof c.chromaKey === 'string' && /^#?[0-9a-f]{6}$/i.test(c.chromaKey) ? c.chromaKey.replace('#', '') : null
+  const keyChain = key ? `colorkey=0x${key}:0.30:0.10,${/^00e/i.test(key) ? 'despill=type=green:mix=0.5:expand=0,' : ''}` : ''
+  const fit = `scale=${W}:${H}:force_original_aspect_ratio=decrease`
+  let v: string
+  if (c.type === 'image') v = `[${input}]${o.stillVf || ''}${keyChain}${fit}:${TO_709},format=yuva420p`
+  else if (c.hdr && o.hdrToSdr) v = `[${input}]fps=${o.fps}:start_time=0,${keyChain}${fit},${o.hdrToSdr},format=yuva420p`
+  else v = `[${input}]fps=${o.fps}:start_time=0,${keyChain}format=yuva420p,${fit}`
+  v += `,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=0x00000000,setpts=PTS-STARTPTS+${c.start}/TB`
+  if ((c.fadeIn ?? 0) > 0) v += `,fade=t=in:st=${c.start}:d=${c.fadeIn}:alpha=1`
+  if ((c.fadeOut ?? 0) > 0) v += `,fade=t=out:st=${(end - (c.fadeOut ?? 0)).toFixed(3)}:d=${c.fadeOut}:alpha=1`
+  return `${v}[${out}]`
+}
+
+/**
+ * The brand logo's branch: sized and made translucent in RGB, then converted to the file's BT.709
+ * here. Left to the overlay, the conversion happens automatically with BT.601 and shifts the brand
+ * colours, the one place a viewer is sure to notice.
+ */
+export function logoChain(input: string, o: { stillVf?: string; width: number; opacity: number; fade: number; from: number; to: number }, out: string): string {
+  let lf = `[${input}]${o.stillVf || ''}format=rgba,scale=${o.width}:-1,colorchannelmixer=aa=${o.opacity},scale=${TO_709},format=yuva420p`
+  if (o.fade > 0) lf += `,fade=t=in:st=${o.from}:d=${o.fade}:alpha=1,fade=t=out:st=${(o.to - o.fade).toFixed(3)}:d=${o.fade}:alpha=1`
+  return `${lf}[${out}]`
+}
+
 export interface AudioClip {
   start: number; duration: number; sourceStart?: number
   volume?: number; fadeIn?: number; fadeOut?: number; aFadeIn?: number; aFadeOut?: number
+  /** channels in the source's audio stream (1 = a mono lav or phone mic); unknown counts as stereo */
+  audioChannels?: number
 }
 
 /**
  * One clip's audio branch, from its input to the mix. `volume` is either a number or a ready-made
  * eval=frame expression (volume automation).
  *
- * The input is opened with a little tail past the clip (the picture's fades need frames), so the
- * audio is cut to EXACTLY the clip's length first. Without that every clip kept playing 0.2 s past
+ * The audio is laid on the clock the picture uses, then cut. The input is opened at the clip's
+ * in-point, so a stream that starts late in the file (0.46 s is common from cameras and screen
+ * recorders) or has a hole in it arrives with timestamps that say so. Renumbering it from zero used
+ * to pull every word that much early; aresample's async mode pads the late start and fills the holes
+ * with silence instead, so the sound stays on the frames it belongs to.
+ *
+ * The input is also opened with a little tail past the clip (the picture's fades need frames), so the
+ * audio is then cut to EXACTLY the clip's length. Without that every clip kept playing 0.2 s past
  * its out-point: a split doubled the audio for 200 ms (+6 dB) and a trim leaked the cut-off audio
  * under the next clip, none of it audible in the preview.
+ *
+ * A mono source is copied to both sides at full level. Left to the mixer's automatic upmix it went in
+ * at -3 dB per side (the "centre" share), so a mono mic exported 3 dB quieter than the preview plays it.
  *
  * Every edge that is a splice gets at least DEPOP_S of audio ramp, however the clip was made (split
  * key, cut_at_phrase, a dragged edge): a hard splice mid-waveform is a step, and a step clicks. A
@@ -56,7 +125,8 @@ export interface AudioClip {
 export function clipAudioChain(input: string, c: AudioClip, volume: number | string, out: string): string {
   const startMs = Math.round(c.start * 1000)
   const end = c.start + c.duration
-  let a = `[${input}]asetpts=PTS-STARTPTS,atrim=duration=${c.duration.toFixed(3)},aresample=48000,adelay=${startMs}|${startMs}`
+  const mono = c.audioChannels === 1 ? 'pan=stereo|c0=c0|c1=c0,' : ''
+  let a = `[${input}]aresample=48000:async=1:first_pts=0,atrim=end=${c.duration.toFixed(3)},asetpts=PTS-STARTPTS,${mono}aformat=sample_fmts=fltp:channel_layouts=stereo,adelay=${startMs}|${startMs}`
   a += typeof volume === 'string' ? `,volume='${volume}':eval=frame` : `,volume=${volume}`
   // Audio-only ramps override the picture fades, so the picture can still cut hard.
   const aIn = Math.max(c.aFadeIn ?? c.fadeIn ?? 0, (Number(c.sourceStart) || 0) > 0 ? DEPOP_S : 0)
