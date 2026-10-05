@@ -22,6 +22,18 @@ ok(fill(-3, 0, 1) === '0%' && fill(9, 0, 1) === '100%', 'out-of-range values cla
 ok(fill(NaN, 0, 1) === '0%' && fill(Infinity, 0, 1) === '0%', 'not a number draws an empty track')
 ok(fill(5, 3, 3) === '0%' && fill(5, 4, 2) === '0%', 'a zero or inverted span does not divide by zero')
 
+// App.css draws every range input with appearance: none and paints the filled part from --fill,
+// so a slider that does not pass rangeFill draws an empty track at every value (accent-color, the
+// old way, does nothing on a restyled track). Master and clip volume were missed once.
+const srcDir = path.join(here, '..', 'src')
+const sliders = fs.readdirSync(srcDir, { recursive: true }).filter(f => /\.tsx$/.test(f)).flatMap(f => {
+  const text = fs.readFileSync(path.join(srcDir, f), 'utf8')
+  return [...text.matchAll(/type="range"/g)].map(m => ({ f, tag: text.slice(text.lastIndexOf('<input', m.index), text.indexOf('/>', m.index)) }))
+})
+ok(sliders.length >= 6, `the source scan finds the sliders (${sliders.length})`)
+for (const s of sliders.filter(s => !s.tag.includes('rangeFill('))) ok(false, `${s.f}: a slider paints no fill: ${s.tag.slice(0, 90)}`)
+ok(sliders.every(s => s.tag.includes('rangeFill(')), 'every slider paints its fill')
+
 console.log('keyTail / savedKeyLabel')
 const fal = '3f9c2b7e-1d4a-4c8e-9b2f-7a6d5e4c3b2a:0123456789abcdef0123456789aba1b2'
 ok(U.keyTail(fal) === 'a1b2', 'a real-length key shows its last four')
