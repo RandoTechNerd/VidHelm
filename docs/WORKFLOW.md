@@ -124,8 +124,14 @@ Mixing tools, per clip: flat volume slider, **drawable volume-automation graph**
 | `S` | Split selected clip at playhead |
 | `Delete` | Delete selected clip/text |
 | `←` / `→` | Step 1 frame (with `Shift`: 1 s) |
-| `Home` | Jump to start |
-| `Ctrl+Z` / `Ctrl+Shift+Z` | Undo / redo |
+| `Home` / `End` | Jump to start / end |
+| `Esc` | Clear the selection |
+| `Ctrl+S` / `Ctrl+Shift+S` | Save / save a copy as a file |
+| `Ctrl+O` | Open a project |
+| `Ctrl+E` | Export |
+| `Ctrl+Z` / `Ctrl+Shift+Z` (or `Ctrl+Y`) | Undo / redo |
+
+The single keys rest while you type in a text box or have a dialog open, and never fire with `Ctrl` or `Alt` held (so `Ctrl+S` saves rather than splitting). Inside a text box `Ctrl+Z` undoes your typing, not the timeline.
 
 ## AI clips (✨ AI clip)
 

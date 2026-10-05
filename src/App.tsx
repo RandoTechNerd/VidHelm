@@ -18,6 +18,7 @@ import { spanForPhrase, sentenceSpans, type Word as SpeechWord, type Span } from
 import { planBroll, snapToWords, describePlan, type BrollAsset, type Placement } from '../electron/broll'
 import { looksLikeThumbPhoto } from '../electron/thumbpick'
 import { resolveProfile, describeProfile, type PerfProfile, type Tier, type TierPreference } from '../electron/capability'
+import { shortcutFor, focusKind, stepTime, type Shortcut } from '../electron/shortcuts'
 
 interface MediaFile {
   id: string
@@ -949,27 +950,6 @@ function Editor() {
   }
   const undo = () => { if (histIndex.current > 0) applyHistory(histIndex.current - 1) }
   const redo = () => { if (histIndex.current < history.current.length - 1) applyHistory(histIndex.current + 1) }
-
-  // Keyboard shortcuts (ignored while typing in a field)
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      // Ctrl+S saves (Ctrl+Shift+S asks where), from anywhere, including while typing in a field
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); void saveRef.current(e.shiftKey); return }
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); return }
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') { e.preventDefault(); redo(); return }
-      const tag = (e.target as HTMLElement)?.tagName
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (e.target as HTMLElement)?.isContentEditable) return
-      if (e.code === 'Space') { e.preventDefault(); if (totalDuration > 0) setIsPlaying(p => !p) }
-      else if (e.key === 'Delete' || e.key === 'Backspace') { if (selectedId) { e.preventDefault(); deleteSelected() } }
-      else if (e.key.toLowerCase() === 's') { if (selClip) { e.preventDefault(); splitAtPlayhead() } }
-      else if (e.key === 'ArrowLeft') { e.preventDefault(); setCurrentTime(t => Math.max(0, t - (e.shiftKey ? 1 : 1 / 30))) }
-      else if (e.key === 'ArrowRight') { e.preventDefault(); setCurrentTime(t => Math.min(totalDuration, t + (e.shiftKey ? 1 : 1 / 30))) }
-      else if (e.key === 'Home') { e.preventDefault(); setCurrentTime(0) }
-      else if (e.key.toLowerCase() === 'm') { e.preventDefault(); setMarkers(m => [...m, newMarker(currentTime)]) }
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [totalDuration, selectedId, selClip, currentTime])
 
   // Load persistent settings (brand kit, intro defaults, audio) once
   useEffect(() => {
@@ -3154,6 +3134,44 @@ function Editor() {
     } catch (e) { console.error(e); notify(`Could not open that project: ${errText(e)}`) }
   }
 
+  // Keyboard shortcuts. Which key means what (and when a key belongs to a text field, a slider or
+  // an open dialog instead) is decided and tested in electron/shortcuts.ts; this only carries it
+  // out. The listener is registered once and reaches the latest editor through a ref: depending
+  // on currentTime, it used to be torn down and added again on every frame of playback.
+  const shortcutRef = useRef<(s: Shortcut) => void>(() => {})
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const s = shortcutFor(e, { focus: focusKind(e.target as HTMLElement | null), modalOpen: !!document.querySelector('.modal-backdrop') })
+      if (!s) return
+      e.preventDefault()
+      shortcutRef.current(s)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+  const runShortcut = (s: Shortcut) => {
+    switch (s) {
+      case 'save': case 'saveAs': void saveProject(s === 'saveAs'); return
+      case 'open': void loadProject(); return
+      case 'export': if (exportProgress === null) void handleExport(); return
+      case 'undo': undo(); return
+      case 'redo': redo(); return
+      case 'play': if (totalDuration > 0) setIsPlaying(p => !p); return
+      case 'delete': deleteSelected(); return
+      case 'split': splitAtPlayhead(); return
+      case 'tag': setMarkers(m => [...m, newMarker(currentTime)]); return
+      case 'frameBack': case 'frameForward': case 'secondBack': case 'secondForward':
+        // a step is for looking at one frame: playback would carry the playhead straight off it
+        setIsPlaying(false)
+        setCurrentTime(t => stepTime(t, s.endsWith('Back') ? -1 : 1, fps, totalDuration, s.startsWith('second') ? 'second' : 'frame'))
+        return
+      case 'start': setCurrentTime(0); return
+      case 'end': setCurrentTime(totalDuration); return
+      case 'escape': setSelectedId(null); setCtxMenu(null); setShowLinks(false); return
+    }
+  }
+  useEffect(() => { shortcutRef.current = runShortcut })
+
   // Unsaved work from a session that ended without saving (a crash, a power cut, Don't save):
   // offered back once, at startup. The project folder's own copy is offered again when it opens.
   // This session starts untitled and autosaves into the untitled slot, so untitled work from the
@@ -3368,7 +3386,7 @@ function Editor() {
           <div className="hdr-group">
             <button className={`hdr-btn ${dirty ? 'unsaved' : ''}`} onClick={e => { void saveProject(e.shiftKey) }}
               title={`${dirty ? 'Unsaved changes. ' : ''}Save project (Ctrl+S)${currentProject ? ` into ${currentProject.name}` : saveFile ? ` to ${baseName(saveFile)}` : ''}.${currentProject || saveFile ? ' Shift+click or Ctrl+Shift+S saves a copy as a file; Save keeps writing here.' : ''}`}><IcSave /><span>Save</span></button>
-            <button className="hdr-btn" onClick={loadProject} title="Open project"><IcOpen /><span>Open</span></button>
+            <button className="hdr-btn" onClick={loadProject} title="Open project (Ctrl+O)"><IcOpen /><span>Open</span></button>
             <button className="hdr-btn" onClick={() => importCloudZip()} title="Import a VidHelm Cloud hand-off (.zip): clips, plan, notes and narration land in a new project"><IcCloud /><span>Import</span></button>
           </div>
           <span className="hdr-sep" />
@@ -3394,7 +3412,7 @@ function Editor() {
           <button className="hdr-btn icon" onClick={() => setShowHelp(true)} title="Getting started, the tour, credits and licences"><IcHelp /></button>
           <button className="hdr-btn icon" onClick={() => setShowSettings(true)} title="Brand kit & settings"><IconGear /></button>
           <button className="hdr-export" onClick={handleExport} disabled={(clips.length === 0 && texts.length === 0) || exportProgress !== null}
-            title="Render the video with the settings in the Export panel">
+            title="Render the video with the settings in the Export panel (Ctrl+E)">
             <IconExport /><span>{exportProgress !== null ? `${Math.round(exportProgress)}%` : 'Export'}</span>
           </button>
           {showLinks && (
@@ -3516,7 +3534,9 @@ function Editor() {
                   onInput={(e) => { const v = (e.target as HTMLElement).innerText; setTexts(prev => prev.map(x => x.id === t.id ? { ...x, text: v } : x)) }}
                   onBlur={() => endTextEdit()}
                   onKeyDown={(e) => {
-                    e.stopPropagation()   // Space and Delete belong to the caret while typing
+                    // Space and Delete belong to the caret while typing; Ctrl+S (and the other
+                    // Ctrl shortcuts, which leave a field's own undo alone) still reach the editor
+                    if (!(e.ctrlKey || e.metaKey)) e.stopPropagation()
                     if (e.key === 'Escape' || (e.key === 'Enter' && !e.shiftKey)) { e.preventDefault(); endTextEdit() }
                   }}>
                   {editingTextId === t.id ? undefined : (t.text || ' ')}
@@ -3654,14 +3674,14 @@ function Editor() {
                 exactly one row. More and the zoom group sit outside the scroller and stay put,
                 which also keeps the dropdown clear of the scroll container's clipping. */}
             <div className="tool-group">
-            <button className="tool-btn play" onClick={() => setIsPlaying(p => !p)} disabled={totalDuration <= 0}>{isPlaying ? <IconPause /> : <IconPlay />} {isPlaying ? 'Pause' : 'Play'}</button>
+            <button className="tool-btn play" onClick={() => setIsPlaying(p => !p)} disabled={totalDuration <= 0} title="Play / pause (Space)">{isPlaying ? <IconPause /> : <IconPlay />} {isPlaying ? 'Pause' : 'Play'}</button>
             <span className="timecode" title="Playhead / total length"><b>{fmt(currentTime)}</b><i>/</i>{fmt(totalDuration)}</span>
             <div className="divider" />
             <button className="tool-btn compactable" onClick={undo} disabled={!canUndo} title="Undo (Ctrl+Z)"><IconUndo /> <span className="tb-label">Undo</span></button>
             <button className="tool-btn compactable" onClick={redo} disabled={!canRedo} title="Redo (Ctrl+Shift+Z)"><IconRedo /> <span className="tb-label">Redo</span></button>
             <div className="divider" />
-            <button className="tool-btn compactable" onClick={splitAtPlayhead} disabled={!selClip} title="Split the selected clip at the playhead"><IconScissors /> <span className="tb-label">Split</span></button>
-            <button className="tool-btn compactable" onClick={deleteSelected} disabled={!selectedId} title="Delete the selection"><IconTrash /> <span className="tb-label">Delete</span></button>
+            <button className="tool-btn compactable" onClick={splitAtPlayhead} disabled={!selClip} title="Split the selected clip at the playhead (S)"><IconScissors /> <span className="tb-label">Split</span></button>
+            <button className="tool-btn compactable" onClick={deleteSelected} disabled={!selectedId} title="Delete the selection (Delete)"><IconTrash /> <span className="tb-label">Delete</span></button>
             <button className="tool-btn compactable" onClick={addText} title="Add a text layer"><IconText /> <span className="tb-label">Text</span></button>
             <button className={`tool-btn compactable ${isRecording ? 'recording' : ''}`} onClick={toggleRecord} title="Record a voiceover"><IconMic /> <span className="tb-label">{isRecording ? 'Stop' : 'Voiceover'}</span></button>
             <button className="tool-btn compactable captions-btn" onClick={() => generateCaptions()} disabled={captioning !== null || totalDuration <= 0} title="Auto-caption the whole timeline (on-device Whisper)">
