@@ -3,7 +3,10 @@
 /* ============ Design tokens ============
    Dark is the default; [data-theme="light"] on <html> swaps the whole palette. Everything below
    draws from these, including --ink, the foreground as an RGB triple for translucent tints
-   (rgb(var(--ink) / 0.06)) so a hover wash works on either background. */
+   (rgb(var(--ink) / 0.06)) so a hover wash works on either background.
+   Every text colour clears WCAG AA (4.5:1) on the panels it sits on, and white clip labels clear
+   it on every clip colour, in both themes: scripts/contrast.test.mjs reads this block and fails
+   the build if a change here breaks that. */
 :root {
   color-scheme: dark;
   --ink: 255 255 255;
@@ -14,21 +17,25 @@
   --bg-input: #111113;
   --bg-viewer: #0b0b0c;
   --bg-track: #111113;
+  --bg-stage-empty: #141417;     /* the preview before there is anything to preview */
   --bg-overlay: rgba(18, 18, 21, 0.97);
   --bg-code: #0c0c0e;
   --text-code: #b8d4b8;
 
-  --accent-primary: #6366f1;
-  --accent-hover: #5458e6;
+  /* One accent, used for the single most important action on screen and for selection.
+     #5458e6 rather than a brighter indigo so white text on it passes. */
+  --accent-primary: #5458e6;
+  --accent-hover: #4a4ed8;
   --accent-soft: rgba(99, 102, 241, 0.16);
   --accent-text: #a5b4fc;
   --accent-secondary: #10b981;
   --accent-warning: #f59e0b;
   --accent-error: #ef4444;
+  --accent-gold: #facc15;        /* favourites, held lines, "needs credit": the old literal yellows */
 
   --text-main: #ececef;
   --text-muted: #a1a1aa;
-  --text-dim: #71717a;
+  --text-dim: #8a8a93;
   --text-primary: var(--text-main);
   --text-secondary: var(--text-muted);
 
@@ -39,8 +46,8 @@
 
   --clip-video: #4560c9;
   --clip-image: #7656c4;
-  --clip-audio: #128a6b;
-  --clip-broll: #c2701a;
+  --clip-audio: #14795e;
+  --clip-broll: #b05e12;
   --clip-text: #d6a12b;
   --clip-text-ink: #2b1d00;
 
@@ -63,6 +70,7 @@
   --bg-input: #ffffff;
   --bg-viewer: #f1f2f4;
   --bg-track: #f4f4f6;
+  --bg-stage-empty: #e7e8ec;
   --bg-overlay: rgba(255, 255, 255, 0.98);
   --bg-code: #f6f7f9;
   --text-code: #24603a;
@@ -71,23 +79,26 @@
   --accent-hover: #4b4fe0;
   --accent-soft: rgba(91, 95, 240, 0.11);
   --accent-text: #4f46e5;
-  --accent-secondary: #059669;
-  --accent-warning: #d97706;
+  /* the status colours are also text (a "free" licence, a warning line), so they run darker
+     than the dark theme's on a white panel */
+  --accent-secondary: #047857;
+  --accent-warning: #b45309;
   --accent-error: #dc2626;
+  --accent-gold: #a16207;
 
   --text-main: #18181b;
   --text-muted: #52525b;
-  --text-dim: #8b8b94;
+  --text-dim: #6e6e78;
 
   --border: #e2e3e8;
   --border-subtle: rgba(24, 24, 27, 0.08);
   --border-strong: rgba(24, 24, 27, 0.16);
   --border-focus: rgba(91, 95, 240, 0.5);
 
-  --clip-video: #5b74d6;
-  --clip-image: #8b6ad6;
-  --clip-audio: #1f9e7c;
-  --clip-broll: #d9822b;
+  --clip-video: #4a63c8;
+  --clip-image: #7a5ac8;
+  --clip-audio: #14795e;
+  --clip-broll: #a95a10;
   --clip-text: #e8b443;
 
   --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.06);
@@ -170,7 +181,11 @@ header .hdr-btn, header .orient-btn, header .hdr-export, header .links-pop butto
 }
 .hdr-export svg { width: 14px; height: 14px; }
 .hdr-export:hover:not(:disabled) { background: var(--accent-hover); }
-.hdr-export:disabled { opacity: 0.45; cursor: not-allowed; }
+/* A disabled primary is grey, not a washed-out accent: pastel indigo still reads as "press me",
+   and white on it fails contrast. Same rule for every filled primary in the app. */
+.hdr-export:disabled, .action-btn.export:disabled, .modal-foot .primary:disabled, .conn-actions button.primary:disabled {
+  background: rgb(var(--ink) / 0.08); color: var(--text-dim); opacity: 1; cursor: not-allowed;
+}
 
 /* Labels fold away before anything else does, so the bar never wraps. */
 @media (max-width: 1320px) { .hdr-group .hdr-btn span, .orient-label { display: none; } .hdr-group .hdr-btn { width: 28px; padding: 0; justify-content: center; } }
@@ -355,7 +370,8 @@ main {
   box-shadow: 0 0 0 1px rgb(var(--ink) / 0.06), var(--shadow-md);
 }
 .stage img, .stage video { width: 100%; height: 100%; object-fit: contain; display: block; }
-.placeholder { font-size: 13px; font-weight: 500; color: #5b5b63; letter-spacing: 0.12em; font-variant-numeric: tabular-nums; }
+/* the stage is black in both themes, so this grey does not follow the theme */
+.placeholder { font-size: 13px; font-weight: 500; color: rgb(255 255 255 / 0.55); letter-spacing: 0.12em; font-variant-numeric: tabular-nums; }
 
 .expand-btn {
   position: absolute;
@@ -452,10 +468,15 @@ main {
   transition: background 0.12s, color 0.12s;
 }
 .tool-btn:hover:not(:disabled) { background: rgb(var(--ink) / 0.07); color: var(--text-main); }
-.tool-btn:disabled { opacity: 0.38; cursor: not-allowed; }
+/* Disabled tools stay readable (opacity .38 put them at 2:1); the icon alone steps back. */
+.tool-btn:disabled { color: var(--text-dim); cursor: not-allowed; }
+.tool-btn:disabled svg { opacity: 0.6; }
 .tool-btn.active { background: var(--accent-soft); color: var(--text-main); }
-.tool-btn.play { background: var(--accent-primary); color: #fff; padding: 0 12px 0 10px; font-weight: 600; }
-.tool-btn.play:hover:not(:disabled) { background: var(--accent-hover); color: #fff; }
+/* Play is a transport control, not the call to action: Export is. It only takes the accent tint
+   while it is actually playing. */
+.tool-btn.play { background: rgb(var(--ink) / 0.08); color: var(--text-main); padding: 0 12px 0 10px; font-weight: 600; }
+.tool-btn.play:hover:not(:disabled) { background: rgb(var(--ink) / 0.12); color: var(--text-main); }
+.tool-btn.play.playing, .tool-btn.play.playing:hover:not(:disabled) { background: var(--accent-soft); color: var(--accent-text); }
 .tool-btn.play svg { width: 13px; height: 13px; }
 .tool-btn.recording { background: var(--accent-error); color: #fff; animation: pulse 1.2s infinite; }
 
@@ -716,7 +737,7 @@ textarea.duration-input { height: auto; padding: 7px 9px; resize: vertical; line
 .action-btn svg { width: 15px; height: 15px; }
 .action-btn.export { background: var(--accent-primary); color: #fff; }
 .action-btn.export:hover:not(:disabled) { background: var(--accent-hover); }
-.action-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.action-btn:disabled { cursor: not-allowed; }
 
 .post-export { display: flex; justify-content: space-between; gap: 8px; }
 .reveal-link { display: inline-flex; align-items: center; gap: 5px; background: none; border: none; color: var(--accent-text); font-size: 12px; font-weight: 600; cursor: pointer; padding: 4px; }
@@ -821,7 +842,10 @@ textarea.duration-input { height: auto; padding: 7px 9px; resize: vertical; line
 .sfx-play:hover { background: rgb(var(--ink) / 0.16); }
 .sfx-name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sfx-dur { color: var(--text-secondary, #9aa3af); font-size: 11px; }
-.sfx-add { width: 26px; height: 26px; border-radius: 6px; border: none; background: var(--accent-primary); color: #fff; font-weight: 800; cursor: pointer; }
+/* A ghost until its row is in play: a solid accent square on every row stacked into a purple
+   stripe and drowned out the one real call to action. */
+.sfx-add { width: 26px; height: 26px; border-radius: 6px; border: 1px solid var(--border); background: transparent; color: var(--text-muted); font-weight: 800; cursor: pointer; }
+.sfx-item:hover .sfx-add, .sfx-hit:hover .sfx-add, .sfx-add:focus-visible { background: var(--accent-primary); border-color: transparent; color: #fff; }
 .sfx-foot { display: flex; gap: 6px; padding: 8px; border-top: 1px solid rgb(var(--ink) / 0.06); }
 .sfx-foot button { flex: 1; background: rgb(var(--ink) / 0.06); border: none; color: inherit; padding: 7px; border-radius: 8px; cursor: pointer; font-size: 12px; }
 .sfx-foot button:hover { background: rgb(var(--ink) / 0.12); }
@@ -854,9 +878,9 @@ textarea.duration-input { height: auto; padding: 7px 9px; resize: vertical; line
 .booth-cues { text-align: center; padding: 8px 0 4px; }
 .booth-line { font-size: 24px; font-weight: 800; line-height: 1.3; }
 .booth-prev { font-size: 15px; color: var(--text-secondary, #9aa3af); opacity: .8; line-height: 1.3; min-height: 20px; margin-bottom: 6px; }
-.booth-line.held { box-shadow: inset 0 -3px 0 #FFB423; }
+.booth-line.held { box-shadow: inset 0 -3px 0 var(--accent-gold); }
 .booth-hold { background: transparent; border: 1px solid var(--border, #2a3140); color: var(--text-secondary, #9aa3af); border-radius: 8px; padding: 6px 10px; cursor: pointer; }
-.booth-hold.on { color: #FFB423; border-color: #FFB423; }
+.booth-hold.on { color: var(--accent-gold); border-color: var(--accent-gold); }
 .booth-next { font-size: 13px; color: var(--text-secondary, #9aa3af); margin-top: 4px; min-height: 18px; }
 .booth-script { width: 100%; background: rgb(var(--ink) / 0.05); border: 1px solid rgb(var(--ink) / 0.1); color: inherit; border-radius: 10px; padding: 10px; font: inherit; font-size: 13.5px; resize: vertical; }
 .booth-edit { background: none; border: none; color: var(--accent-primary, #3b82f6); cursor: pointer; font-size: 12px; padding: 2px 0; }
@@ -872,15 +896,17 @@ textarea.duration-input { height: auto; padding: 7px 9px; resize: vertical; line
 .sfx-hit .sfx-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
 .sfx-lic { font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 999px; letter-spacing: 0.02em; }
 .sfx-lic.free { background: rgba(34,197,94,0.18); color: var(--accent-secondary); }
-.sfx-lic.credit { background: rgba(234,179,8,0.18); color: #facc15; }
+.sfx-lic.credit { background: rgba(234,179,8,0.18); color: var(--accent-gold); }
 .sfx-plan { margin: 8px 0; padding: 8px; border-radius: 8px; background: var(--accent-soft); border: 1px solid var(--accent-soft); }
 .sfx-advanced { margin-top: 10px; }
 .sfx-steps { margin: 6px 0 6px 18px; padding: 0; font-size: 12px; color: var(--text-secondary, #9aa3af); line-height: 1.6; }
 .sfx-steps code { background: rgb(var(--ink) / 0.08); padding: 1px 5px; border-radius: 4px; }
 .sfx-advanced summary { cursor: pointer; font-size: 12px; color: var(--text-secondary, #9aa3af); }
-.sfx-star { background: none; border: none; cursor: pointer; font-size: 14px; line-height: 1; padding: 0 2px; color: var(--text-secondary, #6b7280); }
-.sfx-star:hover { color: #facc15; }
-.sfx-star.on { color: #facc15; }
+/* the star only shows on the row you are pointing at, unless it is already a favourite */
+.sfx-star { background: none; border: none; cursor: pointer; font-size: 14px; line-height: 1; padding: 0 2px; color: var(--text-secondary, #6b7280); opacity: 0; }
+.sfx-item:hover .sfx-star, .sfx-star:focus-visible, .sfx-star.on { opacity: 1; }
+.sfx-star:hover { color: var(--accent-gold); }
+.sfx-star.on { color: var(--accent-gold); }
 .sfx-item.fav { background: rgba(250,204,21,0.06); }
 .sfx-token { margin: 6px 0; padding: 8px; border-radius: 8px; background: rgb(var(--ink) / 0.04); }
 /* B-roll: picture only, sits over the video track. Amber so a cutaway is obvious at a glance. */
@@ -994,7 +1020,8 @@ textarea.duration-input { height: auto; padding: 7px 9px; resize: vertical; line
 .tk-row.keep .tk-text { color: var(--text-main); }
 .tk-foot { gap: 14px; }
 /* the toolbar entry stays quiet: this is an occasional tool, not part of the main flow */
-.tk-btn .tk-badge { display: inline-block; margin-left: 6px; background: var(--accent-warning); color: #1a1a1e;
+/* the panel colour as ink: near-black on dark's bright amber, white on light's deep amber */
+.tk-btn .tk-badge { display: inline-block; margin-left: 6px; background: var(--accent-warning); color: var(--bg-surface);
   border-radius: 999px; font-size: 10px; font-weight: 700; padding: 0 5px; line-height: 15px; min-width: 15px; text-align: center; }
 
 /* ============ 3D Studio ============ */

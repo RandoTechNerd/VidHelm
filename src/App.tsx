@@ -3654,7 +3654,7 @@ function Editor() {
                 exactly one row. More and the zoom group sit outside the scroller and stay put,
                 which also keeps the dropdown clear of the scroll container's clipping. */}
             <div className="tool-group">
-            <button className="tool-btn play" onClick={() => setIsPlaying(p => !p)} disabled={totalDuration <= 0}>{isPlaying ? <IconPause /> : <IconPlay />} {isPlaying ? 'Pause' : 'Play'}</button>
+            <button className={`tool-btn play ${isPlaying ? 'playing' : ''}`} onClick={() => setIsPlaying(p => !p)} disabled={totalDuration <= 0}>{isPlaying ? <IconPause /> : <IconPlay />} {isPlaying ? 'Pause' : 'Play'}</button>
             <span className="timecode" title="Playhead / total length"><b>{fmt(currentTime)}</b><i>/</i>{fmt(totalDuration)}</span>
             <div className="divider" />
             <button className="tool-btn compactable" onClick={undo} disabled={!canUndo} title="Undo (Ctrl+Z)"><IconUndo /> <span className="tb-label">Undo</span></button>
