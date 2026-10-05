@@ -32,6 +32,8 @@ export function installIpcMock() {
     renderMixAudio: async () => ({ error: 'mock' }),
     detectSilence: async () => ({ intervals: [] }),
     detectFreeze: async () => ({ intervals: [] }),
+    analyzeAudioMedia: async () => ({ error: 'Measuring sound needs the desktop app (npm run dev)' }),
+    bakeVoice: async () => ({ error: 'Fix voice needs the desktop app (npm run dev)' }),
     exportVideo: async () => { throw new Error('Export needs the desktop app (npm run dev)') },
     sfxLibrary: async () => ({ dir: 'mock', items: demoSfx.map((name, i) => ({ name, path: `mock://sfx/${name}.wav`, duration: 0.3 + (i % 5) * 0.25, builtin: true })) }),
     openSfxFolder: async () => ({ error: 'The sound folder needs the desktop app (npm run dev)' }),

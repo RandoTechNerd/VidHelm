@@ -264,7 +264,7 @@ console.log('11. graph strings')
   ok(nr.includes("asendcmd=c='0.02 afftdn sn start;1.780 afftdn sn stop'") && nr.includes('atrim=3.210:5.010'), 'NR learns from the print only')
   ok(A.AFFTDN_LATENCY(44100) === 1103 && A.AFFTDN_LATENCY(48000) === 1200, 'afftdn latency = round(0.025 * sr)')
   const pa = A.passAGraph({ channel: 'right', nrDb: 0, nf: 0, print: null })
-  ok(pa === `[0:a]aresample=48000,aformat=sample_fmts=flt:channel_layouts=stereo,asetpts=PTS-STARTPTS,pan=stereo|c0=c1|c1=c1,${A.HPF}[o]`, 'pass A without NR: head, channel, high-pass')
+  ok(pa === `[0:a]aresample=48000:first_pts=0,aformat=sample_fmts=flt:channel_layouts=stereo,asetpts=PTS-STARTPTS,pan=stereo|c0=c1|c1=c1,${A.HPF}[o]`, 'pass A without NR: head anchored to the media clock, channel, high-pass')
   ok(A.passAGraph({ channel: 'asis', nrDb: 12, nf: -64, print }).includes('afftdn=nr=12:nf=-64') && !A.passAGraph({ channel: 'asis', nrDb: 0, nf: 0, print: null }).includes('pan='), 'NR only when planned; no pan when as is')
   ok(A.passDGraph(2.5).includes('volume=2.50dB') && A.passDGraph(2.5).includes('ebur128=peak=true'), 'pass D: make-up, ceiling, measured copy')
 }

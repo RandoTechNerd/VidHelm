@@ -1,5 +1,54 @@
 /// <reference types="vite/client" />
 
+type FixVoicePreset = 'off' | 'light' | 'studio'
+/** Fix voice decisions (electron/audiochain.ts decisionsJson); levels in dB, times in source seconds */
+interface FixVoicePlan {
+  preset: FixVoicePreset
+  /** what runs: no clear speech turns it Off, little speech turns Studio into Light */
+  effective: FixVoicePreset
+  skipped: string | null
+  sparse: boolean
+  channel: 'asis' | 'fold' | 'left' | 'right'
+  foldLossDb: number
+  nrDb: number; nf: number
+  print: { s: number; e: number } | null
+  riderOn: boolean
+  sections: number[]
+  staticDb: number; staticCapped: boolean
+  transients: { t: number; durMs: number; depthDb: number }[]
+  gapEases: { s: number; e: number; depthDb: number }[]
+  envelope: { minDb: number; maxDb: number; blocks: number }
+  measured: { I: number; floorDb: number; speechDb: number; snr: number; activeS: number; durS: number; worstSnr: number }
+  summary?: string
+}
+/** One measurement of a media file's sound (analyze-audio-media) */
+interface AudioMediaAnalysis {
+  ok?: boolean; error?: string
+  durationS?: number; I?: number; floorDb?: number; speechDb?: number; snr?: number; activeS?: number; speechFraction?: number
+  worstSnr?: number; longestPauseS?: number; momentaryMaxLufs?: number; spreadDb?: number
+  channel?: { identical: boolean; foldLossDb: number; decision: 'asis' | 'fold' | 'left' | 'right' }
+  role?: { role: 'voice' | 'music' | 'sfx' | 'asis'; why: string }
+  /** the bed gain if this is music (5 LU under the voice), the level match if it is an SFX */
+  music?: { I: number; bedDb: number }
+  sfx?: { M: number; gainDb: number }
+  plan?: FixVoicePlan
+  segments?: [number, number][]
+}
+/**
+ * A baked voice (bake-voice): path is the FLAC the export reads (sample 0 = the media's time zero, so
+ * -ss sourceStart lines up with the picture), previewPath what the preview plays (the re-muxed copy
+ * for video, the FLAC for audio). No path: Fix voice is off or the recording was left as is.
+ */
+interface VoiceBakeResult {
+  ok?: boolean; error?: string; cached?: boolean; key?: string
+  path?: string; previewPath?: string; previewError?: string; jsonPath?: string
+  preset?: FixVoicePreset; effective?: FixVoicePreset; skipped?: string | null; summary?: string
+  decisions?: FixVoicePlan
+  segments?: [number, number][]
+  output?: { I: number; TP: number | null; makeupDb: number; passes: number; compI: number }
+  seconds?: number
+}
+
 interface Window {
   ipcRenderer: {
     on: (channel: string, listener: (event: any, ...args: any[]) => void) => void
@@ -26,6 +75,10 @@ interface Window {
     renderMixAudio: (data: { clips: any[] }) => Promise<{ path?: string; error?: string }>
     detectSilence: (data: { filePath: string; thresholdDb: number; minPause: number }) => Promise<{ intervals?: { start: number; end: number }[]; error?: string }>
     detectFreeze: (data: { filePath: string; sourceStart: number; duration: number; freezeDb: number; minDur: number }) => Promise<{ intervals?: { start: number; end: number }[]; error?: string }>
+    /** Fix voice: one decode of the first audio stream, measured; role guess, bed/SFX levels and the planned fix */
+    analyzeAudioMedia: (data: { filePath: string; preset?: FixVoicePreset; provenance?: 'booth' | 'narration' | 'voiceclone' | 'voiceover' | 'score' | 'sfx' | 'import' | 'camera'; isVideo?: boolean; track?: string }) => Promise<AudioMediaAnalysis>
+    /** Fix voice: bake (or reuse) the processed voice of a media file; progress comes as 'voice-progress' { filePath, preset, pct, line }. picture = the video proxy or the original, for the preview copy */
+    bakeVoice: (data: { filePath: string; preset?: FixVoicePreset; picture?: string | null }) => Promise<VoiceBakeResult>
     /** rejects with an Error whose message is "Export failed: <reason>" plus the end of ffmpeg's log on following lines */
     exportVideo: (data: { clips: any[], texts: any[], brand: any, audio: any, outputPath: string, settings: any }) => Promise<{ success: boolean }>
     sfxLibrary: () => Promise<{ dir: string; items: { name: string; path: string; duration: number; builtin: boolean }[] }>

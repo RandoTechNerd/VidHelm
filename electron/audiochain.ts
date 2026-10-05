@@ -842,8 +842,13 @@ export async function writeGainWav(write: (chunk: Uint8Array) => unknown, envelo
 
 // ------------------------------------------------------------------ ffmpeg graph builders
 
-/** Always first, even for Off: fixes 44.1 kHz input landing early and mono input landing hot, and the s32 high-pass overshoot clip. */
-export const headFilter = () => 'aresample=48000,aformat=sample_fmts=flt:channel_layouts=stereo'
+/**
+ * Always first, even for Off: fixes 44.1 kHz input landing early and mono input landing hot, and the
+ * s32 high-pass overshoot clip. first_pts=0 anchors sample 0 to the media's own time zero: an audio
+ * stream that starts after the picture (phones and cameras do, by 20 to 250 ms, AAC priming included)
+ * is padded rather than slid forward, so a bake addressed with -ss sourceStart stays on the lips.
+ */
+export const headFilter = () => 'aresample=48000:first_pts=0,aformat=sample_fmts=flt:channel_layouts=stereo'
 /**
  * Rumble and handling only. 70 Hz is what the reference chain measured with; 80 Hz took 0.6 dB more
  * from the band under 80 Hz in speech and raised the gain-track step on clean speech from 1.19 to

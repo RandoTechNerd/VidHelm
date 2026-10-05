@@ -19,6 +19,8 @@ import { generateClip, videoGenAvailable, estimateUsd, VIDEO_MODELS, GenTimeout 
 import { bridgeTimeoutMs, QUICK_MS } from '../agent/timeouts.mjs'
 import { stillInput, clipAudioChain, masterChain, friendlyExportError, stderrTail, UNREADABLE_STILL } from './exportgraph'
 import { bridgeRefusal, commandForEditor, replyAlias, replyKey, type PendingReply } from './bridgeguard'
+import { decide, decideChannel, decisionsJson, summaryLine, speechSegments, analysisSummary, roleGuess, bedDb, sfxDb, type Preset, type Provenance } from './audiochain'
+import { analyzeMedia, bakeVoice, cachedBake, readFfmpegVersion, sweepVoiceTemp, voiceCacheKey, type BakeResult } from './voicebake'
 import path from 'node:path'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -2504,6 +2506,78 @@ ipcMain.handle('save-sfx-recording', async (_event, { base64, name }: { base64: 
     const duration = await new Promise<number>(res => ffmpeg.ffprobe(out, (err, d) => res(err ? 1 : (d.format.duration || 1))))
     return { path: out, name: path.basename(out).replace(/\.[^.]+$/, ''), duration }
   } catch (e) { return { error: String(e) } }
+})
+
+// ---------------- Fix voice: per-media measurement and the baked voice ----------------
+// The chain and every decision live in electron/audiochain.ts; electron/voicebake.ts runs it with
+// ffmpeg and caches the result in userData/voice (a FLAC per media file and preset, its decisions as
+// JSON, and for video a re-muxed preview copy). What is here: the queues, progress, stopping on quit.
+const voiceDir = () => path.join(app.getPath('userData'), 'voice')
+let voiceSwept = false
+// part of every cache key: another ffmpeg build can filter differently
+let ffVersion: Promise<string> | null = null
+const ffmpegVersion = () => (ffVersion ??= readFfmpegVersion(paths.ffmpeg))
+const voiceChildren = new Set<ChildProcess>()
+const trackVoiceChild = (p: ChildProcess, done: boolean) => { if (done) voiceChildren.delete(p); else voiceChildren.add(p) }
+app.on('before-quit', () => { for (const c of voiceChildren) { try { c.kill() } catch { /* already gone */ } } })
+
+// Measuring is one fast decode (about a second per minute of sound), asked for once per import:
+// one at a time, so a dozen imports are not a dozen decodes at once, and never behind a bake.
+let analyzeTail: Promise<unknown> = Promise.resolve()
+ipcMain.handle('analyze-audio-media', async (_event, { filePath, preset = 'studio', provenance, isVideo, track }: { filePath: string; preset?: Preset; provenance?: Provenance; isVideo?: boolean; track?: string }) => {
+  if (!filePath || !fs.existsSync(filePath)) return { error: 'file not found' }
+  const run = async () => {
+    try {
+      const an = await analyzeMedia(paths.ffmpeg, filePath, { onChild: trackVoiceChild })
+      const plan = decide(an, preset)
+      return {
+        ok: true, ...analysisSummary(an),
+        channel: { identical: an.channel.identical, foldLossDb: +an.channel.foldLossDb.toFixed(2), decision: decideChannel(an.channel) },
+        role: roleGuess(an, { provenance, isVideo, track }),
+        // one decode serves every role: the bed level if this is music, the level match if it is an SFX
+        music: { I: +an.I.toFixed(2), bedDb: +bedDb(an.I).toFixed(2) },
+        sfx: { M: +an.momentaryMaxLufs.toFixed(2), gainDb: +sfxDb(an.momentaryMaxLufs).toFixed(2) },
+        // the plan before the noise reduction pass: the lift heard at once while the bake runs
+        plan: { ...decisionsJson(plan), summary: summaryLine(plan) },
+        segments: speechSegments(an),
+      }
+    } catch (e) { return { error: String((e as Error)?.message || e) } }
+  }
+  const job = analyzeTail.then(run)
+  analyzeTail = job.catch(() => undefined)
+  return job
+})
+
+// Bakes run one at a time and wait for the video proxies: a preview copy the user is waiting to see
+// matters more than a cleaner voice, and a dozen imports must not start a dozen ffmpegs. A finished
+// bake answers at once; the same bake asked for twice shares one run.
+const voiceBakes = new Map<string, Promise<BakeResult>>()
+let bakeTail: Promise<unknown> = Promise.resolve()
+ipcMain.handle('bake-voice', async (event, { filePath, preset = 'studio', picture }: { filePath: string; preset?: Preset; picture?: string | null }) => {
+  try {
+    if (!filePath || !fs.existsSync(filePath)) return { error: 'file not found' }
+    if (!['off', 'light', 'studio'].includes(preset)) return { error: `unknown Fix voice preset "${preset}"` }
+    const cacheDir = voiceDir()
+    if (!voiceSwept) { voiceSwept = true; sweepVoiceTemp(cacheDir) }
+    const opts = { ffmpeg: paths.ffmpeg, ffprobe: paths.ffprobe, cacheDir, filePath, preset, ffmpegVersion: await ffmpegVersion(), picture: picture && fs.existsSync(picture) ? picture : null }
+    const hit = cachedBake(opts)
+    if (hit) return hit
+    const st = fs.statSync(filePath)
+    const id = `${voiceCacheKey(filePath, st.size, st.mtimeMs, preset, opts.ffmpegVersion)}|${opts.picture || ''}`
+    const running = voiceBakes.get(id)
+    if (running) return await running
+    const sender = event.sender
+    const send = (pct: number, line: string) => { if (!sender.isDestroyed()) sender.send('voice-progress', { filePath, preset, pct, line }) }
+    send(0, 'Waiting its turn')
+    const run = async () => {
+      while (proxyBuilds.size) await Promise.allSettled([...proxyBuilds.values()])
+      return bakeVoice({ ...opts, onProgress: send, onChild: trackVoiceChild })
+    }
+    const job = bakeTail.then(run).finally(() => voiceBakes.delete(id))
+    bakeTail = job.catch(() => undefined)
+    voiceBakes.set(id, job)
+    return await job
+  } catch (e) { return { error: String((e as Error)?.message || e) } }
 })
 
 // ---------------- Voice clone (external tool adapter) ----------------

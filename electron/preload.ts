@@ -44,6 +44,9 @@ contextBridge.exposeInMainWorld('ipcRenderer', {
   renderMixAudio: (data: { clips: any[] }) => ipcRenderer.invoke('render-mix-audio', data),
   detectSilence: (data: { filePath: string; thresholdDb: number; minPause: number }) => ipcRenderer.invoke('detect-silence', data),
   detectFreeze: (data: { filePath: string; sourceStart: number; duration: number; freezeDb: number; minDur: number }) => ipcRenderer.invoke('detect-freeze', data),
+  // Fix voice (electron/audiochain.ts): measure a media file's sound; bake its processed voice
+  analyzeAudioMedia: (data: { filePath: string; preset?: string; provenance?: string; isVideo?: boolean; track?: string }) => ipcRenderer.invoke('analyze-audio-media', data),
+  bakeVoice: (data: { filePath: string; preset?: string; picture?: string | null }) => ipcRenderer.invoke('bake-voice', data),
   exportVideo: (data: { clips: any[], texts: any[], brand: any, audio: any, outputPath: string, settings: any }) => ipcRenderer.invoke('export-video', data),
   sfxLibrary: () => ipcRenderer.invoke('sfx-library'),
   pickAudio: () => ipcRenderer.invoke('pick-audio'),
