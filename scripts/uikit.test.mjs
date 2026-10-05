@@ -123,6 +123,18 @@ ok(winner(['color'], [...toolBtn, '.tool-btn.play', '.tool-btn.play:disabled'])?
 ok(winner(['color'], ['.tool-btn', '.tool-btn.play'])?.value === 'var(--text-main)', 'an enabled Play keeps its full-strength label')
 ok(winner(['color'], [...toolBtn, '.tool-btn.active', '.tool-btn.active:disabled'])?.value === 'var(--text-dim)', 'a disabled tool that is toggled on reads as unavailable too')
 ok(winner(['background', 'background-color'], [...toolBtn, '.tool-btn.play', '.tool-btn.play:disabled'])?.sel === '.tool-btn.play:disabled', 'and drops Play\'s filled background')
+// a SecretField's input, masked and then shown by the eye, in a panel and in a modal (the AI clip key)
+const rightPad = (w) => !w ? null : w.prop === 'padding-right' ? w.value : (w.value.split(/\s+/)[1] ?? w.value)
+const keyInput = ['.duration-input', '.secret-field .duration-input']
+const inModal = [...keyInput, '.modal .secret-field .duration-input']
+for (const [what, matching] of [
+  ['masked, in a panel', keyInput],
+  ['shown, in a panel', keyInput],
+  ['masked, in a modal', inModal],
+  ['shown, in a modal', [...inModal, '.modal input[type="text"]']],
+]) ok(rightPad(winner(['padding', 'padding-right'], matching)) === '36px', `a key field ${what} keeps its text clear of the eye`)
+const shownPad = winner(['padding'], [...inModal, '.modal input[type="text"]'])?.value, maskedPad = winner(['padding'], inModal)?.value
+ok(shownPad === maskedPad, 'and showing the key does not move it')
 
 console.log(`\n${fail ? 'FAILED' : 'ALL PASSED'} - ${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

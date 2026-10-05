@@ -871,7 +871,10 @@ input[type="range"]:disabled { opacity: 0.5; cursor: not-allowed; }
 /* API keys (SecretField in src/controls.tsx): masked while typed, a one-line receipt once saved */
 .secret-list { display: flex; flex-direction: column; gap: 6px; }
 .secret-field { position: relative; display: flex; }
-.secret-field .duration-input { flex: 1; min-width: 0; padding-right: 36px; }
+/* The right padding keeps the key clear of the eye. Spelled out for modals too: there, once the eye
+   turned the field to type="text", .modal input[type="text"] outranked a plain .secret-field rule,
+   the text jumped and the end of the key slid under the eye, just as you went to check it. */
+.secret-field .duration-input, .modal .secret-field .duration-input { flex: 1; min-width: 0; padding: 0 36px 0 9px; }
 .secret-eye {
   position: absolute; right: 3px; top: 50%; transform: translateY(-50%);
   width: 26px; height: 26px; padding: 0; display: inline-flex; align-items: center; justify-content: center;
