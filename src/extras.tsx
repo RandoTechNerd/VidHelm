@@ -2,6 +2,7 @@
 // All components are props-driven; App.tsx owns the state.
 import { useState, useRef, useEffect } from 'react'
 import { InfoNote } from './help'
+import { SecretField } from './controls'
 import { IcStop, IcRecord, IcFolder, IcSearch, IcSparkle, IcRefresh, IcPlaySm, IcClose } from './icons'
 
 export interface Marker { id: string; t: number; label: string; color: string }
@@ -239,8 +240,8 @@ export function SfxPanel({ onPlace, genCommand, onGenCommand, freesoundToken, on
             {' '}<a href="#" onClick={e => { e.preventDefault(); window.ipcRenderer.openExternal('https://freesound.org/apiv2/apply/') }}>freesound.org/apiv2/apply</a>,
             and paste the API key here.
           </p>
-          <input className="duration-input" style={{ width: '100%' }} placeholder="paste your Freesound API key"
-            value={freesoundToken || ''} onChange={e => onFreesoundToken?.(e.target.value.trim())} />
+          <SecretField name="Freesound key" placeholder="paste your Freesound API key" value={freesoundToken}
+            onChange={v => onFreesoundToken?.(v)} />
         </div>}
         {findNotes.map((n, i) => <p key={i} className="hint">{n}</p>)}
         {hits.length > 0 && <div className="sfx-hits">
@@ -563,8 +564,8 @@ export function KaraokeBooth({ open, onClose, markers, totalDuration, currentTim
         </button>
         {lines.length > 0 && <button className={`booth-hold ${hold !== null ? 'on' : ''}`} title="Freeze the prompter on this line (the video and the recording keep going); press again to catch up"
           onClick={() => setHold(h => h === null ? shownIdx : null)}>{hold !== null ? '▶ Resume prompter' : '⏸ Hold prompter'}</button>}
-        <label className="switch" title="Pin each line to your tag points (needs at least as many tags as lines); otherwise lines are spread evenly">
-          <input type="checkbox" checked={useMarkers} onChange={e => setUseMarkers(e.target.checked)} /> time lines with tag points
+        <label className="toggle-row" title="Pin each line to your tag points (needs at least as many tags as lines); otherwise lines are spread evenly">
+          <input type="checkbox" className="toggle" checked={useMarkers} onChange={e => setUseMarkers(e.target.checked)} /><span>Time lines with tag points</span>
         </label>
         <span className="hint" style={{ margin: 0 }}>{lines.length} line{lines.length === 1 ? '' : 's'} · {sortedMarkers.length} tag{sortedMarkers.length === 1 ? '' : 's'}</span>
       </div>

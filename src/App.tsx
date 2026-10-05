@@ -3,6 +3,8 @@ import './App.css'
 import { VidHelmMark, IcSave, IcOpen, IcCloud, IcRecipe, IcCube, IcSparkle, IcBot, IcSun, IcMoon, IcHelp, IcRefresh, IcFolder, IcPlus, IcBooth, IcVoice, IcCut, IcList, IcCheck, IcEye, IcChat, IcMissing } from './icons'
 import { Tour, tourSeen } from './tour'
 import { HelpChat } from './helpchat'
+import { SecretField } from './controls'
+import { rangeFill } from './uikit'
 import type { HelpAction } from '../electron/helpdesk'
 import { SfxPanel, MarkerPanel, KaraokeBooth, NarrationModal, RecipeSection, ThumbnailModal, ConnectModal, DEFAULT_RECIPE, recipeActive, newMarker, saveTake, type Marker, type SfxItem, type RecipeSettings } from './extras'
 import { Model3DModal, KEY_GREEN, KEY_MAGENTA, type Model3DApi } from './model3d'
@@ -3852,9 +3854,12 @@ function Editor() {
                   <label>To <select value={aiTo} onChange={e => setAiTo(e.target.value)}><option value="">(none)</option>{mediaBin.filter(m => m.type === 'image').map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</select></label>
                   <label>Length <select value={aiSeconds} onChange={e => setAiSeconds(+e.target.value)}><option value={5}>5 s</option><option value={8}>8 s</option><option value={10}>10 s</option></select></label>
                 </div>
-                <div style={{ marginTop: 10 }}>
-                  <input className="duration-input" style={{ width: '100%' }} placeholder="fal.ai API key (fal.ai → Keys → Add key). Saved in your settings, never leaves this machine except to fal." value={settings.aiGen?.falKey || ''} onChange={e => setSettings(s => ({ ...s, aiGen: { ...(s.aiGen || {}), falKey: e.target.value.trim() } }))} />
-                  <input className="duration-input" style={{ width: '100%', marginTop: 6 }} placeholder="Gemini API key (optional: Veo 3.1 with sound, first + last frame)" value={settings.aiGen?.geminiKey || ''} onChange={e => setSettings(s => ({ ...s, aiGen: { ...(s.aiGen || {}), geminiKey: e.target.value.trim() } }))} />
+                <div className="secret-list" style={{ marginTop: 10 }}>
+                  <SecretField name="fal.ai key" placeholder="fal.ai API key (fal.ai > Keys > Add key)" value={settings.aiGen?.falKey}
+                    onChange={v => setSettings(s => ({ ...s, aiGen: { ...(s.aiGen || {}), falKey: v } }))} />
+                  <SecretField name="Gemini key" placeholder="Gemini API key (optional: Veo 3.1 with sound, first and last frame)" value={settings.aiGen?.geminiKey}
+                    onChange={v => setSettings(s => ({ ...s, aiGen: { ...(s.aiGen || {}), geminiKey: v } }))} />
+                  <p className="hint">Keys are kept in VidHelm's settings on this PC and sent only to that provider, when you generate a clip.</p>
                 </div>
                 <div style={{ display: 'flex', gap: 10, marginTop: 10, alignItems: 'center' }}>
                   <button className="hdr-btn" disabled={aiClipBusy} onClick={async () => {
@@ -3888,7 +3893,7 @@ function Editor() {
               <section>
                 <div className="sec-title">
                   <h3>Logo / Watermark</h3>
-                  <label className="switch"><input type="checkbox" checked={settings.brand.enabled} onChange={e => setSettings(s => ({ ...s, brand: { ...s.brand, enabled: e.target.checked } }))} /> Apply to every export</label>
+                  <label className="toggle-row"><input type="checkbox" className="toggle" checked={settings.brand.enabled} onChange={e => setSettings(s => ({ ...s, brand: { ...s.brand, enabled: e.target.checked } }))} /><span>Apply to every export</span></label>
                 </div>
                 <div className="logo-row">
                   <div className="logo-preview">{settings.brand.logoPath ? <img src={fileUrl(settings.brand.logoPath)} alt="logo" /> : <span>No logo</span>}</div>
@@ -3908,8 +3913,8 @@ function Editor() {
                       <option value="whole">Whole video</option><option value="intro">Intro only</option><option value="outro">Outro watermark</option>
                     </select>
                   </label>
-                  <label>Size - {settings.brand.sizePct}% width<input type="range" min="4" max="40" step="1" value={settings.brand.sizePct} onChange={e => setSettings(s => ({ ...s, brand: { ...s.brand, sizePct: parseInt(e.target.value) } }))} /></label>
-                  <label>Opacity - {Math.round(settings.brand.opacity * 100)}%<input type="range" min="0.1" max="1" step="0.05" value={settings.brand.opacity} onChange={e => setSettings(s => ({ ...s, brand: { ...s.brand, opacity: parseFloat(e.target.value) } }))} /></label>
+                  <label>Size - {settings.brand.sizePct}% width<input type="range" min="4" max="40" step="1" value={settings.brand.sizePct} style={rangeFill(settings.brand.sizePct, 4, 40)} onChange={e => setSettings(s => ({ ...s, brand: { ...s.brand, sizePct: parseInt(e.target.value) } }))} /></label>
+                  <label>Opacity - {Math.round(settings.brand.opacity * 100)}%<input type="range" min="0.1" max="1" step="0.05" value={settings.brand.opacity} style={rangeFill(settings.brand.opacity, 0.1, 1)} onChange={e => setSettings(s => ({ ...s, brand: { ...s.brand, opacity: parseFloat(e.target.value) } }))} /></label>
                   {settings.brand.showMode !== 'whole' && <label>Window (s)<input type="number" min="1" step="0.5" value={settings.brand.windowSec} onChange={e => setSettings(s => ({ ...s, brand: { ...s.brand, windowSec: parseFloat(e.target.value) || 5 } }))} /></label>}
                   <label>Fade (s)<input type="number" min="0" step="0.1" value={settings.brand.fade} onChange={e => setSettings(s => ({ ...s, brand: { ...s.brand, fade: parseFloat(e.target.value) || 0 } }))} /></label>
                 </div>
@@ -3928,8 +3933,8 @@ function Editor() {
                     </button>
                     {settings.workspace.root && <button title="Stop using a project folder" onClick={() => { setSettings(s => ({ ...s, workspace: { ...s.workspace, root: null } })); setCurrentProject(null) }}>✕</button>}
                   </div>
-                  <label className="switch" title="Load every media file in the project folder when you open it">
-                    <input type="checkbox" checked={settings.workspace.autoLoad} onChange={e => setSettings(s => ({ ...s, workspace: { ...s.workspace, autoLoad: e.target.checked } }))} /> load the folder’s media automatically
+                  <label className="toggle-row" title="Load every media file in the project folder when you open it">
+                    <input type="checkbox" className="toggle" checked={settings.workspace.autoLoad} onChange={e => setSettings(s => ({ ...s, workspace: { ...s.workspace, autoLoad: e.target.checked } }))} /><span>Load the folder’s media automatically</span>
                   </label>
                 </div>
                 {settings.workspace.root && <p className="hint">{projects.length
@@ -3958,8 +3963,8 @@ function Editor() {
 
               <section>
                 <h3>Audio</h3>
-                <label className="switch"><input type="checkbox" checked={settings.audio.optimize} onChange={e => setSettings(s => ({ ...s, audio: { ...s.audio, optimize: e.target.checked } }))} /> Auto optimize loudness (−14 LUFS, YouTube target)</label>
-                <label className="switch"><input type="checkbox" checked={settings.audio.noiseReduction} onChange={e => setSettings(s => ({ ...s, audio: { ...s.audio, noiseReduction: e.target.checked } }))} /> Noise reduction (FFT denoise + rumble filter)</label>
+                <label className="toggle-row"><input type="checkbox" className="toggle" checked={settings.audio.optimize} onChange={e => setSettings(s => ({ ...s, audio: { ...s.audio, optimize: e.target.checked } }))} /><span>Auto optimize loudness (−14 LUFS, YouTube target)</span></label>
+                <label className="toggle-row"><input type="checkbox" className="toggle" checked={settings.audio.noiseReduction} onChange={e => setSettings(s => ({ ...s, audio: { ...s.audio, noiseReduction: e.target.checked } }))} /><span>Noise reduction (FFT denoise + rumble filter)</span></label>
               </section>
 
               <section>
@@ -4009,10 +4014,10 @@ function Editor() {
                     </select>
                   </label>
                   <label>Color<input type="color" className="color-input" value={settings.caption.color} onChange={e => setSettings(s => ({ ...s, caption: { ...s.caption, color: e.target.value } }))} /></label>
-                  <label>Size - {settings.caption.fontSize}px<input type="range" min="20" max="90" step="2" value={settings.caption.fontSize} onChange={e => setSettings(s => ({ ...s, caption: { ...s.caption, fontSize: parseInt(e.target.value) } }))} /></label>
-                  <label>Box opacity - {Math.round(settings.caption.boxOpacity * 100)}%<input type="range" min="0" max="1" step="0.05" value={settings.caption.boxOpacity} onChange={e => setSettings(s => ({ ...s, caption: { ...s.caption, boxOpacity: parseFloat(e.target.value) } }))} /></label>
+                  <label>Size - {settings.caption.fontSize}px<input type="range" min="20" max="90" step="2" value={settings.caption.fontSize} style={rangeFill(settings.caption.fontSize, 20, 90)} onChange={e => setSettings(s => ({ ...s, caption: { ...s.caption, fontSize: parseInt(e.target.value) } }))} /></label>
+                  <label>Box opacity - {Math.round(settings.caption.boxOpacity * 100)}%<input type="range" min="0" max="1" step="0.05" value={settings.caption.boxOpacity} style={rangeFill(settings.caption.boxOpacity, 0, 1)} onChange={e => setSettings(s => ({ ...s, caption: { ...s.caption, boxOpacity: parseFloat(e.target.value) } }))} /></label>
                 </div>
-                <label className="switch"><input type="checkbox" checked={settings.caption.box} onChange={e => setSettings(s => ({ ...s, caption: { ...s.caption, box: e.target.checked } }))} /> Background bar behind captions</label>
+                <label className="toggle-row"><input type="checkbox" className="toggle" checked={settings.caption.box} onChange={e => setSettings(s => ({ ...s, caption: { ...s.caption, box: e.target.checked } }))} /><span>Background bar behind captions</span></label>
                 </>}
                 <div className="grid2">
                   <label>Accuracy / speed
@@ -4082,7 +4087,7 @@ function Editor() {
                   <label>Keep padding (s)<input type="number" min="0" step="0.02" value={settings.silence.pad} onChange={e => setSettings(s => ({ ...s, silence: { ...s.silence, pad: Math.max(0, parseFloat(e.target.value) || 0) } }))} /></label>
                   <label>Transition (s)<input type="number" min="0" step="0.02" value={settings.silence.transition} disabled={!settings.silence.smooth} onChange={e => setSettings(s => ({ ...s, silence: { ...s.silence, transition: Math.max(0, parseFloat(e.target.value) || 0) } }))} /></label>
                 </div>
-                <label className="switch"><input type="checkbox" checked={settings.silence.smooth} onChange={e => setSettings(s => ({ ...s, silence: { ...s.silence, smooth: e.target.checked } }))} /> Smooth the cuts with a short fade</label>
+                <label className="toggle-row"><input type="checkbox" className="toggle" checked={settings.silence.smooth} onChange={e => setSettings(s => ({ ...s, silence: { ...s.silence, smooth: e.target.checked } }))} /><span>Smooth the cuts with a short fade</span></label>
                 <p className="hint">“Cut Pauses” removes dead space and ripples everything left. <b>Audio</b> mode cuts silent gaps; <b>Visual stillness</b> cuts motionless/frozen stretches (for silent footage), raise the stillness sensitivity toward 0 to catch near-static shots.</p>
               </section>
             </div>

@@ -776,21 +776,22 @@ input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 3px 
 input[type="range"]:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* Switches: a checkbox drawn as a pill with a sliding knob. Put it first inside a .toggle-row
-   label with its words in a span, and the whole row is the click target, exactly once. */
-.toggle {
+   label with its words in a span, and the whole row is the click target, exactly once. The older
+   .field.chk rows (a box and a <label for> inside a clickable div) get the same look. */
+.toggle, .field.chk > input[type="checkbox"] {
   -webkit-appearance: none; appearance: none; flex: none; position: relative; margin: 0;
   width: 28px; height: 16px; border-radius: 999px; cursor: pointer;
   background: rgb(var(--ink) / 0.22); box-shadow: inset 0 0 0 1px rgb(var(--ink) / 0.08);
   transition: background var(--dur-2) var(--ease-out);
 }
-.toggle::after {
+.toggle::after, .field.chk > input[type="checkbox"]::after {
   content: ''; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%;
   background: #fff; box-shadow: 0 1px 2px rgb(0 0 0 / 0.3);
   transition: transform var(--dur-2) var(--ease-out);
 }
-.toggle:checked { background: var(--accent-primary); box-shadow: none; }
-.toggle:checked::after { transform: translateX(12px); }
-.toggle:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
+.toggle:checked, .field.chk > input[type="checkbox"]:checked { background: var(--accent-primary); box-shadow: none; }
+.toggle:checked::after, .field.chk > input[type="checkbox"]:checked::after { transform: translateX(12px); }
+.toggle:focus-visible, .field.chk > input[type="checkbox"]:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
 .toggle:disabled { opacity: 0.5; cursor: not-allowed; }
 /* .modal label is a column (caption over field); a toggle row has to beat it */
 .toggle-row, .modal .toggle-row {
@@ -798,6 +799,24 @@ input[type="range"]:disabled { opacity: 0.5; cursor: not-allowed; }
   font-size: 12.5px; font-weight: 500; color: var(--text-main); cursor: pointer; user-select: none;
 }
 .toggle-row .toggle-meta { margin-left: auto; padding-left: 8px; font-size: 11.5px; font-weight: 400; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+
+/* API keys (SecretField in src/controls.tsx): masked while typed, a one-line receipt once saved */
+.secret-list { display: flex; flex-direction: column; gap: 6px; }
+.secret-field { position: relative; display: flex; }
+.secret-field .duration-input { flex: 1; min-width: 0; padding-right: 36px; }
+.secret-eye {
+  position: absolute; right: 3px; top: 50%; transform: translateY(-50%);
+  width: 26px; height: 26px; padding: 0; display: inline-flex; align-items: center; justify-content: center;
+  border: none; border-radius: var(--radius-sm); background: transparent; color: var(--text-muted); cursor: pointer;
+}
+.secret-eye:hover { color: var(--text-main); background: rgb(var(--ink) / 0.07); }
+.secret-saved {
+  display: flex; align-items: center; gap: 8px; min-height: 32px; padding: 0 3px 0 10px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm); background: rgb(var(--ink) / 0.03);
+  font-size: 12.5px; color: var(--text-main);
+}
+.secret-saved > svg { flex: none; color: var(--accent-secondary); }
+.secret-saved > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ============ Forms (right panel and modals) ============ */
 .group-title { font-size: 11px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.07em; }
@@ -807,8 +826,11 @@ input[type="range"]:disabled { opacity: 0.5; cursor: not-allowed; }
 .field.row { display: flex; gap: 10px; }
 .field.row > div { flex: 1; min-width: 0; }
 .field.chk { display: flex; align-items: center; gap: 8px; cursor: pointer; }
-.field.chk label { margin-bottom: 0; color: var(--text-main); }
-.field.chk input { accent-color: var(--accent-primary); width: 14px; height: 14px; }
+/* These rows put the click handler on the row and a <label for> on the words. Clicking the words
+   fired the handler twice (the label's own click, then the click it forwards to its box), so the
+   setting flipped and flipped straight back. Transparent to the pointer, the label leaves the
+   row one click to take. */
+.field.chk label { margin-bottom: 0; color: var(--text-main); pointer-events: none; }
 
 .field select, .duration-input {
   width: 100%;
@@ -922,8 +944,6 @@ textarea.duration-input { height: auto; padding: 7px 9px; resize: vertical; line
 .modal-body section { display: flex; flex-direction: column; gap: 12px; }
 .modal-body h3 { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.07em; color: var(--text-dim); }
 .sec-title { display: flex; align-items: center; justify-content: space-between; }
-.modal .switch { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-main); cursor: pointer; font-weight: 500; }
-.modal .switch input { accent-color: var(--accent-primary); }
 .modal .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 .modal label { font-size: 12px; color: var(--text-muted); font-weight: 500; display: flex; flex-direction: column; gap: 6px; }
 .modal select, .modal input[type="number"], .modal input[type="text"], .modal input:not([type]) {

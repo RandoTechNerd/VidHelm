@@ -26,6 +26,7 @@ export const IcCut = () => <I size={14}><circle cx="6" cy="6" r="3" /><circle cx
 export const IcList = () => <I size={14}><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01" /></I>
 export const IcCheck = () => <I size={13}><path d="M20 6 9 17l-5-5" /></I>
 export const IcEye = () => <I size={13}><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z" /><circle cx="12" cy="12" r="3" /></I>
+export const IcEyeOff = () => <I size={13}><path d="M10.7 5.1A10 10 0 0 1 12 5c6.5 0 10 7 10 7a17 17 0 0 1-2.3 3.2M6.6 6.6C3.7 8.4 2 12 2 12s3.5 7 10 7a9.7 9.7 0 0 0 5.4-1.6" /><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2M2 2l20 20" /></I>
 export const IcSearch = () => <I size={13}><circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3" /></I>
 export const IcRecord = () => <I size={13} fill><circle cx="12" cy="12" r="6" /></I>
 export const IcPlaySm = () => <I size={11} fill><path d="M7 4.5v15l12.5-7.5Z" /></I>

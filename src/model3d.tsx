@@ -473,9 +473,9 @@ export function Model3DModal({ open, onClose, initialPath, onRendered, apiRef, g
             <div className="m3d-group">
               <span className="m3d-label">Pose</span>
               <div className="m3d-row">
-                <label className="switch" title="STL/3MF prints are Z-up; untick if the model lies on its side"><input type="checkbox" checked={zUp} onChange={e => setZUp(e.target.checked)} /><span>Z-up</span></label>
-                <label className="switch"><input type="checkbox" checked={spin} onChange={e => setSpin(e.target.checked)} /><span>idle spin</span></label>
-                {hasOwnMaterials && <label className="switch" title="3MF/OBJ files carry their own colors, tick to recolor"><input type="checkbox" checked={override} onChange={e => setOverride(e.target.checked)} /><span>recolor</span></label>}
+                <label className="toggle-row" title="STL/3MF prints are Z-up; switch off if the model lies on its side"><input type="checkbox" className="toggle" checked={zUp} onChange={e => setZUp(e.target.checked)} /><span>Z-up</span></label>
+                <label className="toggle-row"><input type="checkbox" className="toggle" checked={spin} onChange={e => setSpin(e.target.checked)} /><span>Idle spin</span></label>
+                {hasOwnMaterials && <label className="toggle-row" title="3MF/OBJ files carry their own colours, switch on to recolour"><input type="checkbox" className="toggle" checked={override} onChange={e => setOverride(e.target.checked)} /><span>Recolour</span></label>}
               </div>
             </div>
 
