@@ -25,7 +25,7 @@
     "test:sfxsearch": "node scripts/sfxsearch.test.mjs",
     "test:sfxmatch": "node scripts/sfxmatch.test.mjs",
     "test:visual": "node scripts/visual.test.mjs",
-    "test": "npm run typecheck && npm run test:takes && npm run test:playable && npm run test:speech && npm run test:framing && npm run test:broll && npm run test:capability && npm run test:score && npm run test:sfxsynth && npm run test:sfxsearch && npm run test:sfxmatch && npm run test:visual && npm run test:threemf && npm run test:grid && npm run test:textlayout && npm run test:styletheme && npm run test:thumbpick && npm run test:pronounce && npm run test:helpdesk && npm run test:timeline && npm run selftest",
+    "test": "npm run typecheck && npm run test:takes && npm run test:playable && npm run test:speech && npm run test:framing && npm run test:broll && npm run test:capability && npm run test:score && npm run test:sfxsynth && npm run test:sfxsearch && npm run test:sfxmatch && npm run test:visual && npm run test:threemf && npm run test:grid && npm run test:textlayout && npm run test:styletheme && npm run test:thumbpick && npm run test:pronounce && npm run test:helpdesk && npm run test:timeline && npm run test:peaks && npm run selftest",
     "test:threemf": "node scripts/threemf.test.mjs",
     "test:grid": "node scripts/grid.test.mjs",
     "test:textlayout": "node scripts/textlayout.test.mjs",
@@ -33,7 +33,8 @@
     "test:styletheme": "node scripts/styletheme.test.mjs",
     "test:thumbpick": "node scripts/thumbpick.test.mjs",
     "test:helpdesk": "node scripts/helpdesk.test.mjs",
-    "test:timeline": "node scripts/timeline.test.mjs"
+    "test:timeline": "node scripts/timeline.test.mjs",
+    "test:peaks": "node scripts/peaks.test.mjs"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",

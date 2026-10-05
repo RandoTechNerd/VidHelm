@@ -20,6 +20,7 @@ import { looksLikeThumbPhoto } from '../electron/thumbpick'
 import { resolveProfile, describeProfile, type PerfProfile, type Tier, type TierPreference } from '../electron/capability'
 import { tickStepFor, contentWidth, collectSnapTargets, nearestTarget, snapMove, trimTo, clampToSource, maxDurationFrom, moveReadout, trimReadout, stripTiles, stripFits, shiftWords, offSpeechNote } from '../electron/timeline'
 import { TimeRuler } from './ruler'
+import { ClipWave, type Peaks } from './clipwave'
 
 interface MediaFile {
   id: string
@@ -723,6 +724,10 @@ function Editor() {
   const [captionPct, setCaptionPct] = useState<number | null>(null)
   const [thumbs, setThumbs] = useState<Record<string, { sig: string; n: number; path: string }>>({})
   const thumbsRef = useRef<Record<string, { sig: string; n: number; path: string }>>({})
+  // Waveform peaks per bin item, with the file they were read from (a relinked item reads again)
+  const [peaks, setPeaks] = useState<Record<string, Peaks & { path: string }>>({})
+  const peaksAsked = useRef(new Set<string>())
+  const peaksQueue = useRef<Promise<void>>(Promise.resolve())
   const [collapsed, setCollapsed] = useState<{ text: boolean; video: boolean; broll: boolean; audio: boolean; sfx: boolean }>({ text: false, video: false, broll: false, audio: false, sfx: false })
   const [markers, setMarkers] = useState<Marker[]>([])
   const [showBooth, setShowBooth] = useState(false)
@@ -1097,6 +1102,23 @@ function Editor() {
     }, 400)
     return () => clearTimeout(handle)
   }, [clips, mediaBin, pxPerSec, perf.thumbnailWorkers])
+
+  // Waveforms for everything with sound that is on the timeline (b-roll's own sound is never used).
+  // One file at a time on a single queue: each is a whole-file decode, cached on disk for good once
+  // done, and the filmstrips and the preview share the machine with it. Media still building its
+  // preview copy waits, so the two big decodes of one file do not run together.
+  useEffect(() => {
+    if (!window.ipcRenderer.audioPeaks) return
+    const want = mediaBin.filter(m => m.hasAudio && !m.offline && m.proxyPct === undefined
+      && !peaksAsked.current.has(`${m.id}|${m.path}`) && clips.some(c => c.mediaId === m.id && c.trackId !== 'v2'))
+    for (const m of want) {
+      peaksAsked.current.add(`${m.id}|${m.path}`)
+      peaksQueue.current = peaksQueue.current.then(async () => {
+        const r = await window.ipcRenderer.audioPeaks(m.path).catch(() => null)
+        if (r?.data && r.rate) { const { rate, data } = r; setPeaks(prev => ({ ...prev, [m.id]: { rate, data, path: m.path } })) }
+      })
+    }
+  }, [clips, mediaBin])
 
   // ---- media import ----
   const importFiles = useCallback(async (files: File[]): Promise<MediaFile[]> => {
@@ -3444,14 +3466,21 @@ function Editor() {
     }
     const lost = !media || media.offline
     const atLimit = (side: 'left' | 'right') => limitHit?.id === c.id && limitHit.side === side ? ' at-limit' : ''
+    // the waveform: full height on the sound rows, a strip along the bottom of a video clip with
+    // sound; b-roll's sound is never mixed, so it gets none
+    const pk = media && !lost && c.trackId !== 'v2' && peaks[media.id]?.path === media.path ? peaks[media.id] : null
+    const wave = pk ? (c.trackId === 'v1' ? 'under' : 'full') : null
     return (
       <div
         key={c.id}
         onMouseDown={(e) => startMove(e, 'clip', c.id)}
-        className={`clip ${c.trackId === 'v2' ? 'b-clip' : c.trackId !== 'v1' ? 'a-clip' : 'v-clip'} ${c.type} ${bg ? 'has-thumb' : ''} ${selectedId === c.id ? 'selected' : ''} ${drag?.id === c.id ? 'dragging' : ''} ${lost ? 'offline' : ''}`}
+        className={`clip ${c.trackId === 'v2' ? 'b-clip' : c.trackId !== 'v1' ? 'a-clip' : 'v-clip'} ${c.type} ${bg ? 'has-thumb' : ''} ${wave ? 'has-wave' : ''} ${selectedId === c.id ? 'selected' : ''} ${drag?.id === c.id ? 'dragging' : ''} ${lost ? 'offline' : ''}`}
         style={{ left: c.start * pxPerSec, width: c.duration * pxPerSec, backgroundImage: bg, backgroundSize: bgSize, backgroundPosition: 'center', backgroundRepeat: 'no-repeat' }}
         title={!media ? 'Its media was removed from the Media Bin: delete this clip or re-import the file' : media.offline ? `${media.name}: file missing, right-click it in the Media Bin to relink` : media.name}
       >
+        {pk && wave && <ClipWave peaks={pk} sourceStart={c.sourceStart} duration={c.duration} pxPerSec={pxPerSec} variant={wave} tint={uiTheme}
+          gain={t => gainAt(c, c.start + t) * audioFadeFactor(c, c.start + t)}
+          gainKey={JSON.stringify([c.volume, c.volumePoints ?? null, c.fadeIn, c.fadeOut, c.aFadeIn ?? null, c.aFadeOut ?? null, c.sourceStart > 0])} />}
         <div className={`trim-handle left${atLimit('left')}`} onMouseDown={(e) => startTrim(e, 'clip', c.id, 'left')} />
         {c.fadeIn > 0 && <div className="fade-tri in" style={{ width: c.fadeIn * pxPerSec }} />}
         <span className="clip-label">{media?.name}</span>

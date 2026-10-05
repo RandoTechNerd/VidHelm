@@ -18,6 +18,7 @@ interface Window {
     loadProject: () => Promise<{ data: any; path: string } | any | null>
     revealFile: (filePath: string) => Promise<void>
     makeThumbnails: (data: { filePath: string; sourceStart: number; duration: number; count?: number }) => Promise<{ path?: string; error?: string }>
+    audioPeaks: (filePath: string) => Promise<{ rate?: number; data?: Uint8Array; error?: string }>
     getSettings: () => Promise<any>
     setSettings: (data: any) => Promise<boolean>
     pickLogo: () => Promise<string | null>

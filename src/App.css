@@ -1327,3 +1327,14 @@ textarea.duration-input { height: auto; padding: 7px 9px; resize: vertical; line
    colour including the yellow text row, whose ink is dark (W1-05) */
 :root { --on-accent: #ffffff; }
 .clip.selected .trim-handle { color: var(--on-accent); }
+
+/* Waveforms (W1-07): full height on the sound rows, the bottom 40% of a video clip with sound over a
+   dark scrim so the bars read on any filmstrip. Bars take the canvas's colour (src/clipwave.tsx). */
+:root { --clip-wave: rgba(255, 255, 255, 0.5); --clip-wave-under: rgba(255, 255, 255, 0.78); --wave-scrim: rgba(0, 0, 0, 0.55); }
+:root[data-theme="light"] { --clip-wave: rgba(255, 255, 255, 0.62); }
+.clip-wave { position: absolute; left: 0; top: 0; width: 100%; height: 100%; pointer-events: none; color: var(--clip-wave); }
+.clip-wave.under { top: auto; bottom: 0; height: 40%; color: var(--clip-wave-under); background: linear-gradient(to top, var(--wave-scrim), transparent); }
+/* the name moves to the top-left, out of the bars' way */
+.clip.has-wave { align-items: flex-start; }
+.clip.has-wave .clip-label { margin-top: 3px; }
+.clip.has-wave.has-thumb .clip-label { margin-top: 2px; padding: 1px 6px; }

@@ -36,6 +36,8 @@ contextBridge.exposeInMainWorld('ipcRenderer', {
   loadProject: () => ipcRenderer.invoke('load-project'),
   revealFile: (filePath: string) => ipcRenderer.invoke('reveal-file', filePath),
   makeThumbnails: (data: { filePath: string; sourceStart: number; duration: number; count?: number }) => ipcRenderer.invoke('make-thumbnails', data),
+  // timeline waveform: one byte per 10 ms of the file's loudest sample (electron/peaks.ts), cached on disk
+  audioPeaks: (filePath: string) => ipcRenderer.invoke('audio-peaks', { filePath }),
   getSettings: () => ipcRenderer.invoke('get-settings'),
   setSettings: (data: any) => ipcRenderer.invoke('set-settings', data),
   pickLogo: () => ipcRenderer.invoke('pick-logo'),
