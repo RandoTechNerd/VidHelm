@@ -13,7 +13,7 @@ import { snapToGrid, describeSnap } from '../electron/grid'
 import { fitBpm } from '../electron/score'
 import { layoutReport, presetFor, fitFontSize } from '../electron/textlayout'
 import { THEMES, THEME_FONTS, CAPTION_Y as THEME_CAP_Y, chooseTheme, phrasesFromWords, captionFrame, captionCss, captionPx, fontFaceCss, type CaptionSpec, type CapWord, type ThemeFont, type CapCue } from '../electron/styletheme'
-import { planProxy, isHdr } from '../electron/playable'
+import { planProxy, isHdr, isCurrentProxy } from '../electron/playable'
 import { spanForPhrase, sentenceSpans, type Word as SpeechWord, type Span } from '../electron/speech'
 import { planBroll, snapToWords, describePlan, type BrollAsset, type Placement } from '../electron/broll'
 import { looksLikeThumbPhoto } from '../electron/thumbpick'
@@ -39,6 +39,9 @@ interface MediaFile {
   proxyNote?: string   // why it needed one, shown in the bin
   hdr?: boolean        // HLG/PQ source: export tone-maps it, or the colour comes out flat
   fps?: number         // the source's own frame rate (a 30 fps copy of 30 fps footage loses nothing)
+  width?: number       // the picture as DISPLAYED (a phone's portrait clip is taller than wide)
+  height?: number
+  audioChannels?: number // channels in its first audio stream (1 = a mono mic)
   relPath?: string     // where it sat inside the project folder when saved, so a moved folder relinks
   offline?: boolean    // the file is not where the project says and nothing matched: relink or remove it
 }
@@ -98,6 +101,8 @@ const DEFAULT_SETTINGS: AppSettings = {
 // several times (two tags from a single add_tag). The guard hangs off window so it is shared
 // by every module instance that survives a reload, not just the current one.
 const handledAgentCmds: Set<number> = ((window as any).__vhHandledCmds ??= new Set<number>())
+// Timelines (clips arrays) the "switch to portrait?" toast was already shown for; see offerPortrait
+const portraitOfferedFor = new WeakSet<object>()
 
 // Preview-side chroma key. The export does the real thing with FFmpeg's colorkey; this is
 // the same idea as an SVG filter so what you see on the stage matches what you render.
@@ -162,7 +167,9 @@ const WRONG_TYPE: Record<string, string> = {
 // out here so a stray .txt can't land on the timeline as a 0.04s clip.
 // width/height are as DISPLAYED (a rotated phone clip comes back upright) and rotation is the
 // clockwise turn that took; the whole probe goes to makeProxy, which needs it to keep the copy upright.
-type Probe = { duration: number; hasVideo: boolean; hasAudio: boolean; ok?: boolean; error?: string; format?: string; videoCodec?: string; pixFmt?: string; colorTransfer?: string; width?: number; height?: number; fps?: number; rotation?: number }
+// hasVideo ignores a song's album art (hasCoverArt), and needsRemux marks a recording that was cut off
+// before its length was written (the duration was measured instead; the preview gets a fixed copy).
+type Probe = { duration: number; hasVideo: boolean; hasAudio: boolean; ok?: boolean; error?: string; format?: string; videoCodec?: string; pixFmt?: string; colorTransfer?: string; width?: number; height?: number; fps?: number; rotation?: number; audioChannels?: number; hasCoverArt?: boolean; needsRemux?: boolean }
 const JUNK_FORMAT = /(^|,)(tty|ansi|image2pipe|srt|ass|ssa|webvtt|lrc|microdvd|subviewer|jacosub|mpsub|pjs|realtext|sami|vplayer)(,|$)/
 // iPhone photos. The preview could show some, but the exporter cannot decode them, so a HEIC on
 // the timeline only failed at the end of an export. Refused at the door instead, with the way out.
@@ -395,6 +402,8 @@ const mediaFromProbe = (name: string, path: string, type: MediaFile['type'], m: 
   hasAudio: m.hasAudio,
   hdr: isHdr({ colorTransfer: m.colorTransfer }),
   ...(m.fps ? { fps: m.fps } : {}),
+  ...(m.width && m.height ? { width: m.width, height: m.height } : {}),
+  ...(m.audioChannels ? { audioChannels: m.audioChannels } : {}),
   ...extra,
 })
 
@@ -719,8 +728,9 @@ function Editor() {
   const [showBooth, setShowBooth] = useState(false)
   const [showNarration, setShowNarration] = useState(false)
   const [showThumbnail, setShowThumbnail] = useState(false)
-  const [toasts, setToasts] = useState<{ id: string; text: string }[]>([])
-  const notify = (text: string, ms = 7000) => { const id = rid(); setToasts(t => [...t, { id, text }]); setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), ms) }
+  const [toasts, setToasts] = useState<{ id: string; text: string; action?: { label: string; run: () => void } }[]>([])
+  /** A toast; `action` adds one button that does the thing the toast suggests (and closes it). */
+  const notify = (text: string, ms = 7000, action?: { label: string; run: () => void }) => { const id = rid(); setToasts(t => [...t, { id, text, action }]); setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), ms) }
   const [sidebarTab, setSidebarTab] = useState<'media' | 'sfx'>('media')
   const [silenceBusy, setSilenceBusy] = useState<string | null>(null)
   // Takes & history: the transcript, the repeat groups, and enough snapshots to let the user
@@ -1118,12 +1128,18 @@ function Editor() {
       if (!plan.needed) continue
       setMediaBin(prev => prev.map(x => x.id === m.id ? { ...x, proxyPct: 0, proxyNote: plan.reason } : x))
       const r = await window.ipcRenderer.makeProxy({ filePath: m.path, info: { ...info, hasVideo: true }, maxWidth: perf.proxyMaxWidth, maxFps: perf.proxyMaxFps })
+      // a copy from an older VidHelm: it keeps playing while the new one builds, and stays if that fails
+      const older = !!m.proxyPath && !isCurrentProxy(m.proxyPath)
       if (r.path) {
         // width/height/fps arrive from newer main processes; without them the copy is preview-only
         const dims = r as { width?: number; height?: number; fps?: number }
         const num = (v: unknown) => typeof v === 'number' && v > 0 ? v : undefined
         setMediaBin(prev => prev.map(x => x.id === m.id ? { ...x, proxyPath: r.path, proxyWidth: num(dims.width), proxyHeight: num(dims.height), proxyFps: num(dims.fps), proxyPct: undefined } : x))
-        if (!r.cached) notify(`${m.name}: ${plan.reason}, so VidHelm made a preview copy to edit with. High quality exports read the original; Standard ones use the copy only when it already matches the export's size and frame rate.`, 9000)
+        if (!r.cached) notify(older ? `${m.name}: rebuilt its preview copy with a keyframe every second, so scrubbing keeps up.`
+          : `${m.name}: ${plan.reason}, so VidHelm made a preview copy to edit with. High quality exports read the original; Standard ones use the copy only when it already matches the export's size and frame rate.`, older ? 6000 : 9000)
+      } else if (older) {
+        setMediaBin(prev => prev.map(x => x.id === m.id ? { ...x, proxyPct: undefined } : x))
+        console.warn(`proxy: could not rebuild ${m.name}, keeping the older copy:`, r.error)
       } else {
         setMediaBin(prev => prev.map(x => x.id === m.id ? { ...x, proxyPath: undefined, proxyWidth: undefined, proxyHeight: undefined, proxyFps: undefined, proxyPct: undefined, proxyNote: 'preview unavailable' } : x))
         notify(`${m.name}: ${plan.reason}, and the preview copy could not be made (${r.error || 'unknown error'}). Editing still works, the preview will stay blank.`, 11000)
@@ -1142,8 +1158,18 @@ function Editor() {
     if (want && (isAudio ? want === 'a1' || want === 'a2' : want === 'v1' || want === 'v2')) return want
     return isAudio ? 'a1' : 'v1'
   }
+  // A phone clip filmed upright dropped into the default 16:9 frame plays as a thin strip between
+  // two black bars, and nothing says the frame can turn. So the first clip on an empty video track
+  // offers it once. Keyed on the clips array the drop saw, so a drop of several files asks once.
+  const offerPortrait = (media: MediaFile, trackId: TimelineClip['trackId']) => {
+    if (trackId !== 'v1' || orientation !== 'landscape' || portraitOfferedFor.has(clips)) return
+    if (clips.some(c => c.trackId === 'v1') || !(media.width && media.height && media.height > media.width * 1.2)) return
+    portraitOfferedFor.add(clips)
+    notify('This clip is vertical. Switch to Portrait 9:16?', 12000, { label: 'Switch to Portrait 9:16', run: () => setOrientation('portrait') })
+  }
   const placeOnTimeline = (media: MediaFile, at: number, track?: TimelineClip['trackId']) => {
     const trackId = trackFor(media, track)
+    offerPortrait(media, trackId)
     setClips(prev => [...prev, {
       id: rid(), mediaId: media.id, type: media.type,
       trackId,
@@ -2852,6 +2878,7 @@ function Editor() {
   const backfillMedia = async (items: MediaFile[], recheck: Set<string> | 'all' = new Set()) => {
     const needs = (m: MediaFile) => recheck === 'all' || recheck.has(m.id) || m.hdr === undefined || m.fps === undefined
       || (m.proxyPath ? !(m.proxyWidth && m.proxyHeight && m.proxyFps) : !!m.proxyNote)   // proxyNote without a copy: it was needed (lost, or the build failed)
+      || (!!m.proxyPath && !isCurrentProxy(m.proxyPath))   // an older generation's copy (slow to scrub): built again, the old one plays meanwhile
     const vids = items.filter(m => m.type === 'video' && !m.offline && needs(m))
     if (!vids.length) return
     const probes = new Map<string, Probe>()
@@ -2860,7 +2887,8 @@ function Editor() {
       const meta = await window.ipcRenderer.getMetadata(m.path).catch(() => null)
       if (!meta || meta.ok === false) continue
       probes.set(m.id, meta as Probe)
-      fill[m.id] = { hdr: isHdr({ colorTransfer: meta.colorTransfer }), ...(meta.fps ? { fps: meta.fps } : {}) }
+      fill[m.id] = { hdr: isHdr({ colorTransfer: meta.colorTransfer }), ...(meta.fps ? { fps: meta.fps } : {}),
+        ...(meta.width && meta.height ? { width: meta.width, height: meta.height } : {}), ...(meta.audioChannels ? { audioChannels: meta.audioChannels } : {}) }
     }
     if (Object.keys(fill).length) setMediaBin(prev => prev.map(x => fill[x.id] ? { ...x, ...fill[x.id] } : x))
     await ensureProxies(vids.filter(m => probes.has(m.id)), probes)
@@ -3753,7 +3781,8 @@ function Editor() {
       <Tour open={showTour} onClose={() => setShowTour(false)} onFinish={() => setShowChat(true)} />
       <HelpChat open={showChat} onClose={() => setShowChat(false)} onAction={openPanel}
         context={{ version: appVersion, clips: clips.length + texts.length, duration: totalDuration, format: ORIENTATIONS[orientation].label, aiKeys: !!(settings.aiGen?.falKey || settings.aiGen?.geminiKey) }} />
-      <div className="toasts">{toasts.map(t => <div key={t.id} className="toast" onClick={() => setToasts(x => x.filter(y => y.id !== t.id))}>{t.text}</div>)}</div>
+      <div className="toasts">{toasts.map(t => <div key={t.id} className="toast" onClick={() => setToasts(x => x.filter(y => y.id !== t.id))}>{t.text}
+        {t.action && <button className="toast-action" onClick={() => t.action!.run()}>{t.action.label}</button>}</div>)}</div>
       {ask && (
         <div className="modal-backdrop ask-backdrop">
           <div className="modal ask-modal" role="alertdialog" aria-modal="true" aria-label={ask.title}>

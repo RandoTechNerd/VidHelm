@@ -20,8 +20,10 @@
       "relPath": "clip.mp4",       // optional: where the file sits inside projectDir (voice takes: "voice\\voiceover ....webm")
       "fps": 59.94,                // optional: the source's own frame rate
       "hdr": true,                 // optional: HLG/PQ footage, tone-mapped on export
+      "width": 1080, "height": 1920, // optional: the picture as displayed (a phone's rotate flag applied)
+      "audioChannels": 1,          // optional: channels in the first audio stream
       "chromaKey": "#00e800",      // optional: key colour removed on export and in the preview
-      "proxyPath": "C:\\Users\\me\\AppData\\Roaming\\vidhelm\\proxies\\ab12.mp4",  // optional: the preview copy
+      "proxyPath": "C:\\Users\\me\\AppData\\Roaming\\vidhelm\\proxies\\v2-clip-ab12.mp4",  // optional: the preview copy
       "proxyWidth": 1080, "proxyHeight": 1920, "proxyFps": 30 }  // optional: that copy's real size and rate
   ],
 
@@ -58,7 +60,7 @@ Notes for tooling:
 
 - **Media paths are absolute**: projects reference files in place, nothing is copied. The one exception is voice takes recorded before the project had a folder (or under an older version, in `%TEMP%`): saving into a project folder copies them into its `voice` sub-folder and points the file at the copies.
 - **Relinking on open.** For each `mediaBin` entry, opening a project folder tries, in order: `relPath` inside the folder being opened; when the folder was moved or copied (`projectDir` differs), a file of the same name in it; the saved `path`; then a file of the same name in the folder. Whatever is still not found loads with `offline: true` (relink it in the Media panel) instead of as blank clips. A relinked entry drops its `proxyPath` and proxy size so the preview copy is rebuilt from the right file. `offline` and `relPath` are worked out again on every open and save, so editing them by hand changes nothing.
-- The proxy fields describe the preview copy, not the source. A Standard export reads that copy only when it is at least as big and as smooth as the export needs; a High quality export always reads the original.
+- The proxy fields describe the preview copy, not the source. A Standard export reads that copy only when it is at least as big and as smooth as the export needs; a High quality export always reads the original. A copy whose file name lacks the current generation prefix (`v2-`) was made by an older VidHelm and is rebuilt when the project opens; the old one keeps playing until the new one is ready.
 - Overlapping `v1` clips composite in array order (later on top), in the preview and in the export alike; `v2` always sits above `v1`. Give both fades for a crossfade.
 - All clips with audio are mixed regardless of track; tracks are an organizational convention (`a2` keeps effects out of the voice lane).
 - `markers` don't affect rendering: they're coordination points for humans, the karaoke booth, narration placement, and agents.

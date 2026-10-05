@@ -10,7 +10,7 @@ interface Window {
     getPathForFile: (file: File) => string
     selectSavePath: (defaultName: string) => Promise<string | null>
     /** width/height are as DISPLAYED (a rotated phone clip is swapped); rotation is the flag that was applied */
-    getMetadata: (filePath: string) => Promise<{ duration: number; hasVideo: boolean; hasAudio: boolean; ok?: boolean; error?: string; format?: string; videoCodec?: string; pixFmt?: string; colorTransfer?: string; width?: number; height?: number; fps?: number; rotation?: number }>
+    getMetadata: (filePath: string) => Promise<{ duration: number; hasVideo: boolean; hasAudio: boolean; ok?: boolean; error?: string; format?: string; videoCodec?: string; pixFmt?: string; colorTransfer?: string; width?: number; height?: number; fps?: number; rotation?: number; audioChannels?: number; hasCoverArt?: boolean; needsRemux?: boolean }>
     /** bytes (or legacy base64); dir defaults to the app's recordings folder, never %TEMP% */
     saveRecording: (data: string | Uint8Array | ArrayBuffer, dir?: string) => Promise<string>
     saveProject: (data: any) => Promise<string | null>
