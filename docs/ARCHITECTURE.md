@@ -83,6 +83,6 @@ Everything else (fluent-ffmpeg, Whisper via `@huggingface/transformers`, the ren
 
 ## Repo hygiene
 
-- `electron-builder` packages `ffmpeg.exe`/`ffprobe.exe` into resources for production builds.
+- `electron-builder` packages `ffmpeg.exe`/`ffprobe.exe` into resources for production builds (`extraResources`), so `build.files` keeps the `ffmpeg-static` and `ffprobe-static` packages themselves out of the app: a second copy of ffmpeg.exe and every platform's ffprobe (about 430 MB unpacked), which the packaged app never loads. The same list drops onnxruntime-node's macOS, Linux and Windows-on-Arm binaries, source maps, and `@huggingface/transformers/.cache` (a development run's Whisper download: the app keeps its models in `userData/whisper-cache`). On the last build that was 770 MB of the 1 GB app folder. Leave `onnxruntime-web` in: transformers.js imports it.
 - Whisper models download on first captions run (HF cache); they are not in the repo.
 - Generated SFX live in `userData`, not the repo.
