@@ -5,13 +5,15 @@ description: Drive the running VidHelm video editor to make or polish a video, c
 
 # Driving VidHelm
 
-You are co-editing with a human: they see every change live in the GUI and can move things between your calls. The `vidhelm` MCP tools talk to the running app (start it with `npm run dev` if tools say it's not running; the user can check the 🤖 AI button in the app for connection help).
+You are co-editing with a human: they see every change live in the GUI and can move things between your calls. The `vidhelm` MCP tools talk to the running app (start it with `npm run dev` if tools say it's not running; the user can check the Connect AI button in the app for connection help).
 
 ## Core loop
 
 1. `get_state`: always first. Returns format, media bin, clips per track (`v1` video, `v2` b-roll, `a1` voice/music, `a2` SFX), texts, **tag points**, and `startRecipe`.
 2. Batch a few edits, then `screenshot` to verify what the human sees. Re-read state after they touch anything.
 3. Report progress in chat conversationally; the human is watching the app, not your tool calls.
+4. **Unsaved work belongs to the human.** `get_state.unsaved` is true while there are changes not saved yet (`get_state.project` names what is open). `open_project` replaces the timeline, so it refuses then: ask the human, and call again with `save:true` (save, then open) or `force:true` (discard the changes). It also opens nothing when the target project holds unsaved work from an earlier session; only the human can restore or discard that, so ask them to choose the project in the Media panel's project list (they get Restore / Discard), then carry on. A media bin entry with `offline:true` is a missing file the human relinks in the Media panel.
+5. Pictures go on `v1`/`v2` and sound on `a1`/`a2` (`add_clip` refuses the rest). `set_format` takes only landscape/portrait/square, 4K/1440p/1080p/720p and 24/30/60 fps; anything else is refused and nothing changes.
 
 ## The "make me a video" workflow (their Start Recipe)
 
@@ -98,7 +100,7 @@ Derive final chapter timestamps from `get_state` after the edit is cut, not from
 - `export_video`, `cut_pauses`, `scan_broll`, `plan_broll` and `plan_framing` are long-running: don't parallelize other edits during them.
 - B-roll on `v2` never contributes audio, by design. Natural sound from a cutaway has to go on `a1`/`a2` as its own clip.
 - If a tool errors "VidHelm is not running": the app must be open. Ask, or run `npm run dev` in the background yourself.
-- Connection problems on the user's side → tell them to click **🤖 AI** in the header (live diagnostics + per-client config) or see docs/CONNECT.md.
+- Connection problems on the user's side → tell them to click **Connect AI** in the header (live diagnostics + per-client config) or see docs/CONNECT.md.
 
 ## Word anchors, the grid, and the other 1.9 habits
 
@@ -109,3 +111,13 @@ Derive final chapter timestamps from `get_state` after the edit is cut, not from
 - **Script-aware export QC.** Pass `script` to `export_video` (or set the booth script first) and the finished mix is transcribed and diffed against it: the verdict gains a "Script match" line with the missing words. Cheap insurance against a dropped narration line.
 - **Film a website.** `capture_site {url, width, height, theme, script, seconds}` renders any page (including localhost) in the app's own Chromium, runs your script first to seed state or freeze animations, and returns a still or a real-time recording straight into the bin.
 - **Narration says acronyms right.** The narration adapter runs a pronunciation pass before synthesis (ASCP → "A S C P", CruxSci → "Crux Sigh", unknown CAPS spelled out). The user's own table is `pronounce.json` in the app data folder.
+
+## AI video clips (`generate_clip`)
+
+`generate_clip {prompt, from?, at?, to?, seconds?, model?, place?}` makes a real video clip with the human's fal.ai (or Gemini) key and lands it in the bin and at the end of v1. Three jobs: a shot from a description; one picture brought to life (`from` = a bin image, a path, or `playhead` for the frame under the playhead); a transition that morphs one picture into another (`from` + `to`). It costs the human money (about $0.35-0.75 per 5 s) and takes 1-4 minutes, so ask before generating more than a couple, prefer it for shots footage cannot give (openers, establishing shots, "make the sign catch fire" from a plain picture to the burning one), and never for something a cut or a still would do. If it returns "no AI video key", point the human at the ✨ AI clip button in the header.
+
+## Style themes and real-photo thumbnails
+
+- **Say the look, get a baseline.** `set_theme {theme:"<their words>"}` turns "make it fun", "clean minimalism", "futuristic tech captions", "cartoon" into one of 15 finished themes (creator, clean, hype, fun, cartoon, tech, terminal, cinematic, elegant, news, neon, handmade, karaoke, explainer, randotechnerd). Tweak words ride on top: "tech but green", "fun, bigger, at the top", "news but no box". A theme sets caption font/colours/motion, title fonts (`add_text` presets) and thumbnail text together, and returns a `feel` (transitions, music, sfx) to steer the rest of the edit.
+- **Captions in the theme.** `make_captions` transcribes on-device with word timings, breaks lines at pauses and sentence ends, and the motions (highlight, pop, bounce, karaoke, typewriter, glow, glitch) land on each spoken word. The export burns them through libass with `electron/styletheme.ts`, the same renderer VidHelm Cloud uses, so a theme looks identical on both.
+- **Thumbnails: real pictures first.** `compose_thumbnail` uses the creator's own photo (passed as `imagePath`, or an image in the project named like thumb/cover/photo), else the best REAL frame (`sample_frames {rank:true}` shows the ranked shortlist with reasons; look at them), else a placeholder card that says so. Text is `"BIG HOOK | smaller second line"`. When the reply has `tellTheCreator`, relay it and ask for a real photo.

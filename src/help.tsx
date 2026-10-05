@@ -4,60 +4,6 @@ import { useState } from 'react'
 
 export type HelpPanel = 'media' | 'sfx' | 'booth' | 'narration' | 'thumbnail' | 'settings' | 'connect' | 'model3d'
 
-const TOUR: { title: string; body: string; go?: { label: string; panel: HelpPanel } }[] = [
-  {
-    title: 'Read this first: VidHelm is not a standalone editor yet',
-    body: 'VidHelm is built to be flown with an AI co-captain. On its own it can cut, tag, narrate and export just fine, but the parts that make it worth using (writing your titles, placing effects on every beat, running your whole workflow from one sentence) need an assistant connected. Think of the buttons here as the controls and your AI as the crew. Step 8 shows you how to connect one, and it takes about a minute.',
-    go: { label: 'Connect one now', panel: 'connect' },
-  },
-  {
-    title: 'What that means in practice',
-    body: 'Everything in this tour works by hand today, so you are never stuck. But if you try VidHelm without an assistant and wonder why it feels like a lean editor rather than a fast one, that is why. Standalone polish is coming; the AI side is where it shines right now.',
-  },
-  {
-    title: '1 · Bring in your footage',
-    body: 'Drag a video straight onto the timeline, or drop it in the Media Bin first. Audio, images and 3D models work too, anything VidHelm can’t use is refused with a reason rather than landing as a broken clip.',
-    go: { label: 'Open the Media Bin', panel: 'media' },
-  },
-  {
-    title: '1b · Or skip importing entirely',
-    body: 'In Settings, point VidHelm at a project folder. Every sub-folder inside it becomes a project, and opening one loads the footage sitting in that folder, so dropping files in with Explorer is the import. Saving writes back to the same folder, which makes a project something you can copy or back up like anything else.',
-    go: { label: 'Set up a project folder', panel: 'settings' },
-  },
-  {
-    title: '2 · Mark the beats',
-    body: 'Play it through once and tap M wherever something happens, a joke landing, a reveal, a cut. Those tag points become the skeleton of the edit: sound effects, captions and narration all snap to them, and your AI reads them too.',
-  },
-  {
-    title: '3 · Tighten it up',
-    body: 'Cut Pauses finds dead air (or motionless stretches in silent footage) and ripples it out with clean crossfades. It is undoable, so run it early and see how it feels.',
-  },
-  {
-    title: '4 · Give it a voice',
-    body: 'Voiceover records at the playhead. The Booth plays your video while your script scrolls in time so you can read the whole thing in one take. Narrate generates lines in a cloned voice, the wizard there sets up a free local engine for you.',
-    go: { label: 'Open the Booth', panel: 'booth' },
-  },
-  {
-    title: '5 · Sound and sparkle',
-    body: 'The SFX tab has thirteen built-in effects, synthesized on your machine, audition one, then drop it on a tag point. You can generate new ones from a text description, or drop your own files in.',
-    go: { label: 'Open the SFX library', panel: 'sfx' },
-  },
-  {
-    title: '6 · Print showcase (optional)',
-    body: 'Drop an STL, 3MF, OBJ or GLB in and the 3D Studio spins it into a clip. Pick a transparent backdrop and a still becomes an overlay that sits on top of your footage.',
-    go: { label: 'Open the 3D Studio', panel: 'model3d' },
-  },
-  {
-    title: '7 · Export, checked',
-    body: 'Pick your format on the right and hit Export Video. Watch & Verify then checks the finished file the way a platform would, resolution, loudness, true peak, black frames, so you know it is upload-ready before you upload it.',
-  },
-  {
-    title: '8 · Now connect your co-captain (do not skip this)',
-    body: 'This is the step that turns VidHelm from a lean editor into a fast one. Connect an assistant and it works the same timeline you do: reading your tag points, dropping effects on every beat, writing your titles, running your whole Start Recipe from one sentence, and exporting with a quality report. The 🤖 AI button does the fiddly part for you: it checks your setup, writes the command with your real install path already in it, then copies it and opens a terminal on request. Paste it, press Enter, restart your assistant, and leave VidHelm open. About a minute, and free if you already have an assistant.',
-    go: { label: 'Connect your AI', panel: 'connect' },
-  },
-]
-
 // Everything VidHelm ships or downloads, with the licence it arrives under. FFmpeg is first
 // because it is the one with real obligations attached.
 const LICENCES: { name: string; licence: string; note: string }[] = [
@@ -79,15 +25,15 @@ const OPTIONAL = [
   { name: 'Adversal', licence: 'third-party service', note: 'Optional video analysis for your assistant. Not bundled.' },
 ]
 
-export function HelpModal({ open, onClose, onOpenPanel, version }: {
+export function HelpModal({ open, onClose, onOpenPanel, onTour, onChat, version }: {
   open: boolean; onClose: () => void
   onOpenPanel: (panel: HelpPanel) => void
+  onTour: () => void; onChat: () => void
   version: string
 }) {
-  const [tab, setTab] = useState<'tour' | 'credits'>('tour')
-  const [step, setStep] = useState(0)
+  const [tab, setTab] = useState<'start' | 'credits'>('start')
   if (!open) return null
-  const s = TOUR[step]
+  const go = (fn: () => void) => () => { onClose(); fn() }
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
@@ -98,25 +44,26 @@ export function HelpModal({ open, onClose, onOpenPanel, version }: {
         </div>
         <div className="modal-body">
           <div className="conn-clients">
-            <button className={`recipe-chip ${tab === 'tour' ? 'on' : ''}`} onClick={() => setTab('tour')}>Take the tour</button>
+            <button className={`recipe-chip ${tab === 'start' ? 'on' : ''}`} onClick={() => setTab('start')}>Getting started</button>
             <button className={`recipe-chip ${tab === 'credits' ? 'on' : ''}`} onClick={() => setTab('credits')}>Credits &amp; licences</button>
           </div>
 
-          {tab === 'tour' ? (
-            <section className="help-tour">
-              <div className="help-dots">
-                {TOUR.map((_, i) => <button key={i} className={`help-dot ${i === step ? 'on' : ''}`} onClick={() => setStep(i)} title={`Step ${i + 1}`} />)}
+          {tab === 'start' ? (
+            <section className="help-start">
+              <div className="help-cards">
+                <button onClick={go(onTour)}><b>Take the tour</b><span>Thirty seconds, pointing at the real buttons.</span></button>
+                <button onClick={go(onChat)}><b>Ask the help chat</b><span>Questions in plain words, answered right in the app.</span></button>
+                <button onClick={go(() => onOpenPanel('connect'))}><b>Connect your AI</b><span>Let an assistant edit with you. About a minute.</span></button>
               </div>
-              <h3>{s.title}</h3>
-              <p>{s.body}</p>
-              <div className="help-actions">
-                <button disabled={step === 0} onClick={() => setStep(step - 1)}>← Back</button>
-                {step < TOUR.length - 1
-                  ? <button className="primary" onClick={() => setStep(step + 1)}>Next →</button>
-                  : <button className="primary" onClick={onClose}>Start editing</button>}
-                {s.go && <button onClick={() => { onOpenPanel(s.go!.panel); onClose() }}>{s.go.label}</button>}
-              </div>
-              <p className="hint">Nothing here is a wrong turn, every edit is undoable with Ctrl+Z, and nothing touches your original files.</p>
+              <h3>A first video in five moves</h3>
+              <ol className="help-steps">
+                <li><b>Pick the shape</b> at the top: Landscape, Portrait or Square.</li>
+                <li><b>Drop your footage</b> on the timeline (or into Media).</li>
+                <li><b>Tighten it</b> with Cut Pauses, then Takes to keep your best lines.</li>
+                <li><b>Tap M</b> on the beats that matter, then add text, sound effects and captions.</li>
+                <li><b>Export</b> at the top right, then Watch &amp; Verify before you upload.</li>
+              </ol>
+              <p className="hint">VidHelm works fine by hand, but it is built to be flown with an AI co-pilot: connect one and it reads your tag points, drops effects on every beat, writes titles and runs your whole routine from one sentence. Nothing here is a wrong turn: every edit is undoable with Ctrl+Z, and nothing touches your original files.</p>
             </section>
           ) : (
             <>
@@ -126,7 +73,7 @@ export function HelpModal({ open, onClose, onOpenPanel, version }: {
                   VidHelm is built by <b>RandoTechNerd</b>. Special thanks to <b>inventinside</b>, now a contributor on GitHub, whose feedback drove a good chunk of what this app can do, the ideas kept coming and the app kept growing because of them.
                 </p>
                 <p className="hint">Found something rough, or want it to do something it doesn’t? Open an issue on GitHub, that is exactly how the list above got written.</p>
-                <p className="hint" style={{ color: '#fbbf24' }}>Buying a coffee? Put <b>"VidHelm"</b> in the comment so it lands against the right project (there are a few on that page), and add the feature you want next while you are there.</p>
+                <p className="hint" style={{ color: 'var(--accent-warning)' }}>Buying a coffee? Put <b>"VidHelm"</b> in the comment so it lands against the right project (there are a few on that page), and add the feature you want next while you are there.</p>
               </section>
 
               <section>

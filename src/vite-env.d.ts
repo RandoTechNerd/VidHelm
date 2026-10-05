@@ -9,10 +9,13 @@ interface Window {
     log: (...args: any[]) => void
     getPathForFile: (file: File) => string
     selectSavePath: (defaultName: string) => Promise<string | null>
-    getMetadata: (filePath: string) => Promise<{ duration: number; hasVideo: boolean; hasAudio: boolean; ok?: boolean; error?: string; format?: string; videoCodec?: string; pixFmt?: string; colorTransfer?: string; width?: number; height?: number; fps?: number }>
-    saveRecording: (base64: string) => Promise<string>
+    /** width/height are as DISPLAYED (a rotated phone clip is swapped); rotation is the flag that was applied */
+    getMetadata: (filePath: string) => Promise<{ duration: number; hasVideo: boolean; hasAudio: boolean; ok?: boolean; error?: string; format?: string; videoCodec?: string; pixFmt?: string; colorTransfer?: string; width?: number; height?: number; fps?: number; rotation?: number }>
+    /** bytes (or legacy base64); dir defaults to the app's recordings folder, never %TEMP% */
+    saveRecording: (data: string | Uint8Array | ArrayBuffer, dir?: string) => Promise<string>
     saveProject: (data: any) => Promise<string | null>
-    loadProject: () => Promise<any | null>
+    /** { data, path } names the file picked (older builds returned the bare project); null when cancelled or unreadable */
+    loadProject: () => Promise<{ data: any; path: string } | any | null>
     revealFile: (filePath: string) => Promise<void>
     makeThumbnails: (data: { filePath: string; sourceStart: number; duration: number; count?: number }) => Promise<{ path?: string; error?: string }>
     getSettings: () => Promise<any>
@@ -23,12 +26,14 @@ interface Window {
     renderMixAudio: (data: { clips: any[] }) => Promise<{ path?: string; error?: string }>
     detectSilence: (data: { filePath: string; thresholdDb: number; minPause: number }) => Promise<{ intervals?: { start: number; end: number }[]; error?: string }>
     detectFreeze: (data: { filePath: string; sourceStart: number; duration: number; freezeDb: number; minDur: number }) => Promise<{ intervals?: { start: number; end: number }[]; error?: string }>
+    /** rejects with an Error whose message is "Export failed: <reason>" plus the end of ffmpeg's log on following lines */
     exportVideo: (data: { clips: any[], texts: any[], brand: any, audio: any, outputPath: string, settings: any }) => Promise<{ success: boolean }>
     sfxLibrary: () => Promise<{ dir: string; items: { name: string; path: string; duration: number; builtin: boolean }[] }>
     pickAudio: () => Promise<string | null>
     openExternal: (url: string) => Promise<void>
     openTerminal: () => Promise<{ ok?: boolean; error?: string }>
-    makeProxy: (data: { filePath: string; info: any; maxWidth?: number; maxFps?: number }) => Promise<{ ok?: boolean; path?: string; cached?: boolean; skipped?: boolean; reason?: string; encoder?: string; error?: string }>
+    /** width/height/fps describe the PROXY file itself (as displayed), on fresh and cached replies alike */
+    makeProxy: (data: { filePath: string; info: any; maxWidth?: number; maxFps?: number }) => Promise<{ ok?: boolean; path?: string; cached?: boolean; skipped?: boolean; reason?: string; encoder?: string; width?: number; height?: number; fps?: number; error?: string }>
     sampleFrames: (data: { filePath: string; count?: number; sourceStart?: number; duration?: number }) => Promise<{ frames?: { t: number; path: string }[]; error?: string }>
     machineProfile: (data?: { refresh?: boolean }) => Promise<{ specs?: { cores: number; memGB: number; hwEncoder: boolean; benchMs: number }; cpu?: string; detected?: 'low' | 'balanced' | 'best'; reasons?: string[]; profile?: any }>
     sfxSearch: (data: { query: string; token?: string; safeOnly?: boolean; maxSeconds?: number; pageSize?: number }) => Promise<{ ok?: boolean; query?: string; count?: number; notes?: string[]; results?: any[]; error?: string }>
@@ -44,7 +49,8 @@ interface Window {
     labelBroll: (data: { folder: string; id: string; labels?: string[]; description?: string; bestStart?: number; bestEnd?: number; maxUses?: number }) => Promise<{ ok?: boolean; id?: string; saved?: any; error?: string }>
     refineCut: (data: { filePath: string; t: number; dir?: 'after' | 'before'; window?: number; floorDb?: number }) => Promise<{ t?: number; refined?: number; moved?: number; note?: string; error?: string }>
     planFraming: (data: { filePath: string; sourceStart?: number; duration?: number; fps?: number; hints?: { t: number; cx: number; weight?: number }[]; aspect?: number }) => Promise<any>
-    composeThumbnail: (data: { filePath: string; t: number; subtitle?: string; logoPath?: string | null; outPath: string }) => Promise<{ ok?: boolean; outPath?: string; error?: string }>
+    composeThumbnail: (data: { filePath?: string | null; t?: number; imagePath?: string | null; subtitle?: string; logoPath?: string | null; outPath: string; theme?: string }) => Promise<{ ok?: boolean; outPath?: string; source?: 'photo' | 'frame' | 'placeholder'; placeholder?: boolean; nudge?: string; error?: string }>
+    rankFrames: (data: { filePath: string; count?: number; keep?: number; sourceStart?: number; duration?: number }) => Promise<{ frames?: { t: number; path: string; score: number; why: string }[]; sampled?: number; error?: string }>
     openSfxFolder: () => Promise<{ ok?: boolean; path?: string; error?: string }>
     saveSfxRecording: (data: { base64: string; name: string }) => Promise<{ path?: string; name?: string; duration?: number; error?: string }>
     voiceClone: (data: { command: string; scriptText: string; pronounce?: boolean }) => Promise<{ files?: string[]; error?: string; log?: string; spoken?: string; pronounceTable?: string }>
@@ -60,13 +66,18 @@ interface Window {
     pickFolder: (title: string) => Promise<string | null>
     listProjects: (root: string) => Promise<{ projects?: { name: string; path: string; media: number; saved: boolean; modified: number }[]; error?: string }>
     scanProject: (dir: string) => Promise<{ files?: { path: string; name: string; mtime: number }[]; project?: any; projectFile?: string; error?: string }>
+    importCloudZip: (data: { root: string; zipPath?: string }) => Promise<{ path?: string; name?: string; clips?: number; timeline?: number; failed?: string[]; cancelled?: boolean; error?: string }>
+    /** stillRunning: the provider job may still finish (and bill); do not resubmit */
+    genClip: (data: { prompt: string; fromPath?: string; fromTime?: number; toPath?: string; toTime?: number; seconds?: number; aspect: 'landscape' | 'portrait' | 'square'; model?: string; keys?: { fal?: string; gemini?: string }; outDir: string }) => Promise<{ path?: string; model?: string; seconds?: number; hasAudio?: boolean; estimateUsd?: number; error?: string; stillRunning?: boolean }>
     createProject: (data: { root: string; name: string }) => Promise<{ path?: string; name?: string; error?: string }>
-    saveProjectTo: (data: { dir: string; data: any }) => Promise<{ path?: string; error?: string }>
+    /** moved: loose recordings (temp / app folder) copied into <dir>/voice; the saved file already points at `to`, with relPath set */
+    saveProjectTo: (data: { dir: string; data: any }) => Promise<{ path?: string; error?: string; moved?: { from: string; to: string; relPath?: string }[] }>
     revealFolder: (dir: string) => Promise<void>
     analysisPath: (name: string) => Promise<string>
     windowDragStart: () => void
     windowDragEnd: () => void
     windowToggleMaximize: () => void
+    setWindowTheme?: (theme: 'dark' | 'light') => void
     agentStatus: () => Promise<{
       appVersion: string; port: number; portOverridden: boolean
       bridge: { listening: boolean; error: string }

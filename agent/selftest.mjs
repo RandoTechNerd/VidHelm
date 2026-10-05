@@ -47,13 +47,47 @@ try {
   // 2) tools/list, schema validity for MCP clients AND OpenAI-function conversion
   send({ jsonrpc: '2.0', id: 2, method: 'tools/list' })
   const tools = (await recv()).result?.tools || []
-  ok(tools.length === 44, `tools/list returns 44 tools (got ${tools.length})`)
+  ok(tools.length === 47, `tools/list returns 47 tools (got ${tools.length})`)
   const nameRe = /^[a-zA-Z0-9_-]{1,64}$/   // OpenAI/Gemini function-name constraint
   ok(tools.every(t => nameRe.test(t.name)), 'tool names valid for OpenAI-compatible clients')
   ok(tools.every(t => t.description && t.description.length < 1024), 'descriptions present and within limits')
   ok(tools.every(t => t.inputSchema?.type === 'object' && typeof t.inputSchema.properties === 'object'), 'every inputSchema is a valid object schema')
   ok(tools.every(t => (t.inputSchema.required || []).every(r => r in t.inputSchema.properties)), 'required fields all exist in properties')
   ok(tools.every(t => Object.values(t.inputSchema.properties).every(p => ['string', 'number', 'boolean'].includes(p.type))), 'property types are primitives (small-model friendly)')
+  // Gemini-family function calling refuses an enum on anything but a string ("enum: only allowed for
+  // STRING type"), and one bad property fails the whole tool list for that client
+  ok(tools.every(t => Object.values(t.inputSchema.properties).every(p => !p.enum || (p.type === 'string' && p.enum.every(v => typeof v === 'string')))), 'enums only on string properties, with string values')
+  const fmt = tools.find(t => t.name === 'set_format')?.inputSchema.properties || {}
+  ok(String(fmt.resolution?.enum) === '4K,1440p,1080p,720p' && String(fmt.orientation?.enum) === 'landscape,portrait,square' && !fmt.fps?.enum && /24.*30.*60/.test(fmt.fps?.description || ''),
+    'set_format offers only the formats the app has (an off-list "4k" blanked the editor); fps is named in words')
+  ok(/never retry/i.test(tools.find(t => t.name === 'generate_clip')?.description || ''), 'generate_clip warns that a retry pays twice')
+  ok(String(tools.find(t => t.name === 'add_clip')?.inputSchema.properties.track?.enum) === 'v1,v2,a1,a2', 'add_clip can reach the b-roll track (v2)')
+  const openP = tools.find(t => t.name === 'open_project')?.inputSchema.properties || {}
+  ok(openP.save?.type === 'boolean' && openP.force?.type === 'boolean' && /unsaved/i.test(tools.find(t => t.name === 'get_state')?.description || ''),
+    'open_project offers save / force for unsaved work, and get_state says when there is some')
+
+  // 2b) timeouts: one shared table, the proxy always outlasts the bridge, and the slow tools are slow
+  const T = await import('./timeouts.mjs')
+  const actions = [...Object.keys(T.ACTION_TIMEOUTS), 'get_state', 'add_text', 'set_theme', 'label_broll']
+  ok(actions.every(a => T.proxyTimeoutMs({ action: a }) > T.bridgeTimeoutMs({ action: a }) && T.proxyTimeoutMs({ action: a, at: 'arcade' }) > T.bridgeTimeoutMs({ action: a, at: 'arcade' })),
+    'MCP proxy timeout is longer than the bridge timeout for every action (the bridge reports first)')
+  ok(T.bridgeTimeoutMs({ action: 'export' }) === 4 * 60 * 60 * 1000, 'export may run 4 h on both sides')
+  ok(T.bridgeTimeoutMs({ action: 'generate_clip' }) >= 13 * 60 * 1000, 'generate_clip outlasts the 12 min video-model budget')
+  const slow = ['make_captions', 'find_repeats', 'apply_takes', 'find_word', 'capture_site', 'make_score', 'make_sfx', 'search_sfx', 'download_sfx', 'open_project',
+    'cut_pauses', 'run_recipe', 'sample_frames', 'compose_thumbnail', 'render_3d', 'prepare_analysis', 'scan_broll', 'plan_broll', 'place_broll', 'analyze_speech', 'find_phrase', 'cut_at_phrase', 'plan_framing', 'look_through']
+  const short = slow.filter(a => T.bridgeTimeoutMs({ action: a }) < 20 * 60 * 1000)
+  ok(!short.length, `every Whisper/render/network tool gets the long budget${short.length ? ' (short: ' + short.join(', ') + ')' : ''}`)
+  ok(T.bridgeTimeoutMs({ action: 'add_text', at: 'arcade' }) >= 20 * 60 * 1000 && T.bridgeTimeoutMs({ action: 'generate_clip', at: 12 }) === T.bridgeTimeoutMs({ action: 'generate_clip' }),
+    'a word anchor (string at) gets the long budget; a numeric at does not')
+  ok(['constructor', 'toString', '__proto__', 'hasOwnProperty', 'valueOf'].every(a => T.bridgeTimeoutMs({ action: a }) === T.QUICK_MS),
+    'an action named like an Object.prototype member gets the ordinary budget, not a function')
+  const { readFileSync, existsSync } = await import('node:fs')
+  const mainPath = path.join(path.dirname(SERVER), '..', 'electron', 'main.ts')
+  if (existsSync(mainPath)) {   // repo checkouts only; an installed app ships no sources
+    const mainSrc = readFileSync(mainPath, 'utf8'), mcpSrc = readFileSync(SERVER, 'utf8')
+    ok(/bridgeTimeoutMs\(cmd\)/.test(mainSrc) && !/const LONG = \[/.test(mainSrc) && /import\('\.\/timeouts\.mjs'\)/.test(mcpSrc) && !/30 \* 60 \* 1000/.test(mcpSrc),
+      'bridge and MCP proxy both read agent/timeouts.mjs (no private copies to drift)')
+  }
 
   // 3) startup probes strict clients make, must answer, not error
   send({ jsonrpc: '2.0', id: 3, method: 'resources/list' })

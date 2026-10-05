@@ -16,6 +16,8 @@ intro-audio          # your intro sting at 0:00 (pick it below)
 # captions           # on-device Whisper captions
 ```
 
+Below those toggles the default recipe also carries standing instructions for your AI (INTRO, TEASE, JOINS, LOGO, CUTTING TO A LINE, B-ROLL, SHORTS): the video opens as its own thumbnail with the title and logo flickering off to reveal the same shot already moving, then, around 0:08-0:13 while the intro line is still playing, a flash-forward tease of the payoff (memory-ripple in on a womp, the best moments at 4x with a dreamy look and a "COMING UP" tag, a stutter-scrub back out) before the body starts. Read or rewrite them in Settings; your AI reads them from `startRecipe`.
+
 Pick your **logo** (PNG) and **intro audio** right in the section. Then drop a video on the timeline and hit **🚀 Recipe** in the header: dead air is cut, your intro sting lands at 0:00, the watermark arms itself, and the **thumbnail picker** opens, choose a frame, type the catchy subtitle, and save a YouTube-ready 1280×720 PNG with your logo composited on. Steps marked for AI (like `titles 5`) are picked up automatically when your assistant reads the project (see [AGENT.md](AGENT.md)).
 
 ## 1 · Import
@@ -124,3 +126,7 @@ Mixing tools, per clip: flat volume slider, **drawable volume-automation graph**
 | `←` / `→` | Step 1 frame (with `Shift`: 1 s) |
 | `Home` | Jump to start |
 | `Ctrl+Z` / `Ctrl+Shift+Z` | Undo / redo |
+
+## AI clips (✨ AI clip)
+
+Generate a video clip when footage cannot give you the shot: describe it, or start from a picture (or the frame under the playhead) and end on another picture so the clip morphs one into the other. Kling and Luma run through fal.ai (add your key in the panel; fal.ai → Keys), Veo 3.1 with sound through a Gemini key. Clips take 1 to 4 minutes, cost roughly 35 to 75 cents per 5 seconds, and land in the Media Bin and at the end of v1. Your AI can call it too (`generate_clip`); the cloud version shares the same harness.

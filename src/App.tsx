@@ -1,6 +1,10 @@
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect, useCallback, Component, type ReactNode } from 'react'
 import './App.css'
-import { SfxPanel, MarkerPanel, KaraokeBooth, NarrationModal, RecipeSection, ThumbnailModal, ConnectModal, DEFAULT_RECIPE, recipeActive, newMarker, type Marker, type SfxItem, type RecipeSettings } from './extras'
+import { VidHelmMark, IcSave, IcOpen, IcCloud, IcRecipe, IcCube, IcSparkle, IcBot, IcSun, IcMoon, IcHelp, IcRefresh, IcFolder, IcPlus, IcBooth, IcVoice, IcCut, IcList, IcCheck, IcEye, IcChat, IcMissing } from './icons'
+import { Tour, tourSeen } from './tour'
+import { HelpChat } from './helpchat'
+import type { HelpAction } from '../electron/helpdesk'
+import { SfxPanel, MarkerPanel, KaraokeBooth, NarrationModal, RecipeSection, ThumbnailModal, ConnectModal, DEFAULT_RECIPE, recipeActive, newMarker, saveTake, type Marker, type SfxItem, type RecipeSettings } from './extras'
 import { Model3DModal, KEY_GREEN, KEY_MAGENTA, type Model3DApi } from './model3d'
 import { HelpModal, InfoNote, type HelpPanel } from './help'
 import { TakesModal, takeStats, type TakeAnalysis } from './takes'
@@ -8,9 +12,11 @@ import { groupTakes, removalRanges, removedSeconds, chunksFromWords, wordsOf } f
 import { snapToGrid, describeSnap } from '../electron/grid'
 import { fitBpm } from '../electron/score'
 import { layoutReport, presetFor, fitFontSize } from '../electron/textlayout'
+import { THEMES, THEME_FONTS, CAPTION_Y as THEME_CAP_Y, chooseTheme, phrasesFromWords, captionFrame, captionCss, captionPx, fontFaceCss, type CaptionSpec, type CapWord, type ThemeFont, type CapCue } from '../electron/styletheme'
 import { planProxy, isHdr } from '../electron/playable'
 import { spanForPhrase, sentenceSpans, type Word as SpeechWord, type Span } from '../electron/speech'
 import { planBroll, snapToWords, describePlan, type BrollAsset, type Placement } from '../electron/broll'
+import { looksLikeThumbPhoto } from '../electron/thumbpick'
 import { resolveProfile, describeProfile, type PerfProfile, type Tier, type TierPreference } from '../electron/capability'
 
 interface MediaFile {
@@ -23,11 +29,18 @@ interface MediaFile {
   hasAudio: boolean
   chromaKey?: string   // 3D renders made on a key colour: removed on export, keyed in preview
   // A watchable stand-in for footage the preview cannot decode (phone HEVC, 10-bit, HDR, huge
-  // frames). Only the preview uses it; exports always read the original file.
+  // frames). The preview plays it; a Standard export reads it only when it is at least as big and
+  // as smooth as the export itself (see exportSource), otherwise, and at High quality, the original.
   proxyPath?: string
+  proxyWidth?: number  // the copy's real frame size and rate, as make-proxy measured them
+  proxyHeight?: number
+  proxyFps?: number
   proxyPct?: number    // 0-100 while it is being made
   proxyNote?: string   // why it needed one, shown in the bin
   hdr?: boolean        // HLG/PQ source: export tone-maps it, or the colour comes out flat
+  fps?: number         // the source's own frame rate (a 30 fps copy of 30 fps footage loses nothing)
+  relPath?: string     // where it sat inside the project folder when saved, so a moved folder relinks
+  offline?: boolean    // the file is not where the project says and nothing matched: relink or remove it
 }
 
 interface TimelineClip {
@@ -53,10 +66,13 @@ interface AppSettings {
   brand: { enabled: boolean; logoPath: string | null; position: 'tl' | 'tr' | 'bl' | 'br' | 'center'; sizePct: number; margin: number; opacity: number; showMode: 'whole' | 'intro' | 'outro'; windowSec: number; fade: number }
   intro: { segment: 'first' | 'last'; seconds: number; fade: number; treatment: 'ripple' | 'overlay' }
   audio: { optimize: boolean; noiseReduction: boolean }
-  caption: { fontSize: number; color: string; position: 'lower' | 'top' | 'center'; box: boolean; boxOpacity: number; model: 'tiny' | 'base' | 'small'; language: string; mode: 'phrase' | 'word' }
+  /** theme: a theme id or the creator's words ("futuristic tech"); 'classic' = the plain style below. tweak: words on top ("but blue") */
+  caption: { fontSize: number; color: string; position: 'lower' | 'top' | 'center'; box: boolean; boxOpacity: number; model: 'tiny' | 'base' | 'small'; language: string; mode: 'phrase' | 'word'; theme: string; tweak: string }
   silence: { minPause: number; thresholdDb: number; pad: number; smooth: boolean; transition: number; detectBy: 'auto' | 'audio' | 'motion'; freezeDb: number }
   narration: { command: string }
   sfxGen: { command: string; freesoundToken?: string; favorites?: string[] }
+  /** AI video generation keys (fal.ai for Kling / Luma / Veo fast, Gemini for Veo 3.1 with sound). */
+  aiGen: { falKey?: string; geminiKey?: string }
   workspace: { root: string | null; autoLoad: boolean }
   /** how hard to work this machine. 'auto' follows what was detected at startup. */
   performance: { preference: TierPreference }
@@ -67,10 +83,11 @@ const DEFAULT_SETTINGS: AppSettings = {
   brand: { enabled: false, logoPath: null, position: 'br', sizePct: 16, margin: 40, opacity: 0.85, showMode: 'whole', windowSec: 5, fade: 0.5 },
   intro: { segment: 'first', seconds: 5, fade: 0.6, treatment: 'ripple' },
   audio: { optimize: true, noiseReduction: false },
-  caption: { fontSize: 44, color: '#ffffff', position: 'lower', box: true, boxOpacity: 0.5, model: 'tiny', language: 'en', mode: 'phrase' },
+  caption: { fontSize: 44, color: '#ffffff', position: 'lower', box: true, boxOpacity: 0.5, model: 'tiny', language: 'en', mode: 'phrase', theme: 'creator', tweak: '' },
   silence: { minPause: 0.8, thresholdDb: -30, pad: 0.12, smooth: true, transition: 0.12, detectBy: 'auto', freezeDb: -50 },
   narration: { command: '' },
   sfxGen: { command: '' },
+  aiGen: {},
   performance: { preference: 'auto' },
   workspace: { root: null, autoLoad: true },
   recipe: { text: DEFAULT_RECIPE, introAudioPath: null },
@@ -143,16 +160,27 @@ const WRONG_TYPE: Record<string, string> = {
 // ffprobe is the authority on what can be decoded, with one catch: it cheerfully reads a
 // text file as "ansi video" (the tty demuxer) and subtitles as streams. Those are filtered
 // out here so a stray .txt can't land on the timeline as a 0.04s clip.
-type Probe = { duration: number; hasVideo: boolean; hasAudio: boolean; ok?: boolean; error?: string; format?: string; videoCodec?: string; pixFmt?: string; colorTransfer?: string; width?: number; height?: number; fps?: number }
+// width/height are as DISPLAYED (a rotated phone clip comes back upright) and rotation is the
+// clockwise turn that took; the whole probe goes to makeProxy, which needs it to keep the copy upright.
+type Probe = { duration: number; hasVideo: boolean; hasAudio: boolean; ok?: boolean; error?: string; format?: string; videoCodec?: string; pixFmt?: string; colorTransfer?: string; width?: number; height?: number; fps?: number; rotation?: number }
 const JUNK_FORMAT = /(^|,)(tty|ansi|image2pipe|srt|ass|ssa|webvtt|lrc|microdvd|subviewer|jacosub|mpsub|pjs|realtext|sami|vplayer)(,|$)/
+// iPhone photos. The preview could show some, but the exporter cannot decode them, so a HEIC on
+// the timeline only failed at the end of an export. Refused at the door instead, with the way out.
+const NO_EXPORT_STILL: Record<string, string> = {
+  heic: 'HEIC photos can’t be exported yet: save it as a JPG or PNG first (on an iPhone, Settings > Camera > Formats > Most Compatible takes JPGs from now on).',
+  heif: 'HEIF photos can’t be exported yet: save it as a JPG or PNG first.',
+}
 const classifyMedia = (name: string, meta: Probe | null): { type: 'video' | 'audio' | 'image' } | { reject: string } => {
   const ext = extOf(name)
   if (WRONG_TYPE[ext]) return { reject: WRONG_TYPE[ext] }
+  if (NO_EXPORT_STILL[ext]) return { reject: NO_EXPORT_STILL[ext] }
   const knownImage = IMAGE_EXT.has(ext)
   const knownAV = VIDEO_EXT.has(ext) || AUDIO_EXT.has(ext)
   if (!meta) return { reject: 'could not be read' }
   if (meta.ok === false || JUNK_FORMAT.test(meta.format || '') || meta.videoCodec === 'ansi') {
-    if (knownImage) return { type: 'image' }   // a few image types ffprobe can't parse still display fine
+    // The exporter reads pictures with the same FFmpeg, so one ffprobe cannot read would only fail
+    // at export time (it used to be let in because the preview might still show it).
+    if (knownImage) return { reject: 'couldn’t be read (a damaged picture, or a kind the export can’t decode): save it as a PNG or JPG first' }
     return { reject: knownAV ? 'couldn’t be read (damaged, or an unsupported codec)' : 'not a video, audio, image or 3D file' }
   }
   if (!meta.hasVideo && !meta.hasAudio) return { reject: 'there’s no video or audio inside it' }
@@ -178,6 +206,52 @@ interface TextClip {
   fadeOut: number
   box?: boolean       // background bar behind text
   boxOpacity?: number // 0..1
+  boxColor?: string
+  /** a style-theme font (public/fonts); unset = the default sans */
+  font?: ThemeFont
+  /** outline width as a fraction of the font size */
+  outline?: number
+  outlineColor?: string
+  /** a themed caption: its style, the words that asked for it, and word timings in seconds from the cue's start */
+  caption?: { spec: CaptionSpec; theme: string; words?: CapWord[] }
+}
+
+/* style-theme fonts for the preview (the export reads the same files from disk) */
+let themeFontsInjected = false
+function injectThemeFonts() {
+  if (themeFontsInjected || typeof document === 'undefined') return
+  themeFontsInjected = true
+  const st = document.createElement('style')
+  st.textContent = fontFaceCss(f => `./fonts/${f}`)
+  document.head.appendChild(st)
+  // fetch them now, so the first caption in a new theme does not flash in the fallback font
+  if (document.fonts) for (const f of Object.values(THEME_FONTS)) document.fonts.load(`${f.bold ? 700 : 400} 40px '${f.family}'`).catch(() => {})
+}
+injectThemeFonts()
+const themeRequest = (cs: { theme?: string; tweak?: string }) => `${cs.theme || 'creator'} ${cs.tweak || ''}`.trim()
+/** A themed caption cue as a timeline text item. */
+function captionClip(p: CapCue, spec: CaptionSpec, theme: string, outW: number, outH: number): TextClip {
+  return { id: rid(), text: p.text, start: p.start, duration: Math.max(0.3, p.end - p.start), x: 0.5, y: THEME_CAP_Y[spec.position],
+    fontSize: Math.round(captionPx(spec, outW, outH) / outH * 1080), color: spec.color, fadeIn: 0, fadeOut: 0,
+    caption: { spec, theme, words: (p.words || []).map(w => ({ s: +(w.s - p.start).toFixed(3), e: +(w.e - p.start).toFixed(3), t: w.t })) } }
+}
+/** A themed caption in the preview, drawn from the same per-frame description the export follows. */
+function CaptionLayer({ t, time, groupBase, outW, outH, stageH, selected, onSelect }: { t: TextClip; time: number; groupBase: number; outW: number; outH: number; stageH: number; selected: boolean; onSelect: () => void }) {
+  const spec = t.caption!.spec
+  const cue = { start: t.start, end: t.start + t.duration, text: t.text, words: t.caption!.words?.map(w => ({ s: t.start + w.s, e: t.start + w.e, t: w.t })) }
+  const fr = captionFrame(cue, spec, time, groupBase)
+  if (!fr) return null
+  const px = captionPx(spec, outW, outH) * stageH / outH
+  const css = captionCss(spec, px) as React.CSSProperties
+  if (spec.motion === 'glitch') css.textShadow = `${(-fr.glitch * px).toFixed(1)}px 0 0 ${spec.shadowColor}`
+  const place: React.CSSProperties = spec.position === 'top' ? { top: '7%' } : spec.position === 'center' ? { top: '50%', transform: 'translateY(-50%)' } : { bottom: spec.position === 'lower' ? '20%' : '7%' }
+  return (
+    <div className={`cap-layer ${selected ? 'editing' : ''}`} style={place} onMouseDown={e => { e.stopPropagation(); onSelect() }} title="Themed caption: edit the words in the timeline">
+      <span className="cap-text" style={{ ...css, opacity: fr.opacity, transform: `scale(${fr.scale}) rotate(${-fr.tilt}deg)` }}>
+        {fr.pieces.map((p, i) => <span key={i} style={{ color: p.color, visibility: p.hidden ? 'hidden' : 'visible' }}>{p.t}{i < fr.pieces.length - 1 ? ' ' : ''}</span>)}
+      </span>
+    </div>
+  )
 }
 
 type OrientationKey = 'landscape' | 'portrait' | 'square'
@@ -188,6 +262,37 @@ const ORIENTATIONS: Record<OrientationKey, { label: string; sub: string; ratio: 
   portrait:  { label: 'Portrait',  sub: '9:16', ratio: 9 / 16, dims: { '4K': [2160, 3840], '1440p': [1440, 2560], '1080p': [1080, 1920], '720p': [720, 1280] } },
   square:    { label: 'Square',    sub: '1:1',  ratio: 1,      dims: { '4K': [2160, 2160], '1440p': [1440, 1440], '1080p': [1080, 1080], '720p': [720, 720] } },
 }
+
+// The frame format arrives from agents ("4k", "2160p", "vertical") and from project files
+// (hand-edited, older, cloud-imported). Anything off these lists used to reach the dims lookup
+// below as undefined and unmount the whole editor, so every entry point normalises first.
+const RES_ALIASES: Record<string, ResolutionKey> = {
+  '4k': '4K', '2160p': '4K', '2160': '4K', 'uhd': '4K',
+  '1440p': '1440p', '1440': '1440p', '2k': '1440p', 'qhd': '1440p',
+  '1080p': '1080p', '1080': '1080p', 'fhd': '1080p',
+  '720p': '720p', '720': '720p', 'hd': '720p',
+}
+const ORIENT_ALIASES: Record<string, OrientationKey> = {
+  landscape: 'landscape', horizontal: 'landscape', wide: 'landscape', '16:9': 'landscape',
+  portrait: 'portrait', vertical: 'portrait', '9:16': 'portrait',
+  square: 'square', '1:1': 'square',
+}
+const normResolution = (v: unknown): ResolutionKey | null => RES_ALIASES[String(v ?? '').trim().toLowerCase()] ?? null
+const normOrientation = (v: unknown): OrientationKey | null => ORIENT_ALIASES[String(v ?? '').trim().toLowerCase()] ?? null
+const normFps = (v: unknown): 24 | 30 | 60 | null => {
+  const n = Number(String(v ?? '').trim().replace(/\s*fps$/i, ''))
+  return n === 24 || n === 30 || n === 60 ? n : null
+}
+const frameDims = (o: OrientationKey, r: ResolutionKey): [number, number] => ORIENTATIONS[o]?.dims[r] ?? ORIENTATIONS.landscape.dims['1080p']
+
+// One stacking rule for the preview and the export: by track (b-roll over the A-roll), then
+// array order within a track, later on top. Array.sort is stable, so nothing else reorders them.
+// The export used to break ties by start time, so an overlay appended at the playhead (a 3D
+// render) dropped UNDER the next cut in the render while the preview showed it on top.
+const TRACK_LAYER: Record<string, number> = { v1: 0, v2: 1, a1: 2, a2: 3 }
+const layerOrder = <T extends { trackId: string }>(list: T[]): T[] => [...list].sort((a, b) => TRACK_LAYER[a.trackId] - TRACK_LAYER[b.trackId])
+// drag payload for an item pulled out of the Media panel onto the timeline
+const MEDIA_DRAG = 'application/x-vidhelm-media'
 
 // Icons
 const IconExport = () => <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
@@ -221,6 +326,8 @@ const LINKS: { label: string; sub: string; url: string; icon: React.ReactNode; n
   { label: 'Buy me a coffee', sub: 'keeps the updates coming', url: 'https://buymeacoffee.com/randotechnerd',
     icon: <span style={{ fontSize: 15 }}>☕</span>,
     note: 'Please put "VidHelm" in the comment, there are a few projects on that page, plus any feature you want next. Requests that arrive with a coffee tend to jump the queue.' },
+  { label: 'Discord', sub: 'help, ideas and show-and-tell', url: 'https://discord.gg/8fjQHDX8PQ',
+    icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M20.3 4.4A19.6 19.6 0 0 0 15.4 3l-.6 1.3a18.2 18.2 0 0 0-5.6 0L8.6 3a19.5 19.5 0 0 0-4.9 1.5C.6 9.1-.3 13.6.1 18a19.7 19.7 0 0 0 6 3l1.3-2a12.7 12.7 0 0 1-2-1l.5-.4a14 14 0 0 0 12.2 0l.5.4c-.6.4-1.3.7-2 1l1.3 2a19.6 19.6 0 0 0 6-3c.5-5.1-.8-9.5-3.6-13.6ZM8 15.3c-1.2 0-2.2-1.1-2.2-2.4S6.8 10.5 8 10.5s2.2 1.1 2.2 2.4-1 2.4-2.2 2.4Zm8 0c-1.2 0-2.2-1.1-2.2-2.4s1-2.4 2.2-2.4 2.2 1.1 2.2 2.4-1 2.4-2.2 2.4Z"/></svg> },
   { label: 'Email', sub: 'randotechnerd@gmail.com', url: 'mailto:randotechnerd@gmail.com',
     icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-10 6L2 7"/></svg> },
 ]
@@ -279,6 +386,156 @@ const fileUrl = (p?: string | null) => p
 const fmt = (s: number) => `${Math.floor(s / 60)}:${Math.floor(s % 60).toString().padStart(2, '0')}.${Math.floor((s % 1) * 10)}`
 const fmtEta = (s: number) => s >= 60 ? `${Math.floor(s / 60)}:${Math.floor(s % 60).toString().padStart(2, '0')}` : `${Math.ceil(s)}s`
 
+/** One bin entry from an ffprobe result. Every way media comes in goes through here, so none of
+ *  them can forget the HDR flag again (without it the export skips the tone map: grey, flat). */
+const mediaFromProbe = (name: string, path: string, type: MediaFile['type'], m: Probe, extra: Partial<MediaFile> = {}): MediaFile => ({
+  id: rid(), name, path, type,
+  duration: type === 'image' ? 5 : (m.duration || 5),
+  hasVideo: m.hasVideo || type === 'image',
+  hasAudio: m.hasAudio,
+  hdr: isHdr({ colorTransfer: m.colorTransfer }),
+  ...(m.fps ? { fps: m.fps } : {}),
+  ...extra,
+})
+
+// Paths. Windows first, but nothing here assumes the backslash.
+const baseName = (p: string) => p.split(/[\\/]/).pop() || p
+// a drive or filesystem root keeps its separator: "C:" alone means the current directory on drive C
+const dirName = (p: string) => { const d = p.replace(/[\\/][^\\/]*$/, ''); return /^[A-Za-z]:$/.test(d) ? d + '\\' : (d || '/') }
+const pathKey = (p: string) => p.replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase()
+const joinPath = (dir: string, rel: string) => { const sep = dir.includes('\\') ? '\\' : '/'; return dir.replace(/[\\/]+$/, '') + sep + rel.replace(/^[\\/]+/, '').replace(/[\\/]/g, sep) }
+/** p relative to dir when it sits inside it, else null */
+const relInside = (dir: string, p: string) => { const d = pathKey(dir) + '\\'; return pathKey(p).startsWith(d) ? p.replace(/\//g, '\\').slice(d.length) : null }
+// What scan-project lists (MEDIA_RE in electron/main.ts). A file of one of these types that is
+// missing from its folder's listing is gone; anything else can only be judged by probing it.
+const LISTED_EXT = new Set(['mp4', 'm4v', 'mov', 'mkv', 'webm', 'avi', 'wmv', 'flv', 'mpg', 'mpeg', 'ts', 'm2ts', 'mts', '3gp', 'ogv', 'mxf', 'mp3', 'wav', 'aac', 'm4a', 'flac', 'ogg', 'oga', 'opus', 'wma', 'aif', 'aiff', 'caf', 'ac3', 'mka', 'png', 'jpg', 'jpeg', 'jfif', 'webp', 'gif', 'bmp', 'tif', 'tiff', 'avif'])
+
+/** A rejection from the main process as a readable line: no "Error invoking remote method" wrapper. */
+const errText = (e: unknown) => {
+  const s = String((e as { message?: string })?.message ?? e ?? 'unknown error')
+    .replace(/^Error invoking remote method '[^']+':\s*/, '').replace(/^(Error:\s*)+/, '').replace(/\s+/g, ' ').trim()
+  return s.length > 320 ? '...' + s.slice(-320) : (s || 'unknown error')
+}
+/** export-video's rejection ("Export failed: <reason>" then, on following lines, the end of
+ *  ffmpeg's log or the list behind a count) split into the reason, one line for a toast, and the
+ *  detail, for the log or an agent. Flattening it all into one line put ffmpeg's last words in the
+ *  toast instead of the reason. */
+const exportFailure = (e: unknown): { reason: string; detail: string } => {
+  const raw = String((e as { message?: string })?.message ?? e ?? '')
+    .replace(/^Error invoking remote method '[^']+':\s*/, '').replace(/^(Error:\s*)+/, '').trim()
+  const [head = '', ...rest] = raw.split(/\r?\n/)
+  const reason = head.replace(/^Export failed:\s*/i, '').trim() || 'unknown error'
+  const detail = rest.join('\n').trim()
+  return { reason: reason.length > 300 ? reason.slice(0, 300) + '...' : reason, detail: detail.length > 1500 ? '...' + detail.slice(-1500) : detail }
+}
+/** The toast for a failed export: the reason, plus the names when the reason is a count of them. */
+const exportFailureText = (f: { reason: string; detail: string }) =>
+  `Export failed: ${f.reason}${/^\d+ clips cannot be read$/.test(f.reason) && f.detail ? '\n' + f.detail.split('\n').slice(0, 4).join('\n') : ''}`
+
+// ---- unsaved work ----
+// The part of a project that is the user's work. Proxy paths, sizes, progress and the HDR flag
+// are derived from the files and rebuilt on every open, so they never make a project "unsaved".
+type DocFields = { mediaBin: MediaFile[]; clips: TimelineClip[]; texts: TextClip[]; markers: Marker[]; orientation: OrientationKey; resolution: ResolutionKey; fps: 24 | 30 | 60; masterVolume: number; exportQuality: 'medium' | 'high' }
+const docKeyOf = (d: DocFields) => JSON.stringify([
+  d.mediaBin.map(m => [m.id, m.path, m.name, m.type, m.duration, m.chromaKey ?? null]),
+  d.clips, d.texts, d.markers, d.orientation, d.resolution, d.fps, d.masterVolume, d.exportQuality,
+])
+interface Autosave { savedAt: number; dir: string | null; name: string | null; file: string | null; data: any }
+const AUTOSAVE_PREFIX = 'vh-autosave:'
+const LAST_PROJECT_KEY = 'vh-last-project'
+const autosaveKey = (dir: string | null) => AUTOSAVE_PREFIX + (dir ? pathKey(dir) : '_untitled')
+const autosaveLocal = (a: Autosave) => { wroteSlots.add(autosaveKey(a.dir)); try { localStorage.setItem(autosaveKey(a.dir), JSON.stringify(a)) } catch { /* storage full or blocked: the file copy, or the next manual save, still covers it */ } }
+// Main-process handlers this build may not have yet (an older main): asked once, then left alone
+const missingIpc = new Set<string>()
+async function optionalInvoke(channel: string, ...args: unknown[]): Promise<any> {
+  if (missingIpc.has(channel)) return undefined
+  try { return await window.ipcRenderer.invoke(channel, ...args) }
+  catch (e) { if (/No handler registered/i.test(String((e as Error)?.message || e))) missingIpc.add(channel); return undefined }
+}
+/** Autosave: <project>/project.vidhelm.autosave.json (or the app-data folder when no project
+ *  folder is open) through the main process; this machine's local storage if that is not there. */
+// The live slots this session has written, so leaving a project with nothing unsaved (undone back
+// to the save) can clear a copy that would otherwise look like lost work next time
+const wroteSlots = new Set<string>()
+async function writeAutosave(a: Autosave) {
+  wroteSlots.add(autosaveKey(a.dir))
+  const r = await optionalInvoke('autosave-write', { dir: a.dir, data: a })
+  if (r?.path) { try { localStorage.removeItem(autosaveKey(a.dir)) } catch { /* fine */ } return }
+  autosaveLocal(a)
+}
+async function readAutosave(dir: string | null): Promise<Autosave | null> {
+  let best: Autosave | null = null
+  const r = await optionalInvoke('autosave-read', { dir })
+  if (r?.data?.data) best = r.data as Autosave
+  try {
+    const s = localStorage.getItem(autosaveKey(dir))
+    const a = s ? JSON.parse(s) as Autosave : null
+    if (a?.data && (!best || a.savedAt > best.savedAt)) best = a
+  } catch { /* unreadable: ignore */ }
+  return best
+}
+async function clearAutosave(dir: string | null) {
+  await optionalInvoke('autosave-clear', { dir })
+  try { localStorage.removeItem(autosaveKey(dir)) } catch { /* fine */ }
+}
+// Unsaved work the human said "Not now" to. The live slot above is rewritten by this session's
+// autosave within 30 s of the first edit, so anything left for later is moved out of it first,
+// into a slot of its own that only Restore or Discard ever removes.
+const PENDING_TAG = ':pending:'
+const pendingKey = (a: Autosave) => autosaveKey(a.dir) + PENDING_TAG + a.savedAt
+function readPending(dir: string | null): Autosave[] {
+  const out: Autosave[] = []
+  try {
+    const head = autosaveKey(dir) + PENDING_TAG
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i)
+      if (!k?.startsWith(head)) continue
+      try { const a = JSON.parse(localStorage.getItem(k) || 'null') as Autosave | null; if (a?.data) out.push(a) } catch { /* unreadable: skip it */ }
+    }
+  } catch { /* storage blocked: nothing set aside */ }
+  return out.sort((a, b) => b.savedAt - a.savedAt)
+}
+function dropPending(a: Autosave) { try { localStorage.removeItem(pendingKey(a)) } catch { /* fine */ } }
+/** Move a live autosave into its own pending slot. False when it could not be kept (storage full),
+ *  in which case it stays where it was. */
+async function setAsideAutosave(a: Autosave): Promise<boolean> {
+  try { localStorage.setItem(pendingKey(a), JSON.stringify(a)) } catch { return false }
+  await clearAutosave(a.dir)
+  return true
+}
+// The latest document, kept outside React so the autosave timer and the crash screen can save it
+const liveDoc: { current: Autosave | null; dirty: boolean } = { current: null, dirty: false }
+function setLiveDoc(a: Autosave | null, dirty: boolean) { liveDoc.current = a; liveDoc.dirty = dirty }
+function autosaveNow() {
+  const a = liveDoc.current
+  if (a && liveDoc.dirty) void writeAutosave({ ...a, savedAt: Date.now() })
+}
+
+/** If something in the editor throws while rendering, React unmounts everything: a blank window,
+ *  a dead agent bridge, and the work gone. This keeps a recovery copy and a way back instead. */
+class CrashGuard extends Component<{ children: ReactNode }, { error: string | null }> {
+  state = { error: null as string | null }
+  static getDerivedStateFromError(e: unknown) { return { error: errText(e) } }
+  componentDidCatch(e: unknown) {
+    console.error('VidHelm crashed while drawing', e)
+    const a = liveDoc.current
+    if (a && liveDoc.dirty) { const snap = { ...a, savedAt: Date.now() }; autosaveLocal(snap); void writeAutosave(snap) }
+  }
+  render() {
+    if (!this.state.error) return this.props.children
+    return (
+      <div className="crash-screen">
+        <div>
+          <h1>Something went wrong</h1>
+          <p>VidHelm hit an error while drawing the editor{liveDoc.dirty ? ', and kept a copy of your unsaved work. Reload and it offers to restore it.' : '. Your saved projects are untouched.'}</p>
+          <p className="crash-detail">{this.state.error}</p>
+          <button className="primary" onClick={() => window.location.reload()}>Reload VidHelm</button>
+        </div>
+      </div>
+    )
+  }
+}
+
 // Opacity of a clip at time t given its fades (used for preview + mirrors export)
 function fadeFactor(c: { start: number; duration: number; fadeIn: number; fadeOut: number }, t: number) {
   const into = t - c.start
@@ -290,9 +547,13 @@ function fadeFactor(c: { start: number; duration: number; fadeIn: number; fadeOu
 }
 
 // Same, for AUDIO: uses the audio-only ramps when a cut set them, so the picture
-// can cut hard while the waveform still ramps. Mirrors the afade in main.ts.
-function audioFadeFactor(c: { start: number; duration: number; fadeIn: number; fadeOut: number; aFadeIn?: number; aFadeOut?: number }, t: number) {
-  return fadeFactor({ start: c.start, duration: c.duration, fadeIn: c.aFadeIn ?? c.fadeIn, fadeOut: c.aFadeOut ?? c.fadeOut }, t)
+// can cut hard while the waveform still ramps. Mirrors clipAudioChain in electron/exportgraph.ts,
+// including its floor: every clip end ramps for at least DEPOP, and so does a start that is not
+// the file's own beginning (sourceStart > 0), however the clip was made.
+function audioFadeFactor(c: { start: number; duration: number; fadeIn: number; fadeOut: number; aFadeIn?: number; aFadeOut?: number; sourceStart?: number }, t: number) {
+  const fadeIn = Math.max(c.aFadeIn ?? c.fadeIn ?? 0, (Number(c.sourceStart) || 0) > 0 ? DEPOP : 0)
+  const fadeOut = Math.max(c.aFadeOut ?? c.fadeOut ?? 0, DEPOP)
+  return fadeFactor({ start: c.start, duration: c.duration, fadeIn, fadeOut }, t)
 }
 
 // Interpolated gain at an absolute time, following the clip's volume automation line.
@@ -316,7 +577,21 @@ function gainAt(c: TimelineClip, tAbs: number) {
 // the step reads as a click ("poofs" between phrases).
 const DEPOP = 0.012
 
-function removeRange(clips: TimelineClip[], texts: TextClip[], s: number, e: number, transition: number) {
+// Tag points ride along when time is removed: after the cut they shift left by its length, and a
+// tag inside the removed stretch lands on the join (or goes, when a whole head or tail is trimmed
+// off). Tagging first and cutting second is the documented workflow, so tags must not drift.
+function rippleMarkers(markers: Marker[], s: number, e: number, dropInside = false): Marker[] {
+  const len = e - s
+  const out: Marker[] = []
+  for (const m of markers) {
+    if (m.t < s) out.push(m)
+    else if (m.t >= e) out.push({ ...m, t: +(m.t - len).toFixed(4) })
+    else if (!dropInside) out.push({ ...m, t: s })
+  }
+  return out
+}
+
+function removeRange(clips: TimelineClip[], texts: TextClip[], s: number, e: number, transition: number, markers: Marker[] = [], dropTagsInside = false) {
   const len = e - s
   const td = Math.max(0, Math.min(transition, len, 0.3))
   const outClips: TimelineClip[] = []
@@ -357,18 +632,10 @@ function removeRange(clips: TimelineClip[], texts: TextClip[], s: number, e: num
     if (left > 0.05) outTexts.push({ ...t, duration: left })
     if (right > 0.05) outTexts.push({ ...t, id: rid(), start: s, duration: right })
   }
-  return { clips: outClips, texts: outTexts }
+  return { clips: outClips, texts: outTexts, markers: rippleMarkers(markers, s, e, dropTagsInside) }
 }
 
-function App() {
-  if (!window.ipcRenderer) {
-    return (
-      <div style={{ background: '#131314', color: '#ffb4ab', height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', textAlign: 'center', padding: '20px' }}>
-        <div><h1>Bridge Error</h1><p>Electron IPC bridge (window.ipcRenderer) is missing.</p></div>
-      </div>
-    )
-  }
-
+function Editor() {
   const [mediaBin, setMediaBin] = useState<MediaFile[]>([])
   const [clips, setClips] = useState<TimelineClip[]>([])
   const [texts, setTexts] = useState<TextClip[]>([])
@@ -392,13 +659,48 @@ function App() {
   const [showSettings, setShowSettings] = useState(false)
   const [showConnect, setShowConnect] = useState(false)
   const [showModel3D, setShowModel3D] = useState(false)
+  const [showAiClip, setShowAiClip] = useState(false)
+  const [aiClipBusy, setAiClipBusy] = useState(false)
+  // Long jobs an agent can start twice (a retry after the bridge timed out while the first run was
+  // still going): each one is refused while it runs. Refs, not state, so two requests arriving in
+  // the same tick both see the first one start.
+  const busyRef = useRef({ aiClip: false, captions: false, score: false })
+  const [aiPrompt, setAiPrompt] = useState('')
+  const [aiFrom, setAiFrom] = useState('')
+  const [aiTo, setAiTo] = useState('')
+  const [aiSeconds, setAiSeconds] = useState(5)
   const [model3DPath, setModel3DPath] = useState<string | null>(null)
   const [boothScript, setBoothScript] = useState('')
   const [showHelp, setShowHelp] = useState(false)
   const [showLinks, setShowLinks] = useState(false)
-  const [showMore, setShowMore] = useState(false)  // the toolbar's overflow menu
   const [projects, setProjects] = useState<{ name: string; path: string; media: number; saved: boolean; modified: number }[]>([])
   const [currentProject, setCurrentProject] = useState<{ dir: string; name: string } | null>(null)
+  // Where Save writes when no project folder is open: the single project file it was opened from
+  // or last saved as. A folder project and a file project are never both "current", so opening a
+  // file can no longer make the next Save overwrite the folder project that was open before it.
+  const [saveFile, setSaveFile] = useState<string | null>(null)
+  // A small in-app question (Save / Don't save / Cancel and friends), answered through a promise
+  const [ask, setAsk] = useState<{ title: string; body: string; choices: { id: string; label: string; primary?: boolean }[]; resolve: (id: string) => void } | null>(null)
+  const askPending = useRef<((id: string) => void) | null>(null)
+  const askChoice = (q: { title: string; body: string; choices: { id: string; label: string; primary?: boolean }[] }) =>
+    new Promise<string>(resolve => {
+      askPending.current?.('cancel')   // a newer question replaces one still open: that one counts as Cancel
+      const done = (id: string) => { if (askPending.current === done) askPending.current = null; setAsk(null); resolve(id) }
+      askPending.current = done
+      setAsk({ ...q, resolve: done })
+    })
+  // while it is up, the editor's shortcuts stay quiet; Esc means Cancel (or Not now), never Discard
+  useEffect(() => {
+    if (!ask) return
+    const onKey = (e: KeyboardEvent) => {
+      e.stopPropagation()
+      if (e.key !== 'Escape') return
+      const c = ask.choices.find(x => x.id === 'cancel' || x.id === 'later')
+      if (c) { e.preventDefault(); ask.resolve(c.id) }
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [ask])
   const [appVersion, setAppVersion] = useState('')
   useEffect(() => { window.ipcRenderer.agentStatus?.().then(s => setAppVersion(s?.appVersion || '')).catch(() => {}) }, [])
   const [scrubbing, setScrubbing] = useState(false)
@@ -433,6 +735,8 @@ function App() {
   const [takesBusy, setTakesBusy] = useState<string | null>(null)
   const takeSnap = useRef<{ before: string; after: string } | null>(null)
   const takesRef = useRef<TakeAnalysis | null>(null); takesRef.current = takes
+  // the speech the scan was read from (speechKey), so a stale scan can never cut the wrong seconds
+  const takesAt = useRef<string | null>(null)
   const [eta, setEta] = useState<number | null>(null)
   const exportStartRef = useRef(0)
   const settingsLoaded = useRef(false)
@@ -449,6 +753,11 @@ function App() {
   const [pxPerSec, setPxPerSec] = useState(40)
   const [timelineH, setTimelineH] = useState(300)
   const [expanded, setExpanded] = useState(false)
+  const [rightTab, setRightTab] = useState<'export' | 'tags' | 'inspect'>('export')
+  const [showTour, setShowTour] = useState(false)
+  const [showChat, setShowChat] = useState(false)
+  // the UI theme is a per-machine look, not part of a project or the shared settings file
+  const [uiTheme, setUiTheme] = useState<'dark' | 'light'>(() => { try { return localStorage.getItem('vh-ui-theme') === 'light' ? 'light' : 'dark' } catch { return 'dark' } })
   const [isRecording, setIsRecording] = useState(false)
 
   const timelineRef = useRef<HTMLDivElement>(null)
@@ -458,17 +767,19 @@ function App() {
   const audioEls = useRef<Map<string, HTMLAudioElement>>(new Map())
   const recorderRef = useRef<{ rec: MediaRecorder; chunks: Blob[]; startTime: number } | null>(null)
   const draggingRef = useRef(false)
+  // the current saveProject, for handlers registered once (keyboard, the close-window prompt)
+  const saveRef = useRef<(as?: boolean) => Promise<boolean>>(async () => false)
 
-  // Undo/redo history over the editable document (clips + texts).
+  // Undo/redo history over the editable document (clips + texts + tag points, since cuts move tags).
   // Changes are coalesced: a snapshot is taken ~450ms after the last edit,
   // so a drag or a slider sweep collapses into a single undo step.
-  const history = useRef<{ clips: TimelineClip[]; texts: TextClip[] }[]>([{ clips: [], texts: [] }])
+  const history = useRef<{ clips: TimelineClip[]; texts: TextClip[]; markers: Marker[] }[]>([{ clips: [], texts: [], markers: [] }])
   const histIndex = useRef(0)
   const skipRecord = useRef(false)
   const [canUndo, setCanUndo] = useState(false)
   const [canRedo, setCanRedo] = useState(false)
 
-  const [w, h] = ORIENTATIONS[orientation].dims[resolution]
+  const [w, h] = frameDims(orientation, resolution)
   const totalDuration = (() => {
     const ends = [...clips.map(c => c.start + c.duration), ...texts.map(t => t.start + t.duration)]
     return ends.length ? Math.max(...ends) : 0
@@ -483,11 +794,9 @@ function App() {
   // frame is ready before it is needed.
   const PREROLL = 1.2
   // v1 first, then v2, so the DOM stacking order matches the export's overlay order: b-roll
-  // covers the A-roll picture, never the other way round.
-  const TRACK_LAYER: Record<string, number> = { v1: 0, v2: 1, a1: 2, a2: 3 }
-  const previewVideoClips = clips
-    .filter(c => (c.trackId === 'v1' || c.trackId === 'v2') && currentTime >= c.start - PREROLL && currentTime < c.start + c.duration)
-    .sort((a, b) => TRACK_LAYER[a.trackId] - TRACK_LAYER[b.trackId])
+  // covers the A-roll picture, never the other way round. Same helper as exportClips.
+  const previewVideoClips = layerOrder(clips
+    .filter(c => (c.trackId === 'v1' || c.trackId === 'v2') && currentTime >= c.start - PREROLL && currentTime < c.start + c.duration))
   const activeVideoClips = previewVideoClips.filter(c => currentTime >= c.start)
   const activeTexts = texts.filter(t => currentTime >= t.start && currentTime < t.start + t.duration)
   const activeKey = activeVideoClips.map(c => c.id).join(',')
@@ -613,7 +922,7 @@ function App() {
   useEffect(() => {
     if (skipRecord.current) { skipRecord.current = false; return }
     const handle = setTimeout(() => {
-      const snap = { clips, texts }
+      const snap = { clips, texts, markers }
       const top = history.current[histIndex.current]
       if (JSON.stringify(top) === JSON.stringify(snap)) return
       history.current = history.current.slice(0, histIndex.current + 1)
@@ -624,7 +933,7 @@ function App() {
       setCanRedo(false)
     }, 450)
     return () => clearTimeout(handle)
-  }, [clips, texts])
+  }, [clips, texts, markers])
 
   const applyHistory = (i: number) => {
     const snap = history.current[i]
@@ -632,6 +941,7 @@ function App() {
     skipRecord.current = true
     setClips(snap.clips)
     setTexts(snap.texts)
+    setMarkers(snap.markers || [])
     setSelectedId(null)
     histIndex.current = i
     setCanUndo(i > 0)
@@ -643,6 +953,8 @@ function App() {
   // Keyboard shortcuts (ignored while typing in a field)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // Ctrl+S saves (Ctrl+Shift+S asks where), from anywhere, including while typing in a field
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); void saveRef.current(e.shiftKey); return }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); return }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') { e.preventDefault(); redo(); return }
       const tag = (e.target as HTMLElement)?.tagName
@@ -681,6 +993,22 @@ function App() {
     return () => { window.removeEventListener('mouseup', end); window.removeEventListener('blur', end) }
   }, [])
 
+  // Theme lives on <html> so modals and popovers outside the app tree pick it up too; the
+  // native window buttons are painted by Electron, so they are told the header colours.
+  useEffect(() => {
+    document.documentElement.dataset.theme = uiTheme
+    try { localStorage.setItem('vh-ui-theme', uiTheme) } catch { /* private storage */ }
+    window.ipcRenderer.setWindowTheme?.(uiTheme)
+  }, [uiTheme])
+  // the first time VidHelm opens, the tour runs by itself (once the window has laid out)
+  useEffect(() => {
+    if (tourSeen() || (window as unknown as { __vhWeb?: boolean }).__vhWeb) return
+    const t = setTimeout(() => setShowTour(true), 600)
+    return () => clearTimeout(t)
+  }, [])
+  // picking something on the timeline brings its controls up
+  useEffect(() => { if (selectedId) setRightTab('inspect') }, [selectedId])
+
   // Dismiss the links popover on any click elsewhere (its own clicks stop propagation)
   useEffect(() => {
     if (!showLinks) return
@@ -688,16 +1016,6 @@ function App() {
     window.addEventListener('click', close)
     return () => window.removeEventListener('click', close)
   }, [showLinks])
-
-  // Dismiss the toolbar overflow menu on any click elsewhere (its own clicks stop propagation)
-  useEffect(() => {
-    if (!showMore) return
-    const close = () => setShowMore(false)
-    const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') setShowMore(false) }
-    window.addEventListener('click', close)
-    window.addEventListener('keydown', esc)
-    return () => { window.removeEventListener('click', close); window.removeEventListener('keydown', esc) }
-  }, [showMore])
 
   // Close the right-click context menu on any outside click
   useEffect(() => {
@@ -710,7 +1028,7 @@ function App() {
   // Generate timeline filmstrip thumbnails for video clips (debounced; regenerates when trimmed)
   useEffect(() => { thumbsRef.current = thumbs }, [thumbs])
   useEffect(() => {
-    const vids = clips.filter(c => c.trackId === 'v1' && mediaBin.find(m => m.id === c.mediaId)?.type === 'video')
+    const vids = clips.filter(c => (c.trackId === 'v1' || c.trackId === 'v2') && mediaBin.find(m => m.id === c.mediaId)?.type === 'video')
     if (!vids.length) return
     const handle = setTimeout(() => {
       // One ffmpeg per clip, all at once, means ninety processes the moment a long video is cut.
@@ -728,7 +1046,7 @@ function App() {
       }
       const makeStrip = async (c: TimelineClip) => {
         const media = mediaBin.find(m => m.id === c.mediaId)
-        if (!media) return
+        if (!media || media.offline) return
         // While a proxy is building, pulling frames from the 4K HEVC original would queue a dozen
         // slow ffmpeg jobs behind it. Wait: the strip regenerates from the proxy once it lands.
         if (media.proxyPct !== undefined) return
@@ -773,15 +1091,8 @@ function App() {
         const meta = await window.ipcRenderer.getMetadata(path).catch(() => null)
         const verdict = classifyMedia(file.name, meta)
         if ('reject' in verdict) { skipped.push(`${file.name} - ${verdict.reject}`); continue }
-        const { type } = verdict
         const m = meta as Probe   // a non-reject verdict means the probe succeeded
-        const entry: MediaFile = {
-          id: rid(), name: file.name, path, type,
-          duration: type === 'image' ? 5 : (m.duration || 5),
-          hasVideo: m.hasVideo || type === 'image',
-          hasAudio: m.hasAudio,
-          hdr: isHdr({ colorTransfer: m.colorTransfer }),
-        }
+        const entry = mediaFromProbe(file.name, path, verdict.type, m)
         probes.set(entry.id, m)
         added.push(entry)
       } catch (err) {
@@ -795,8 +1106,9 @@ function App() {
   }, [])
 
   // Footage the preview cannot decode (phone HEVC, 10-bit, HDR, very large frames) gets a
-  // watchable stand-in built in the background. The original stays the master: exports read from
-  // it, this is only what plays while you edit. Cached in userData, so it happens once per file.
+  // watchable stand-in built in the background. The original stays the master: an export reads the
+  // copy only when it is as big and as smooth as the export (exportSource), so the copy's real size
+  // and frame rate are kept with it. Cached in userData, so it happens once per file.
   const ensureProxies = useCallback(async (items: MediaFile[], probes: Map<string, Probe>) => {
     for (const m of items) {
       if (m.type !== 'video') continue
@@ -807,10 +1119,13 @@ function App() {
       setMediaBin(prev => prev.map(x => x.id === m.id ? { ...x, proxyPct: 0, proxyNote: plan.reason } : x))
       const r = await window.ipcRenderer.makeProxy({ filePath: m.path, info: { ...info, hasVideo: true }, maxWidth: perf.proxyMaxWidth, maxFps: perf.proxyMaxFps })
       if (r.path) {
-        setMediaBin(prev => prev.map(x => x.id === m.id ? { ...x, proxyPath: r.path, proxyPct: undefined } : x))
-        if (!r.cached) notify(`${m.name}: ${plan.reason}, so VidHelm made a preview copy. Your export still uses the original file.`, 9000)
+        // width/height/fps arrive from newer main processes; without them the copy is preview-only
+        const dims = r as { width?: number; height?: number; fps?: number }
+        const num = (v: unknown) => typeof v === 'number' && v > 0 ? v : undefined
+        setMediaBin(prev => prev.map(x => x.id === m.id ? { ...x, proxyPath: r.path, proxyWidth: num(dims.width), proxyHeight: num(dims.height), proxyFps: num(dims.fps), proxyPct: undefined } : x))
+        if (!r.cached) notify(`${m.name}: ${plan.reason}, so VidHelm made a preview copy to edit with. High quality exports read the original; Standard ones use the copy only when it already matches the export's size and frame rate.`, 9000)
       } else {
-        setMediaBin(prev => prev.map(x => x.id === m.id ? { ...x, proxyPct: undefined, proxyNote: 'preview unavailable' } : x))
+        setMediaBin(prev => prev.map(x => x.id === m.id ? { ...x, proxyPath: undefined, proxyWidth: undefined, proxyHeight: undefined, proxyFps: undefined, proxyPct: undefined, proxyNote: 'preview unavailable' } : x))
         notify(`${m.name}: ${plan.reason}, and the preview copy could not be made (${r.error || 'unknown error'}). Editing still works, the preview will stay blank.`, 11000)
       }
     }
@@ -821,13 +1136,21 @@ function App() {
     e.target.value = ''
   }
 
-  const placeOnTimeline = (media: MediaFile, at: number) => {
+  /** Which track a piece of media may go on: picture lives on video or b-roll, sound on voice/music or SFX. */
+  const trackFor = (media: MediaFile, want?: TimelineClip['trackId']): TimelineClip['trackId'] => {
     const isAudio = media.type === 'audio'
+    if (want && (isAudio ? want === 'a1' || want === 'a2' : want === 'v1' || want === 'v2')) return want
+    return isAudio ? 'a1' : 'v1'
+  }
+  const placeOnTimeline = (media: MediaFile, at: number, track?: TimelineClip['trackId']) => {
+    const trackId = trackFor(media, track)
     setClips(prev => [...prev, {
       id: rid(), mediaId: media.id, type: media.type,
-      trackId: isAudio ? 'a1' : 'v1',
+      trackId,
       start: Math.max(0, at), duration: media.duration, sourceStart: 0,
-      volume: 1.0, fadeIn: 0, fadeOut: 0,
+      // b-roll is picture only (its sound is never mixed); a couple of frames of dissolve each end
+      // keep a hard picture-only cut from strobing, as place_broll does
+      volume: 1.0, fadeIn: trackId === 'v2' ? Math.min(0.12, media.duration / 6) : 0, fadeOut: trackId === 'v2' ? Math.min(0.12, media.duration / 6) : 0,
     }])
   }
 
@@ -851,6 +1174,7 @@ function App() {
     if (treatment === 'ripple') {
       setClips(prev => [intro, ...prev.map(c => ({ ...c, start: c.start + dur }))])
       setTexts(prev => prev.map(t => ({ ...t, start: t.start + dur })))
+      setMarkers(prev => prev.map(m => ({ ...m, t: m.t + dur })))   // tags stay on their beats
     } else {
       setClips(prev => [intro, ...prev])
     }
@@ -898,6 +1222,10 @@ function App() {
   }
 
   // ---- start recipe ----
+  /** images in the bin that look like the creator's own thumbnail photo */
+  const thumbPhotos = () => mediaBin.filter(m => m.type === 'image' && looksLikeThumbPhoto(m.name)).map(m => m.path)
+  /** thumbnails follow the caption theme; classic captions fall back to the channel look */
+  const thumbTheme = () => settings.caption.theme === 'classic' ? 'randotechnerd' : themeRequest(settings.caption)
   const firstVideo = () => {
     const c = clips.filter(x => x.trackId === 'v1').sort((a, b) => a.start - b.start)
       .map(x => mediaBin.find(m => m.id === x.mediaId)).find(m => m?.type === 'video')
@@ -970,9 +1298,11 @@ function App() {
         return {
           format: { orientation, resolution, fps, width: w, height: h },
           duration: totalDuration, currentTime, isPlaying,
-          mediaBin: mediaBin.map(m => ({ id: m.id, name: m.name, type: m.type, duration: m.duration, path: m.path, chromaKey: m.chromaKey })),
+          mediaBin: mediaBin.map(m => ({ id: m.id, name: m.name, type: m.type, duration: m.duration, path: m.path, chromaKey: m.chromaKey, ...(m.offline ? { offline: true } : {}) })),
+          unsaved: isDirty(), project: currentProject?.name || (saveFile ? baseName(saveFile) : null),
           clips: clips.map(c => ({ id: c.id, track: c.trackId, media: mediaBin.find(m => m.id === c.mediaId)?.name, start: +c.start.toFixed(3), duration: +c.duration.toFixed(3), sourceStart: +c.sourceStart.toFixed(3), volume: c.volume, fadeIn: c.fadeIn, fadeOut: c.fadeOut, automationPoints: c.volumePoints?.length || 0 })),
-          texts: texts.map(t => ({ id: t.id, text: t.text, start: +t.start.toFixed(3), duration: +t.duration.toFixed(3), x: t.x, y: t.y, fontSize: t.fontSize, color: t.color })),
+          texts: texts.map(t => ({ id: t.id, text: t.text, start: +t.start.toFixed(3), duration: +t.duration.toFixed(3), x: t.x, y: t.y, fontSize: t.fontSize, color: t.color, ...(t.font ? { font: t.font } : {}), ...(t.caption ? { caption: chooseTheme(t.caption.theme).theme.id } : {}) })),
+          theme: (() => { const cs = settings.caption; if (cs.theme === 'classic') return { id: 'classic', note: 'Plain manual captions. set_theme to switch to a theme.' }; const c = chooseTheme(themeRequest(cs)); return { request: themeRequest(cs), id: c.theme.id, name: c.theme.name, feel: { transitions: c.theme.transition, music: c.theme.music, sfx: c.theme.sfx } } })(),
           tags: [...markers].sort((a, b) => a.t - b.t).map(m => ({ id: m.id, t: +m.t.toFixed(3), label: m.label })),
           startRecipe: { instructions: settings.recipe.text, active: Object.entries(recipeActive(settings.recipe.text)).filter(([, v]) => v).map(([k]) => k), introAudioPath: settings.recipe.introAudioPath, note: "The user's standing workflow (like start G-code). # lines are OFF. Lines like 'titles 5' are for YOU to do in chat." },
           // so you can see what the heavy jobs will default to before you ask for them
@@ -987,6 +1317,16 @@ function App() {
               : undefined,
           },
         }
+      case 'generate_clip': {
+        if (!settings.aiGen?.falKey && !settings.aiGen?.geminiKey) return { error: 'no AI video key yet: ask the human to add a fal.ai key in the ✨ AI clip panel (fal.ai → Keys)' }
+        const resolve = (ref?: string) => { if (!ref) return undefined; const m = findMedia(ref); return m ? m.path : ref }
+        let fromPath = resolve(cmd.from), fromTime = typeof cmd.at === 'number' ? cmd.at : undefined
+        if (cmd.from === 'playhead') { const f = frameUnderPlayhead(); if (!f) return { error: 'nothing under the playhead' }; fromPath = f.path; fromTime = f.time }
+        if (!cmd.prompt && !fromPath) return { error: 'prompt or from required' }
+        const r = await generateAiClip({ prompt: cmd.prompt || 'bring this picture to life, subtle realistic motion', fromPath, fromTime, toPath: resolve(cmd.to), seconds: cmd.seconds, model: cmd.model, place: cmd.place })
+        if ('error' in r) return r
+        return { ...r, note: 'In the Media Bin' + (cmd.place === false ? '' : ' and at the end of v1') + '. A transition (from + to) morphs the first picture into the second.' }
+      }
       case 'add_media': {
         const ext = extOf(cmd.path || '')
         // 3D models (and HTML pages carrying one) open in the studio rather than the timeline
@@ -1005,7 +1345,10 @@ function App() {
         if ('reject' in verdict) return { error: `cannot use ${cmd.path}: ${verdict.reject}` }
         const type: MediaFile['type'] = verdict.type
         const m = meta as Probe   // a non-reject verdict means the probe succeeded
-        const media: MediaFile = { id: rid(), name: cmd.path.split(/[\\/]/).pop() || 'media', path: cmd.path, type, duration: type === 'image' ? (cmd.duration || 5) : (m.duration || 5), hasVideo: m.hasVideo || type === 'image', hasAudio: m.hasAudio, hdr: isHdr({ colorTransfer: m.colorTransfer }), chromaKey: typeof cmd.chromaKey === 'string' ? cmd.chromaKey : undefined }
+        const media = mediaFromProbe(baseName(cmd.path) || 'media', cmd.path, type, m, {
+          ...(type === 'image' ? { duration: cmd.duration || 5 } : {}),
+          chromaKey: typeof cmd.chromaKey === 'string' ? cmd.chromaKey : undefined,
+        })
         setMediaBin(prev => [...prev, media])
         void ensureProxies([media], new Map([[media.id, m]]))
         if (cmd.place !== false) {
@@ -1019,13 +1362,16 @@ function App() {
       case 'add_clip': {
         const media = findMedia(cmd.media)
         if (!media) return { error: `media not found: ${cmd.media}` }
-        const isAudio = media.type === 'audio'
-        const clip: TimelineClip = { id: rid(), mediaId: media.id, type: media.type, trackId: cmd.track || (isAudio ? 'a1' : 'v1'), start: cmd.start ?? 0, duration: cmd.duration ?? media.duration, sourceStart: cmd.sourceStart ?? 0, volume: cmd.volume ?? 1, fadeIn: cmd.fadeIn ?? 0, fadeOut: cmd.fadeOut ?? 0 }
+        if (cmd.track && !['v1', 'v2', 'a1', 'a2'].includes(cmd.track)) return { error: `track must be v1 (video), v2 (b-roll), a1 (voice/music) or a2 (sfx), not "${cmd.track}"` }
+        const trackId = trackFor(media, cmd.track)
+        if (cmd.track && trackId !== cmd.track) return { error: `${media.name} is ${media.type === 'audio' ? 'sound, so it goes on a1 or a2' : 'a picture, so it goes on v1 or v2'}` }
+        const clip: TimelineClip = { id: rid(), mediaId: media.id, type: media.type, trackId, start: cmd.start ?? 0, duration: cmd.duration ?? media.duration, sourceStart: cmd.sourceStart ?? 0, volume: cmd.volume ?? 1, fadeIn: cmd.fadeIn ?? 0, fadeOut: cmd.fadeOut ?? 0 }
         setClips(prev => [...prev, clip])
-        return { ok: true, clipId: clip.id }
+        return { ok: true, clipId: clip.id, track: trackId }
       }
       case 'update_clip': {
         if (!clips.find(c => c.id === cmd.clipId)) return { error: `clip not found: ${cmd.clipId}` }
+        if (cmd.trackId !== undefined && !['v1', 'v2', 'a1', 'a2'].includes(cmd.trackId)) return { error: `trackId must be v1, v2, a1 or a2, not "${cmd.trackId}"` }
         const patch: Partial<TimelineClip> = {}
         for (const k of ['start', 'duration', 'sourceStart', 'volume', 'fadeIn', 'fadeOut', 'trackId'] as const) if (cmd[k] !== undefined) (patch as any)[k] = cmd[k]
         setClips(prev => prev.map(c => c.id === cmd.clipId ? { ...c, ...patch } : c))
@@ -1048,6 +1394,28 @@ function App() {
         setClips(prev => { const i = prev.findIndex(c => c.id === c0.id); const n = [...prev]; n.splice(i, 1, a, b); return n })
         return { ok: true, left: a.id, right: b.id }
       }
+      case 'set_theme': {
+        // "make it fun" / "futuristic tech captions but green": a baseline look plus the tweak
+        const req = String(cmd.theme ?? cmd.request ?? '').trim()
+        if (!req) return { current: themeRequest(settings.caption), themes: THEMES.map(t => ({ id: t.id, name: t.name, blurb: t.blurb })) }
+        const choice = chooseTheme(req)
+        setSettings(s => ({ ...s, caption: { ...s.caption, theme: req === 'classic' ? 'classic' : req, tweak: '' } }))
+        const changed = req === 'classic' || cmd.restyle === false ? { captions: 0, titles: 0 } : restyleCaptions(req, cmd.titles !== false)
+        return { ok: true, theme: choice.theme.id, name: choice.theme.name, blurb: choice.theme.blurb, tweaks: choice.tweaks, restyled: changed,
+          feel: { transitions: choice.theme.transition, music: choice.theme.music, sfx: choice.theme.sfx },
+          note: choice.fallback ? `Nothing in "${req}" matched a theme, so this is the Bold creator default with any tweaks applied. Themes: ${THEMES.map(t => t.id).join(', ')}.` : 'New captions, titles (add_text presets) and thumbnails use this look. Lean your music/sfx/transition choices toward "feel".' }
+      }
+      case 'make_captions': {
+        const req = cmd.theme ? String(cmd.theme) : undefined
+        // one run at a time: a retry while the first is still transcribing would land both sets
+        if (busyRef.current.captions) return { error: 'Captions are already being made. Wait for that run to finish (get_state shows them once they land) rather than starting another.' }
+        if (req) setSettings(s => ({ ...s, caption: { ...s.caption, theme: req, tweak: '' } }))
+        // the old captions go in the same update that adds the new ones (generateCaptions), so a
+        // run that lands late can never stack its captions on top of another run's
+        const made = await generateCaptions(req, { replace: cmd.replace !== false })
+        const choice = chooseTheme(req || themeRequest(settings.caption))
+        return made ? { ok: true, captions: made, theme: (req || settings.caption.theme) === 'classic' ? 'classic' : choice.theme.id } : { error: 'No captions made (no speech, or no audio on the timeline).' }
+      }
       case 'add_text': {
         // design rules as code: a preset supplies the lane a title / lower third /
         // caption / end card lives in, and the size always shrinks to fit the frame
@@ -1055,6 +1423,16 @@ function App() {
         const pre = presetFor(cmd.preset, body, w, h)
         const fontSize = cmd.fontSize ?? pre.fontSize ?? fitFontSize(body, 64, 0.9, w, h)
         const t: TextClip = { id: rid(), text: body, start: cmd.start ?? currentTime, duration: cmd.duration ?? pre.duration ?? 3, x: cmd.x ?? pre.x ?? 0.5, y: cmd.y ?? pre.y ?? 0.5, fontSize, color: cmd.color || pre.color || '#ffffff', fadeIn: cmd.fadeIn ?? pre.fadeIn ?? 0.3, fadeOut: cmd.fadeOut ?? pre.fadeOut ?? 0.3, box: cmd.box ?? pre.box, boxOpacity: cmd.boxOpacity ?? pre.boxOpacity }
+        // titles wear the active theme (fonts, colours, outline, box) unless told otherwise
+        const themedTitle = cmd.theme !== false && settings.caption.theme !== 'classic' && (cmd.theme || (cmd.preset && cmd.preset !== 'caption'))
+        if (themedTitle && !cmd.font) {
+          const ti = chooseTheme(typeof cmd.theme === 'string' ? cmd.theme : themeRequest(settings.caption)).title
+          t.font = ti.font; t.outline = ti.box ? 0 : ti.outline; t.outlineColor = ti.outlineColor
+          if (!cmd.color) t.color = ti.color
+          if (cmd.box === undefined) { t.box = ti.box; if (ti.box) { t.boxColor = ti.boxColor; t.boxOpacity = ti.boxOpacity } }
+          if (ti.uppercase) t.text = t.text.toUpperCase()
+        }
+        if (cmd.font && THEME_FONTS[cmd.font as ThemeFont]) t.font = cmd.font
         setTexts(prev => [...prev, t])
         const rep = layoutReport([...texts, t], w, h)
         const mine = rep.notes.filter(n => n.includes(`"${t.id}"`))
@@ -1114,7 +1492,7 @@ function App() {
       case 'update_text': {
         if (!texts.find(t => t.id === cmd.textId)) return { error: `text not found: ${cmd.textId}` }
         const patch: Partial<TextClip> = {}
-        for (const k of ['text', 'start', 'duration', 'x', 'y', 'fontSize', 'color', 'fadeIn', 'fadeOut', 'box', 'boxOpacity'] as const) if (cmd[k] !== undefined) (patch as any)[k] = cmd[k]
+        for (const k of ['text', 'start', 'duration', 'x', 'y', 'fontSize', 'color', 'fadeIn', 'fadeOut', 'box', 'boxOpacity', 'boxColor', 'font', 'outline', 'outlineColor'] as const) if (cmd[k] !== undefined) (patch as any)[k] = cmd[k]
         setTexts(prev => prev.map(t => t.id === cmd.textId ? { ...t, ...patch } : t))
         return { ok: true }
       }
@@ -1240,7 +1618,8 @@ function App() {
           protect, totalDuration,
         })
         const snapped = snapToWords(placements, sp.sentences, sp.words || [])
-        brollPlanRef.current = snapped
+        // remember which speech this was planned against: place_broll refuses it once that moves
+        brollPlanRef.current = { placements: snapped, at: speechKey() }
         return {
           ok: true,
           placements: snapped.map(pl => ({ at: +pl.start.toFixed(2), seconds: +(pl.end - pl.start).toFixed(2), clip: pl.name, on: pl.matched.join(' '), line: pl.text, score: pl.score })),
@@ -1250,8 +1629,10 @@ function App() {
         }
       }
       case 'place_broll': {
-        const plan = brollPlanRef.current
+        const plan = brollPlanRef.current?.placements
         if (!plan?.length) return { error: 'call plan_broll first' }
+        // a plan is a list of timeline times; after a cut or a moved clip they point at other words
+        if (brollPlanRef.current!.at !== speechKey()) return { error: 'the timeline changed since plan_broll (a cut, a moved or trimmed clip), so those times now land on different words. Run plan_broll again, then place_broll.' }
         const drop = new Set<number>(Array.isArray(cmd.drop) ? cmd.drop : typeof cmd.drop === 'string' ? cmd.drop.split(',').map((n: string) => parseInt(n.trim(), 10)) : [])
         const keep = plan.filter((_, i) => !drop.has(i))
         const made: any[] = []
@@ -1269,6 +1650,7 @@ function App() {
           }])
           made.push({ at: +pl.start.toFixed(2), seconds: dur, clip: pl.name, on: pl.matched.join(' ') })
         }
+        brollPlanRef.current = null   // placed: a second place_broll would stack duplicate cutaways
         return { ok: true, placed: made.length, cutaways: made, note: 'b-roll is picture only: the audio underneath is untouched' }
       }
 
@@ -1314,8 +1696,9 @@ function App() {
             const next = [...prev]
             for (const c0 of hits) {
               const off = at - c0.start
-              const a = { ...c0, id: rid(), duration: off, fadeOut: 0 }
-              const b = { ...c0, id: rid(), start: at, duration: c0.duration - off, sourceStart: c0.sourceStart + off, fadeIn: 0 }
+              // hard cut on the picture, but ramp the waveform or the join clicks (as split_clip)
+              const a = { ...c0, id: rid(), duration: off, fadeOut: 0, aFadeOut: DEPOP }
+              const b = { ...c0, id: rid(), start: at, duration: c0.duration - off, sourceStart: c0.sourceStart + off, fadeIn: 0, aFadeIn: DEPOP }
               const i = next.findIndex(c => c.id === c0.id)
               next.splice(i, 1, a, b)
             }
@@ -1325,9 +1708,11 @@ function App() {
         }
         const range = mode === 'start' ? { start: 0, end: at } : { start: at, end: totalDuration }
         if (range.end - range.start <= 0.05) return { error: 'nothing to remove there' }
-        const out = removeRange(clips, texts, range.start, range.end, 0)
+        // trimming a whole head or tail drops the tags that were in it rather than piling them on the join
+        const out = removeRange(clips, texts, range.start, range.end, 0, markers, true)
         setClips(out.clips)
         setTexts(out.texts)
+        setMarkers(out.markers)
         return {
           ok: true, at: +at.toFixed(3), kept: hit.trimmed,
           dropped: hit.text === hit.trimmed ? null : hit.text.slice(hit.trimmed.length).trim(),
@@ -1409,10 +1794,16 @@ function App() {
         const cuts = [...cutSet].sort((a, b) => a - b)
         const hits = markers.map(m => +m.t.toFixed(3))
         if (totalDuration <= 0) return { error: 'timeline is empty, nothing to score' }
-        const r = await window.ipcRenderer.scoreRender({
-          cuts, hits, duration: totalDuration,
-          bpm: cmd.bpm, seed: cmd.seed, intensity: cmd.intensity, style: cmd.style, name: cmd.name,
-        })
+        // one at a time: a retry while the first render still runs would place two beds on a1
+        if (busyRef.current.score) return { error: 'A score is already being rendered. Wait for it to land on a1 (get_state shows it) rather than starting another.' }
+        busyRef.current.score = true
+        let r: Awaited<ReturnType<typeof window.ipcRenderer.scoreRender>>
+        try {
+          r = await window.ipcRenderer.scoreRender({
+            cuts, hits, duration: totalDuration,
+            bpm: cmd.bpm, seed: cmd.seed, intensity: cmd.intensity, style: cmd.style, name: cmd.name,
+          })
+        } finally { busyRef.current.score = false }
         if (r.error || !r.path) return r
         const wavPath = r.path, wavName = r.name || 'score', wavSecs = r.seconds || totalDuration
         let placed = null
@@ -1468,14 +1859,25 @@ function App() {
         const sf = firstVideo()
         const v = cmd.path ? { path: cmd.path } : (sf && { path: sf.proxyPath || sf.path })
         if (!v) return { error: 'no video on the timeline' }
+        if (cmd.rank) return await window.ipcRenderer.rankFrames({ filePath: v.path, count: Math.max(12, (cmd.count || 8) * 3), keep: cmd.count || 8 })
         return await window.ipcRenderer.sampleFrames({ filePath: v.path, count: cmd.count || 8 })
       }
       case 'compose_thumbnail': {
-        const fv = firstVideo()
-        const v = cmd.path ? { path: cmd.path, name: 'video' } : (fv && { path: fv.proxyPath || fv.path, name: fv.name })
-        if (!v) return { error: 'no video on the timeline' }
+        // real pictures first: the creator's photo, else the best real frame, else a placeholder
         if (!cmd.outPath) return { error: 'outPath required' }
-        return await window.ipcRenderer.composeThumbnail({ filePath: v.path, t: cmd.t ?? 1, subtitle: cmd.subtitle, logoPath: cmd.logoPath ?? settings.brand.logoPath, outPath: cmd.outPath })
+        const fv = firstVideo()
+        const v = cmd.path ? { path: cmd.path, name: 'video' } : (fv && { path: fv.path, name: fv.name })
+        const photo = cmd.imagePath || (cmd.t === undefined && !cmd.placeholder ? thumbPhotos()[0] : undefined)
+        let t = cmd.t as number | undefined
+        let why = ''
+        if (!photo && v && t === undefined && !cmd.placeholder) {
+          const r = await window.ipcRenderer.rankFrames({ filePath: v.path, count: 24, keep: 1 })
+          if (r.frames?.length) { t = r.frames[0].t; why = r.frames[0].why }
+        }
+        const res = await window.ipcRenderer.composeThumbnail({ filePath: photo || cmd.placeholder ? null : v?.path, t: t ?? 1, imagePath: photo || null, subtitle: cmd.subtitle,
+          logoPath: cmd.logoPath ?? settings.brand.logoPath, outPath: cmd.outPath, theme: cmd.theme || thumbTheme() })
+        return { ...res, ...(res.source === 'frame' ? { frameAt: t, ...(why ? { why } : {}) } : {}), ...(res.source === 'photo' ? { photo } : {}),
+          ...(res.nudge ? { tellTheCreator: res.nudge } : {}) }
       }
       case 'ui': {
         if (cmd.panel === 'booth') setShowBooth(cmd.open !== false)
@@ -1510,7 +1912,24 @@ function App() {
         const want = String(cmd.name).toLowerCase()
         const hit = list.find(p => p.name.toLowerCase() === want) || list.find(p => p.name.toLowerCase().includes(want))
         if (!hit) return { error: `no project called "${cmd.name}". Available: ${list.map(p => p.name).join(', ') || '(none yet)'}` }
-        await openProjectFolder(hit.path, hit.name)
+        // Opening replaces the timeline. Never throw away the human's unsaved work on an agent's say-so.
+        const leaving = currentProject?.dir ?? null
+        const sameProject = !!leaving && pathKey(leaving) === pathKey(hit.path)
+        const discard = isDirty() && !!cmd.force
+        if (isDirty() && !cmd.force) {
+          if (!cmd.save) return { error: `unsaved changes in ${currentProject?.name || 'the current project'}: ask the human, then call again with force:true (discards them) or save:true (saves them first, then opens).` }
+          if (!currentProject && !saveFile) return { error: 'The current work has never been saved anywhere, so save:true would need the human to pick a file. Ask them to press Save first.' }
+          if (!(await saveProject())) return { error: 'Saving the current project failed, so nothing was opened.' }
+        }
+        // Reopening the open project: its autosave is this session's own, now saved, discarded or
+        // stale (undone back to the save), so it is not "unsaved work from an earlier session"
+        if (sameProject) await clearAutosave(leaving)
+        // An earlier session's unsaved work in the target is the human's question (restore or
+        // discard), not the agent's, so the open waits for them rather than burying it
+        const opened = await openProjectFolder(hit.path, hit.name, { skipConfirm: true, askRecover: false })
+        if (!opened) return { error: `could not open ${hit.name}` }
+        if (opened.unsaved) return { error: `${hit.name} has unsaved changes from ${new Date(opened.unsaved.savedAt).toLocaleString()} that an earlier session never saved. Only the human can say whether to restore them: ask them to choose ${hit.name} in the project list in the Media panel, which offers Restore or Discard, then carry on. Nothing was opened.` }
+        if (discard && !sameProject) await clearAutosave(leaving)   // force: discarded on purpose, so not offered back later
         return { ok: true, opened: hit.name, folder: hit.path, mediaInFolder: hit.media }
       }
       case 'booth_script': {
@@ -1522,10 +1941,19 @@ function App() {
       case 'seek': setCurrentTime(clamp(cmd.t ?? 0, 0, Math.max(totalDuration, cmd.t ?? 0))); return { ok: true }
       case 'play': setIsPlaying(cmd.playing !== false); return { ok: true }
       case 'set_format': {
-        if (cmd.orientation && ORIENTATIONS[cmd.orientation as OrientationKey]) setOrientation(cmd.orientation)
-        if (cmd.resolution) setResolution(cmd.resolution)
-        if (cmd.fps) setFps(cmd.fps)
-        return { ok: true }
+        // check everything first, change nothing unless it all makes sense
+        const o = cmd.orientation !== undefined ? normOrientation(cmd.orientation) : orientation
+        const r = cmd.resolution !== undefined ? normResolution(cmd.resolution) : resolution
+        const f = cmd.fps !== undefined ? normFps(cmd.fps) : fps
+        const bad = [
+          !o && `orientation must be landscape, portrait or square (got "${cmd.orientation}")`,
+          !r && `resolution must be 4K, 1440p, 1080p or 720p (got "${cmd.resolution}")`,
+          !f && `fps must be 24, 30 or 60 (got "${cmd.fps}")`,
+        ].filter(Boolean)
+        if (bad.length || !o || !r || !f) return { error: bad.join('; '), format: { orientation, resolution, fps, width: w, height: h } }
+        setOrientation(o); setResolution(r); setFps(f)
+        const [fw, fh] = frameDims(o, r)
+        return { ok: true, format: { orientation: o, resolution: r, fps: f, width: fw, height: fh } }
       }
       case 'prepare_analysis': {
         // Hands a video-analysis service (Adversal and friends) something to chew on, and
@@ -1573,16 +2001,23 @@ function App() {
         if (clips.length === 0) return { error: 'timeline is empty' }
         // Flatten the timeline so returned timestamps line up 1:1 with what the human sees.
         // Rendered small on purpose: analysis does not need 1080p, and the upload is quicker.
+        const preA = await exportPreflight()
+        if (preA) return { error: 'could not render the timeline for analysis: ' + preA }
         const out: string = cmd.outputPath || await window.ipcRenderer.analysisPath(currentProject?.name || 'timeline')
         setIsPlaying(false)
         setExportProgress(0); setEta(null); exportStartRef.current = Date.now()
         try {
           await window.ipcRenderer.exportVideo({
-            clips: exportClips(720),
+            clips: exportClips(1280, 720, 30, 'analysis'),
             texts, brand: { ...settings.brand, enabled: false }, audio: settings.audio, outputPath: out,
             settings: { width: 1280, height: 720, fps: 30, quality: 'analysis', masterVolume },
           })
-        } catch (e) { setExportProgress(null); setEta(null); return { error: 'could not render the timeline for analysis: ' + String(e) } }
+        } catch (e) {
+          setExportProgress(null); setEta(null)
+          const f = exportFailure(e)
+          console.error('Analysis render failed:', f.reason, f.detail)
+          return { error: 'could not render the timeline for analysis: ' + f.reason, ...(f.detail ? { detail: f.detail } : {}) }
+        }
         setExportProgress(100); setEta(null)
         setTimeout(() => setExportProgress(null), 3000)
         return {
@@ -1596,9 +2031,11 @@ function App() {
       case 'export': {
         if (!cmd.outputPath) return { error: 'outputPath required' }
         if (clips.length === 0 && texts.length === 0) return { error: 'timeline is empty' }
+        const pre = await exportPreflight()
+        if (pre) return { error: 'export not started: ' + pre }
         setIsPlaying(false)
         const payload = {
-          clips: exportClips(h),
+          clips: exportClips(w, h, fps, exportQuality),
           texts, brand: settings.brand, audio: settings.audio, outputPath: cmd.outputPath,
           settings: { width: w, height: h, fps, quality: exportQuality, masterVolume },
         }
@@ -1606,7 +2043,14 @@ function App() {
         // the button re-enables afterwards (it stayed stuck and disabled before).
         setExportProgress(0); setEta(null); exportStartRef.current = Date.now()
         try { await window.ipcRenderer.exportVideo(payload) }
-        catch (e) { setExportProgress(null); setEta(null); return { error: 'export failed: ' + String(e) } }
+        catch (e) {
+          setExportProgress(null); setEta(null); setLastExport(null)
+          const f = exportFailure(e)
+          console.error('Export failed:', f.reason, f.detail)
+          notify(exportFailureText(f), 15000)
+          // the reason first; ffmpeg's last lines (or the list behind a count) as detail
+          return { error: 'export failed: ' + f.reason, ...(f.detail ? { detail: f.detail } : {}) }
+        }
         setExportProgress(100); setEta(null)
         setTimeout(() => setExportProgress(null), 3000)
         setLastExport(cmd.outputPath)
@@ -1647,14 +2091,18 @@ function App() {
   }
   useEffect(() => {
     const h = async (_e: any, cmd: any) => {
-      if (typeof cmd?.id === 'number') {
-        if (handledAgentCmds.has(cmd.id)) return           // already ran for this id
-        handledAgentCmds.add(cmd.id)
+      // The request's own number travels as reqId; cmd.id is the ITEM for delete_item and
+      // label_broll (a numeric item id must not be mistaken for a request already handled).
+      // A main process from before reqId sends the request number as id.
+      const req = typeof cmd?.reqId === 'number' ? cmd.reqId : typeof cmd?.id === 'number' ? cmd.id : undefined
+      if (req !== undefined) {
+        if (handledAgentCmds.has(req)) return           // already ran for this request
+        handledAgentCmds.add(req)
         if (handledAgentCmds.size > 500) for (const id of [...handledAgentCmds].slice(0, 250)) handledAgentCmds.delete(id)
       }
       let result: any
-      try { result = await agentExec.current(cmd) } catch (e) { result = { error: String(e) } }
-      window.ipcRenderer.send('agent-response', { id: cmd.id, result })
+      try { result = await agentExec.current(cmd) } catch (e) { result = { error: errText(e) } }
+      window.ipcRenderer.send('agent-response', { id: cmd.id, reqId: cmd.reqId, result })
     }
     window.ipcRenderer.on('agent-command', h)
     return () => window.ipcRenderer.off('agent-command', h)
@@ -1667,15 +2115,27 @@ function App() {
     return Math.max(0, (clientX - rect.left + el.scrollLeft) / pxPerSec)
   }
 
-  const onTimelineDrop = async (e: React.DragEvent) => {
+  /** Files from Explorer, or an item dragged out of the Media panel, dropped at a time (on a track row, or anywhere). */
+  const dropMedia = async (e: React.DragEvent, track?: TimelineClip['trackId']) => {
     e.preventDefault()
     const dropTime = timeAtClientX(e.clientX)
+    const binId = e.dataTransfer.getData(MEDIA_DRAG)
+    if (binId) {
+      const m = mediaBin.find(x => x.id === binId)
+      if (!m) return
+      if (track && trackFor(m, track) !== track) notify(`${m.name} is ${m.type === 'audio' ? 'sound, so it went on the voice / music track' : 'a picture, so it went on the video track'}.`)
+      placeOnTimeline(m, dropTime, track)
+      return
+    }
     const files = Array.from(e.dataTransfer.files)
     if (!files.length) return
     const added = await importFiles(files)
     let cursor = dropTime
-    added.forEach(m => { placeOnTimeline(m, m.type === 'audio' ? dropTime : cursor); if (m.type !== 'audio') cursor += m.duration })
+    added.forEach(m => { placeOnTimeline(m, m.type === 'audio' ? dropTime : cursor, track); if (m.type !== 'audio') cursor += m.duration })
   }
+  const onTimelineDrop = (e: React.DragEvent) => { void dropMedia(e) }
+  // Each track row takes its own drops (see the rows below), so a clip dropped on the B-roll row
+  // lands on b-roll. They stop the event: the timeline's own handler would add a second copy on v1.
 
   // ---- editing actions ----
   const deleteSelected = () => {
@@ -1689,8 +2149,9 @@ function App() {
     if (!selClip) return
     if (currentTime <= selClip.start || currentTime >= selClip.start + selClip.duration) return
     const off = currentTime - selClip.start
-    const a = { ...selClip, id: rid(), duration: off, fadeOut: 0 }
-    const b = { ...selClip, id: rid(), start: currentTime, duration: selClip.duration - off, sourceStart: selClip.sourceStart + off, fadeIn: 0 }
+    // hard cut on the picture, but ramp the waveform or the join clicks (the same DEPOP as split_clip / removeRange)
+    const a = { ...selClip, id: rid(), duration: off, fadeOut: 0, aFadeOut: DEPOP }
+    const b = { ...selClip, id: rid(), start: currentTime, duration: selClip.duration - off, sourceStart: selClip.sourceStart + off, fadeIn: 0, aFadeIn: DEPOP }
     setClips(prev => { const i = prev.findIndex(c => c.id === selClip.id); const n = [...prev]; n.splice(i, 1, a, b); return n })
     setSelectedId(b.id)
   }
@@ -1723,24 +2184,57 @@ function App() {
     setEditingTextId(null)
   }
 
-  // The exporter opens the source once per clip. On a 90-clip cut of 4K HEVC HDR that means 90
-  // simultaneous heavy decodes plus 90 tone-maps, which takes the whole machine down. When the
-  // export is not bigger than the proxy, render from the proxy instead: it is already the right
-  // size and already SDR, so the graph gets light and the colour is identical to the preview.
-  // The export layers clips in array order: each one overlays whatever came before. Sorting by
-  // track before building the payload is what keeps b-roll ON TOP of the A-roll no matter what
-  // order things were added to the timeline in. v2 is picture only, so its own audio is dropped
-  // here rather than mixed in: the A-roll keeps talking underneath the cutaway.
-  const exportClips = (h: number) => [...clips]
-    .sort((a, b) => (TRACK_LAYER[a.trackId] - TRACK_LAYER[b.trackId]) || (a.start - b.start))
+  // The export layers clips in array order: each one overlays whatever came before. layerOrder
+  // sorts by track only (the same helper the preview uses), which keeps b-roll ON TOP of the A-roll
+  // and keeps the order within a track exactly as the preview stacks it. v2 is picture only, so its
+  // own audio is dropped here rather than mixed in: the A-roll keeps talking underneath the cutaway.
+  const exportClips = (W: number, H: number, FPS: number, quality: string) => layerOrder(clips)
     .map(c => {
       const media = mediaBin.find(m => m.id === c.mediaId)
-      const src = exportSource(media, h)
+      const src = exportSource(media, W, H, FPS, quality)
       return { ...c, path: src.path, hdr: src.hdr, hasVideo: media?.hasVideo, hasAudio: c.trackId === 'v2' ? false : media?.hasAudio, chromaKey: media?.chromaKey }
     })
 
-  const exportSource = (m: MediaFile | undefined, outHeight: number) =>
-    m?.proxyPath && outHeight <= 1080 ? { path: m.proxyPath, hdr: false } : { path: m?.path, hdr: m?.hdr }
+  // The exporter opens the source once per clip, and on a long cut of 4K HEVC HDR that is a lot of
+  // heavy decodes plus tone maps. The preview copy is light and already SDR, but it is also smaller
+  // (720p on lighter machines), capped at 30 fps and re-compressed (CRF 24, veryfast), so it may
+  // only stand in when it costs no size and no motion: fitted into the export frame (the export
+  // scales with "decrease") it must not be blown up, and its frame rate must keep up with the export
+  // (or with the footage itself, when that is slower). Even then it is a second generation of
+  // compression, so High quality never takes it: that reads the originals. The analysis render is
+  // small on purpose and always takes the copy.
+  const exportSource = (m: MediaFile | undefined, W: number, H: number, FPS: number, quality: string) => {
+    const original = { path: m?.path, hdr: m?.hdr }
+    if (!m?.proxyPath || m.proxyPct !== undefined) return original          // none, or still being built
+    if (quality === 'analysis') return { path: m.proxyPath, hdr: false }
+    if (quality === 'high') return original
+    const pw = m.proxyWidth, ph = m.proxyHeight, pf = m.proxyFps
+    if (!pw || !ph || !pf) return original                                   // size unknown (an older save): play safe
+    const upscale = Math.min(W / pw, H / ph) > 1.001
+    const smooth = pf + 0.5 >= Math.min(FPS, m.fps || FPS)
+    return !upscale && smooth ? { path: m.proxyPath, hdr: false } : original
+  }
+
+  /** Reasons an export cannot start, as one line (null when it can). Run before ffmpeg ever sees it. */
+  const exportPreflight = async (): Promise<string | null> => {
+    const used = clips.map(c => ({ c, m: mediaBin.find(x => x.id === c.mediaId) }))
+    const orphans = used.filter(u => !u.m).length
+    if (orphans) return `${orphans} clip${orphans === 1 ? ' uses' : 's use'} media that was removed from the Media panel. Delete ${orphans === 1 ? 'it' : 'them'} from the timeline, or re-import the file.`
+    // Every file is looked for again, offline ones included: a file deleted or moved since it was
+    // imported is caught here (the folder listing is cheap), and one that is back where it was (a
+    // drive plugged in again) comes back online without a Relink
+    const media = [...new Map(used.map(u => [u.m!.id, u.m!])).values()]
+    const missing = await findMissing(media)
+    const gone = new Set(missing.map(m => m.id))
+    const back = media.filter(m => m.offline && !gone.has(m.id))
+    if (back.length || missing.some(m => !m.offline)) {
+      setMediaBin(prev => prev.map(x => gone.has(x.id) ? (x.offline ? x : { ...x, offline: true }) : back.some(b => b.id === x.id) ? { ...x, offline: undefined } : x))
+      if (back.length) void backfillMedia(back.map(m => ({ ...m, offline: undefined })))
+    }
+    if (missing.length) return `${missing.length === 1 ? 'This file is' : 'These files are'} missing: ${missing.slice(0, 5).map(mm => mm.name).join(', ')}${missing.length > 5 ? ` and ${missing.length - 5} more` : ''}. Reconnect the drive ${missing.length === 1 ? 'it is' : 'they are'} on, or right-click ${missing.length === 1 ? 'it' : 'each'} in the Media panel and choose Relink.`
+    return null
+  }
+
 
   const addText = () => {
     const t: TextClip = { id: rid(), text: 'New text', start: currentTime, duration: 3, x: 0.5, y: 0.5, fontSize: 64, color: '#ffffff', fadeIn: 0.3, fadeOut: 0.3 }
@@ -1749,29 +2243,88 @@ function App() {
     startTextEdit(t.id, t.text)   // straight into typing, rather than hunting for a box in the sidebar
   }
 
+  /** What every audio-only pass (captions, booth draft, pauses, speech, takes) mixes: each clip
+   *  WITH its trim point (sourceStart: without it a split or pause-cut clip was mixed from second 0
+   *  of its file, so captions repeated the opening words), b-roll muted, missing files left out. */
+  const mixPayload = () => clips.map(c => {
+    const m = mediaBin.find(x => x.id === c.mediaId)
+    return { path: m?.proxyPct === undefined && m?.proxyPath ? m.proxyPath : m?.path, hasAudio: c.trackId === 'v2' || m?.offline ? false : m?.hasAudio,
+      start: c.start, duration: c.duration, sourceStart: c.sourceStart, volume: c.volume }
+  })
+
+  /** A fingerprint of the SPEECH on the timeline: only what can be heard talking (a1, and v1 clips
+   *  with sound), each reduced to which file, where, which part of it and how loud. Texts, b-roll,
+   *  SFX on a2, fades and clip ids are left out, and a split clip merges back into one span, so a
+   *  caption, a cutaway or a split does not make the transcript look stale. A cut, a move or a trim
+   *  does. Used to reuse the transcript and to refuse plans (takes, b-roll) made on older speech. */
+  const speechKey = () => {
+    const spans = clips
+      .filter(c => c.trackId === 'a1' || (c.trackId === 'v1' && mediaBin.find(m => m.id === c.mediaId)?.hasAudio))
+      .map(c => ({ p: mediaBin.find(m => m.id === c.mediaId)?.path || c.mediaId, s: c.start, d: c.duration, ss: c.sourceStart || 0, v: c.volume ?? 1 }))
+      .sort((a, b) => a.s - b.s || (a.p < b.p ? -1 : a.p > b.p ? 1 : 0))
+    const merged: typeof spans = []
+    for (const x of spans) {
+      const prev = [...merged].reverse().find(y => y.p === x.p)
+      if (prev && prev.v === x.v && Math.abs(prev.s + prev.d - x.s) < 0.002 && Math.abs(prev.ss + prev.d - x.ss) < 0.002) prev.d = x.s + x.d - prev.s
+      else merged.push({ ...x })
+    }
+    return JSON.stringify([settings.caption.language, merged.map(x => [x.p, +x.s.toFixed(3), +x.d.toFixed(3), +x.ss.toFixed(3), x.v])])
+  }
+
   // Local Whisper captions for the WHOLE timeline → timed text cues styled by caption settings
-  const generateCaptions = async () => {
+  // replace: the captions already on the timeline are swapped for the new ones in one update
+  const generateCaptions = async (themeOverride?: string, opts: { replace?: boolean } = {}): Promise<number> => {
     const audioClips = clips.filter(c => c.trackId === 'a1' || mediaBin.find(m => m.id === c.mediaId)?.hasAudio)
-    if (!audioClips.length) { notify('Add a clip with audio to the timeline first.'); return }
+    if (!audioClips.length) { notify('Add a clip with audio to the timeline first.'); return 0 }
+    if (busyRef.current.captions) return 0
     const cs = settings.caption
+    const request = themeOverride || themeRequest(cs)
+    const themed = (themeOverride || cs.theme || 'creator') !== 'classic'
+    let made = 0
+    busyRef.current.captions = true
     setCaptioning('Mixing audio…'); setCaptionPct(null)
     try {
-      const payload = clips.map(c => { const m = mediaBin.find(x => x.id === c.mediaId); return { path: m?.proxyPath || m?.path, hasAudio: c.trackId === 'v2' ? false : m?.hasAudio, start: c.start, duration: c.duration, volume: c.volume } })
+      const payload = mixPayload()
       const mix = await window.ipcRenderer.renderMixAudio({ clips: payload })
-      if (mix.error || !mix.path) { notify('Captions: ' + (mix.error || 'could not prepare audio')); return }
-      const res = await window.ipcRenderer.transcribe(mix.path, { model: cs.model, language: cs.language, word: cs.mode === 'word' })
-      if (res.error) { notify('Captions: ' + res.error); return }
+      if (mix.error || !mix.path) { notify('Captions: ' + (mix.error || 'could not prepare audio')); return 0 }
+      const res = await window.ipcRenderer.transcribe(mix.path, { model: cs.model, language: cs.language, word: themed || cs.mode === 'word' })
+      if (res.error) { notify('Captions: ' + res.error); return 0 }
       const cues: TextClip[] = []
-      for (const c of res.chunks || []) {
+      if (themed) {
+        // word timings -> short lines, each carrying its words so highlight/pop/karaoke stay in sync
+        const choice = chooseTheme(request)
+        const words = (res.chunks || []).map(c => ({ s: c.start, e: c.end ?? c.start + 0.3, t: (c.text || '').trim() })).filter(x => x.t)
+        // never past the end of the timeline (Whisper can stretch the last word to the end of its window)
+        for (const p of phrasesFromWords(words)) { if (p.start >= totalDuration) continue; p.end = Math.min(p.end, totalDuration); cues.push(captionClip(p, choice.caption, request, w, h)) }
+      }
+      else for (const c of res.chunks || []) {
         const text = (c.text || '').trim()
         if (!text) continue
         const dur = Math.max(cs.mode === 'word' ? 0.2 : 0.4, (c.end || c.start + (cs.mode === 'word' ? 0.4 : 2)) - c.start)
         cues.push({ id: rid(), text, start: c.start, duration: dur, x: 0.5, y: CAPTION_Y[cs.position], fontSize: cs.fontSize, color: cs.color, fadeIn: cs.mode === 'word' ? 0 : 0.08, fadeOut: cs.mode === 'word' ? 0 : 0.08, box: cs.box, boxOpacity: cs.boxOpacity })
       }
-      if (cues.length) setTexts(prev => [...prev, ...cues])
+      if (cues.length) { setTexts(prev => [...(opts.replace ? prev.filter(t => !t.caption) : prev), ...cues]); made = cues.length }
       else notify('No speech detected.')
     } catch (e) { console.error(e); notify('Captioning failed.') }
-    setCaptioning(null); setCaptionPct(null)
+    // in finally: an early return above (no audio mix, a Whisper error) used to leave the status up
+    // and the Captions button disabled until a restart
+    finally { busyRef.current.captions = false; setCaptioning(null); setCaptionPct(null) }
+    return made
+  }
+
+  /** Put every themed caption (and optionally the titles) into a new look. Returns how many changed. */
+  const restyleCaptions = (request: string, titlesToo = false): { captions: number; titles: number } => {
+    const choice = chooseTheme(request)
+    const size = Math.round(captionPx(choice.caption, w, h) / h * 1080)
+    let captions = 0, titles = 0
+    for (const t of texts) { if (t.caption) captions++; else if (titlesToo) titles++ }
+    setTexts(prev => prev.map(t => {
+      if (t.caption) return { ...t, color: choice.caption.color, y: THEME_CAP_Y[choice.caption.position], fontSize: size, caption: { ...t.caption, spec: choice.caption, theme: request } }
+      if (!titlesToo) return t
+      const ti = choice.title
+      return { ...t, font: ti.font, color: ti.color, outline: ti.box ? 0 : ti.outline, outlineColor: ti.outlineColor, box: ti.box || t.box, boxColor: ti.box ? ti.boxColor : t.boxColor, boxOpacity: ti.box ? ti.boxOpacity : t.boxOpacity, text: ti.uppercase ? t.text.toUpperCase() : t.text }
+    }))
+    return { captions, titles }
   }
 
   // Transcribe the timeline audio into read-along lines for the karaoke booth (one per phrase).
@@ -1780,7 +2333,7 @@ function App() {
     const audioClips = clips.filter(c => c.trackId === 'a1' || mediaBin.find(m => m.id === c.mediaId)?.hasAudio)
     if (!audioClips.length) return null
     try {
-      const payload = clips.map(c => { const m = mediaBin.find(x => x.id === c.mediaId); return { path: m?.proxyPath || m?.path, hasAudio: c.trackId === 'v2' ? false : m?.hasAudio, start: c.start, duration: c.duration, volume: c.volume } })
+      const payload = mixPayload()
       const mix = await window.ipcRenderer.renderMixAudio({ clips: payload })
       if (mix.error || !mix.path) return null
       const res = await window.ipcRenderer.transcribe(mix.path, { model: settings.caption.model, language: settings.caption.language, word: false })
@@ -1809,7 +2362,7 @@ function App() {
           for (const iv of r.intervals || []) intervals.push({ start: c.start + iv.start, end: c.start + Math.min(iv.end, c.duration) })
         }
       } else {
-        const payload = clips.map(c => { const m = mediaBin.find(x => x.id === c.mediaId); return { path: m?.proxyPath || m?.path, hasAudio: c.trackId === 'v2' ? false : m?.hasAudio, start: c.start, duration: c.duration, sourceStart: c.sourceStart, volume: c.volume } })
+        const payload = mixPayload()
         const mix = await window.ipcRenderer.renderMixAudio({ clips: payload })
         if (mix.error || !mix.path) return { error: 'Cut pauses: ' + (mix.error || 'could not prepare audio') }
         const res = await window.ipcRenderer.detectSilence({ filePath: mix.path, thresholdDb: S.thresholdDb, minPause: S.minPause })
@@ -1843,9 +2396,9 @@ function App() {
       ranges = spaced
       if (!ranges.length) return { error: useMotion ? 'No long static stretches found (lower the min length or stillness sensitivity in settings).' : 'No long pauses found (try lowering the minimum pause length in settings).' }
       ranges.sort((a, b) => b.start - a.start) // apply last→first so earlier times stay valid
-      let nc = clips, nt = texts, removed = 0
-      for (const r of ranges) { const out = removeRange(nc, nt, r.start, r.end, S.smooth ? S.transition : 0); nc = out.clips; nt = out.texts; removed += (r.end - r.start) }
-      setClips(nc); setTexts(nt); setSelectedId(null); setCurrentTime(0)
+      let nc = clips, nt = texts, nm = markers, removed = 0
+      for (const r of ranges) { const out = removeRange(nc, nt, r.start, r.end, S.smooth ? S.transition : 0, nm); nc = out.clips; nt = out.texts; nm = out.markers; removed += (r.end - r.start) }
+      setClips(nc); setTexts(nt); setMarkers(nm); setSelectedId(null); setCurrentTime(0)
       return { removed: ranges.length, seconds: +removed.toFixed(1), mode: useMotion ? 'stillness' : 'silence' }
     } catch (e) { console.error(e); return { error: 'Cut pauses failed: ' + String(e) } }
     finally { setSilenceBusy(null) }
@@ -1861,7 +2414,7 @@ function App() {
   // read the speech once (word by word), keep it, and answer questions against it.
   const brollRef = useRef<{ folder: string; assets: BrollAsset[] } | null>(null)
   const speechRef = useRef<{ words: SpeechWord[]; sentences: Span[]; mixPath: string; model: string; at: string } | null>(null)
-  const brollPlanRef = useRef<Placement[] | null>(null)
+  const brollPlanRef = useRef<{ placements: Placement[]; at: string } | null>(null)
   const sfxHitsRef = useRef<any[] | null>(null)
 
   /**
@@ -1873,14 +2426,17 @@ function App() {
    */
   const readSpeech = async (model?: string, force?: boolean): Promise<{ error?: string; words?: SpeechWord[]; sentences?: Span[] }> => {
     const want = model || perf.speechModel
-    if (!force && speechRef.current && speechRef.current.model === want && speechRef.current.at === stateKey()) {
+    // keyed on the speech alone (speechKey), so an anchored add_text after another one, a caption,
+    // a b-roll cutaway or an SFX reuses the transcript instead of running Whisper again
+    const key = speechKey()
+    if (!force && speechRef.current && speechRef.current.model === want && speechRef.current.at === key) {
       return { words: speechRef.current.words, sentences: speechRef.current.sentences }
     }
     const hasAudio = clips.some(c => (c.trackId === 'a1' || c.trackId === 'a2') || (c.trackId === 'v1' && mediaBin.find(m => m.id === c.mediaId)?.hasAudio))
     if (!hasAudio) return { error: 'Nothing with speech on the timeline yet.' }
     setTakesBusy('Mixing audio…')
     try {
-      const payload = clips.map(c => { const m = mediaBin.find(x => x.id === c.mediaId); return { path: m?.proxyPath || m?.path, hasAudio: c.trackId === 'v2' ? false : m?.hasAudio, start: c.start, duration: c.duration, sourceStart: c.sourceStart, volume: c.volume } })
+      const payload = mixPayload()
       const mix = await window.ipcRenderer.renderMixAudio({ clips: payload })
       if (mix.error || !mix.path) return { error: mix.error || 'could not prepare audio' }
       setTakesBusy('Reading speech…')
@@ -1891,7 +2447,7 @@ function App() {
         .filter(w => w.text.trim() && w.end > w.start)
       if (!words.length) return { error: 'No speech detected.' }
       const sentences = sentenceSpans(words)
-      speechRef.current = { words, sentences, mixPath: mix.path, model: want, at: stateKey() }
+      speechRef.current = { words, sentences, mixPath: mix.path, model: want, at: key }
       return { words, sentences }
     } catch (e) { return { error: 'Reading speech failed: ' + String(e) } }
     finally { setTakesBusy(null) }
@@ -1912,34 +2468,27 @@ function App() {
     const meta = await window.ipcRenderer.getMetadata(filePath).catch(() => null)
     const verdict = classifyMedia(filePath, meta)
     if ('reject' in verdict) return null
-    const m = meta as Probe
-    const media: MediaFile = {
-      id: rid(), name: filePath.split(/[\/]/).pop() || 'broll', path: filePath, type: verdict.type,
-      duration: verdict.type === 'image' ? 5 : (m.duration || 5),
-      hasVideo: m.hasVideo || verdict.type === 'image', hasAudio: m.hasAudio,
-      hdr: isHdr({ colorTransfer: m.colorTransfer }),
-    }
+    const media = mediaFromProbe(baseName(filePath) || 'broll', filePath, verdict.type, meta as Probe)
     setMediaBin(prev => [...prev, media])
-    void ensureProxies([media], new Map([[media.id, m]]))
+    void ensureProxies([media], new Map([[media.id, meta as Probe]]))
     return media
   }
 
   // A collapsed menu still has to show what is happening underneath it: the number of
   // pending take cuts when there is one, otherwise a dot while a hidden tool is busy or open.
-  const moreCount = takeStats(takes).cuts
-  const moreBusy = silenceBusy !== null || takesBusy !== null || showBooth
 
   // ---- Takes & history ----
   // Transcribe the timeline, group the lines that are retakes of each other, and hand the result
   // to the panel. Detection is in electron/takes.ts; nothing is cut until the user applies.
-  const stateKey = () => JSON.stringify({ c: clips, t: texts })
+  const stateKey = () => JSON.stringify({ c: clips, t: texts, m: markers })
 
   const scanTakes = async (): Promise<{ error?: string; groups?: number; lines?: number; analysis?: TakeAnalysis }> => {
     const hasAudio = clips.some(c => (c.trackId === 'a1' || c.trackId === 'a2') || (c.trackId === 'v1' && mediaBin.find(m => m.id === c.mediaId)?.hasAudio))
     if (!hasAudio) return { error: 'Nothing with speech on the timeline yet.' }
     setTakesBusy('Mixing audio…')
+    const scannedKey = speechKey()   // the line times below are only true for this speech
     try {
-      const payload = clips.map(c => { const m = mediaBin.find(x => x.id === c.mediaId); return { path: m?.proxyPath || m?.path, hasAudio: c.trackId === 'v2' ? false : m?.hasAudio, start: c.start, duration: c.duration, sourceStart: c.sourceStart, volume: c.volume } })
+      const payload = mixPayload()
       const mix = await window.ipcRenderer.renderMixAudio({ clips: payload })
       if (mix.error || !mix.path) return { error: 'Takes: ' + (mix.error || 'could not prepare audio') }
       setTakesBusy('Reading speech…')
@@ -1957,6 +2506,7 @@ function App() {
       if (!chunks.length) return { error: 'No speech detected on the timeline.' }
       const groups = groupTakes(chunks)
       takeSnap.current = null
+      takesAt.current = scannedKey
       const analysis: TakeAnalysis = { chunks, groups, drops: [], applied: false, scannedAt: new Date().toLocaleTimeString() }
       // the ref is what the agent path reads back, state has not re-rendered yet
       takesRef.current = analysis
@@ -1973,21 +2523,24 @@ function App() {
     if (!analysis) return { error: 'Scan the timeline first.' }
     const ranges = removalRanges(analysis.chunks, analysis.groups, analysis.drops)
     if (!ranges.length) return { error: 'Nothing selected to cut.' }
-    let baseClips = clips, baseTexts = texts
+    let baseClips = clips, baseTexts = texts, baseMarkers = markers
     const snap = takeSnap.current
     if (analysis.applied) {
       if (!snap || snap.after !== stateKey()) return { error: 'The timeline changed since these cuts were applied, re-scan to change takes.' }
-      const before = JSON.parse(snap.before) as { c: TimelineClip[]; t: TextClip[] }
-      baseClips = before.c; baseTexts = before.t
+      const before = JSON.parse(snap.before) as { c: TimelineClip[]; t: TextClip[]; m?: Marker[] }
+      baseClips = before.c; baseTexts = before.t; baseMarkers = before.m || []
+    } else if (takesAt.current !== speechKey()) {
+      // the line times were read off different speech: cutting them now would remove other words
+      return { error: 'The timeline changed since the scan (a cut, a moved or trimmed clip), so those lines are no longer where they were. Re-scan, then pick the takes again.' }
     }
-    const beforeKey = JSON.stringify({ c: baseClips, t: baseTexts })
-    let nc = baseClips, nt = baseTexts
+    const beforeKey = JSON.stringify({ c: baseClips, t: baseTexts, m: baseMarkers })
+    let nc = baseClips, nt = baseTexts, nm = baseMarkers
     for (const r of [...ranges].sort((a, b) => b.start - a.start)) {
-      const out = removeRange(nc, nt, r.start, r.end, settings.silence.smooth ? settings.silence.transition : 0)
-      nc = out.clips; nt = out.texts
+      const out = removeRange(nc, nt, r.start, r.end, settings.silence.smooth ? settings.silence.transition : 0, nm)
+      nc = out.clips; nt = out.texts; nm = out.markers
     }
-    setClips(nc); setTexts(nt); setSelectedId(null)
-    takeSnap.current = { before: beforeKey, after: JSON.stringify({ c: nc, t: nt }) }
+    setClips(nc); setTexts(nt); setMarkers(nm); setSelectedId(null)
+    takeSnap.current = { before: beforeKey, after: JSON.stringify({ c: nc, t: nt, m: nm }) }
     setTakes({ ...analysis, applied: true })
     return { cuts: ranges.length, seconds: removedSeconds(ranges) }
   }
@@ -2028,9 +2581,12 @@ function App() {
         stream.getTracks().forEach(t => t.stop())
         setIsRecording(false)
         const blob = new Blob(chunks, { type: 'audio/webm' })
-        const buf = new Uint8Array(await blob.arrayBuffer())
-        const b64 = btoa(Array.from(buf).map(b => String.fromCharCode(b)).join(''))
-        const path = await window.ipcRenderer.saveRecording(b64)
+        let path: string
+        try {
+          const saved = await saveTake(blob, currentProject?.dir)
+          path = saved.path
+          if (saved.keptElsewhere) notify('The project folder could not be written, so the voiceover was kept in VidHelm’s own recordings folder. Save the project to move it in.', 11000)
+        } catch (err) { notify(`The voiceover could not be saved: ${errText(err)}`, 11000); return }
         const metadata = await window.ipcRenderer.getMetadata(path)
         const media: MediaFile = { id: rid(), name: `Voiceover ${new Date().toLocaleTimeString()}`, path, type: 'audio', duration: metadata.duration || 1, hasVideo: false, hasAudio: true }
         setMediaBin(prev => [...prev, media])
@@ -2057,6 +2613,9 @@ function App() {
     setEta(null)
     exportStartRef.current = Date.now()
     try {
+      // missing or removed media is named up front, rather than ffmpeg failing halfway through
+      const pre = await exportPreflight()
+      if (pre) { setExportProgress(null); notify(`Export not started. ${pre}`, 15000); return }
       let finalPath = customExportPath
       if (!finalPath) {
         finalPath = await window.ipcRenderer.selectSavePath('vidhelm_export.mp4')
@@ -2064,25 +2623,248 @@ function App() {
         setCustomExportPath(finalPath)
       }
       const payload = {
-        clips: exportClips(h),
+        clips: exportClips(w, h, fps, exportQuality),
         texts,
         brand: settings.brand,
         audio: settings.audio,
         outputPath: finalPath,
         settings: { width: w, height: h, fps, quality: exportQuality, masterVolume },
       }
+      exportStartRef.current = Date.now()
       await window.ipcRenderer.exportVideo(payload)
       setExportProgress(100)
       setLastExport(finalPath)
       setTimeout(() => setExportProgress(null), 3000)
       runQualityCheck(finalPath) // auto "watch & verify" the result
-    } catch (err) { console.error('Export failed', err); setExportProgress(null) }
+    } catch (err) {
+      // never silent: the bar used to just vanish with no file and no reason. The toast gets the
+      // reason; ffmpeg's last lines go to the log (DevTools console) for anyone digging deeper.
+      const f = exportFailure(err)
+      console.error('Export failed:', f.reason, f.detail ? '\n' + f.detail : '')
+      setExportProgress(null); setEta(null)
+      setLastExport(null)   // the old "Show in folder" would point at a missing or half-written file
+      notify(exportFailureText(f), 15000)
+    }
   }
 
   // ---- project folders ----
   // A workspace root holds one sub-folder per project. Opening a project pulls in whatever
   // media is sitting in that folder, so dropping files in with Explorer is the "import".
   const projectData = () => ({ version: 2, mediaBin, clips, texts, markers, orientation, resolution, fps, masterVolume, exportQuality })
+  /** What goes into the file: the project's own folder and where each file sits inside it (so a
+   *  copied or moved folder relinks itself on open), and nothing that only means something now. */
+  const dataForSave = (dir: string | null) => {
+    const d = projectData()
+    return { ...d, savedAt: Date.now(), ...(dir ? { projectDir: dir } : {}),
+      mediaBin: d.mediaBin.map(m => {
+        const out: MediaFile = { ...m }
+        delete out.proxyPct; delete out.offline; delete out.relPath
+        const rel = dir ? relInside(dir, m.path) : null
+        if (rel) out.relPath = rel
+        return out
+      }) }
+  }
+
+  // ---- unsaved changes ----
+  // The document as last saved or loaded, as a key; "dirty" means the work differs from it. Checked
+  // on a short debounce, like the undo history, so a drag is not re-serialised on every mouse move.
+  const savedKeyRef = useRef<string>(docKeyOf({ mediaBin: [], clips: [], texts: [], markers: [], orientation: 'landscape', resolution: '1080p', fps: 30, masterVolume: 1, exportQuality: 'high' }))
+  const docRef = useRef<DocFields | null>(null)
+  const [dirty, setDirty] = useState(false)
+  // true while one project is being swapped for another: the outgoing document must not be
+  // autosaved (the human may have just said Don't save), nor filed under the incoming project
+  const switching = useRef(false)
+  // The handles that outlive a render (read by timers, the close prompt, keyboard and agent
+  // commands) follow the latest committed state
+  useEffect(() => {
+    docRef.current = projectData()
+    saveRef.current = saveProject
+    setLiveDoc({ savedAt: 0, dir: currentProject?.dir ?? null, name: currentProject?.name ?? null, file: saveFile, data: docRef.current }, dirty && !switching.current)
+  })
+  /** Hold autosave for the length of a project switch. */
+  const beginSwitch = () => { switching.current = true; setLiveDoc(liveDoc.current, false) }
+  const endSwitch = () => { switching.current = false }
+  const isDirty = () => !!docRef.current && docKeyOf(docRef.current) !== savedKeyRef.current
+  /** This document is the new "nothing to save" point (null: restored work, unsaved until saved).
+   *  After a save, recheck: anything edited while the save was in flight is still unsaved. */
+  const markClean = (d: DocFields | null, recheck = false) => {
+    savedKeyRef.current = d ? docKeyOf(d) : ''
+    setDirty(recheck ? isDirty() : d === null)
+  }
+  useEffect(() => {
+    const t = setTimeout(() => setDirty(isDirty()), 300)
+    return () => clearTimeout(t)
+  }, [mediaBin, clips, texts, markers, orientation, resolution, fps, masterVolume, exportQuality])
+  // Autosave every 30 s and whenever the window loses focus, while there is something unsaved
+  useEffect(() => {
+    const iv = window.setInterval(autosaveNow, 30000)
+    window.addEventListener('blur', autosaveNow)
+    return () => { window.clearInterval(iv); window.removeEventListener('blur', autosaveNow) }
+  }, [])
+  // While anything is unsaved, closing or reloading the window is refused here, and the main
+  // process turns that into a Save / Don't save / Cancel question (will-prevent-unload).
+  useEffect(() => {
+    if (!dirty) {
+      window.onbeforeunload = null
+      // back to the saved state (undone, or saved): an autosave this session wrote is now only an
+      // older draft, and left there it would come back as "unsaved changes found"
+      const dir = currentProject?.dir ?? null
+      if (!switching.current && wroteSlots.has(autosaveKey(dir))) void clearAutosave(dir)
+      return
+    }
+    window.onbeforeunload = (e: BeforeUnloadEvent) => {
+      const a = liveDoc.current
+      if (a) autosaveLocal({ ...a, savedAt: Date.now() })   // synchronous: there may be no time for an IPC round trip
+      e.preventDefault(); e.returnValue = false
+      return false
+    }
+    return () => { window.onbeforeunload = null }
+  }, [dirty, currentProject?.dir])
+  // The close question's Save button: save, then close for real. A failed or cancelled save keeps the window open.
+  useEffect(() => {
+    const h = async () => { if (await saveRef.current(false)) { window.onbeforeunload = null; setLiveDoc(liveDoc.current, false); window.close() } }
+    window.ipcRenderer.on('save-before-close', h)
+    return () => window.ipcRenderer.off('save-before-close', h)
+  }, [])
+
+  /** Before anything replaces the timeline: unsaved work gets Save / Don't save / Cancel. */
+  const confirmLeave = async (what: string): Promise<boolean> => {
+    if (!isDirty()) return true
+    const name = currentProject?.name || (saveFile ? baseName(saveFile) : 'This project')
+    const pick = await askChoice({ title: 'Unsaved changes', body: `${name} has changes that are not saved yet. Save them before ${what}?`,
+      choices: [{ id: 'save', label: 'Save', primary: true }, { id: 'discard', label: "Don't save" }, { id: 'cancel', label: 'Cancel' }] })
+    if (pick === 'save') return await saveProject()
+    if (pick === 'discard') { await clearAutosave(currentProject?.dir ?? null); return true }
+    return false
+  }
+
+  /** Anything computed from the project that was open: none of it may act on the next one. */
+  const resetProjectScratch = () => {
+    setTakes(null); takesRef.current = null; takeSnap.current = null; takesAt.current = null
+    brollRef.current = null; brollPlanRef.current = null; speechRef.current = null; sfxHitsRef.current = null
+  }
+
+  /** Replace the whole document with a loaded one: format values checked (an unknown one keeps the
+   *  current setting), undo history restarted. Returns the document as it now stands. */
+  const applyProjectData = (data: any, bin?: MediaFile[]): DocFields => {
+    const arr = <T,>(v: unknown): T[] => Array.isArray(v) ? v as T[] : []
+    const doc: DocFields = {
+      mediaBin: bin ?? arr<MediaFile>(data?.mediaBin),
+      clips: arr<TimelineClip>(data?.clips), texts: arr<TextClip>(data?.texts), markers: arr<Marker>(data?.markers),
+      orientation: normOrientation(data?.orientation) ?? orientation,
+      resolution: normResolution(data?.resolution) ?? resolution,
+      fps: normFps(data?.fps) ?? fps,
+      masterVolume: typeof data?.masterVolume === 'number' && Number.isFinite(data.masterVolume) ? data.masterVolume : masterVolume,
+      exportQuality: data?.exportQuality === 'medium' || data?.exportQuality === 'high' ? data.exportQuality : exportQuality,
+    }
+    setIsPlaying(false)
+    setMediaBin(doc.mediaBin); setClips(doc.clips); setTexts(doc.texts); setMarkers(doc.markers)
+    setOrientation(doc.orientation); setResolution(doc.resolution); setFps(doc.fps)
+    setMasterVolume(doc.masterVolume); setExportQuality(doc.exportQuality)
+    setSelectedId(null); setCurrentTime(0)
+    // a fresh undo history: Ctrl+Z must never bring back clips from the project that was open before
+    skipRecord.current = true
+    history.current = [{ clips: doc.clips, texts: doc.texts, markers: doc.markers }]
+    histIndex.current = 0
+    setCanUndo(false); setCanRedo(false)
+    return doc
+  }
+
+  /** exists(path) for many paths, listing each folder once. scan-project lists the common media
+   *  types; a file of another type counts as present unless its whole folder is gone. */
+  const fileChecker = () => {
+    const listings = new Map<string, Set<string> | null | undefined>()
+    return async (p: string): Promise<boolean> => {
+      if ((window as unknown as { __vhWeb?: boolean }).__vhWeb) return true
+      const d = dirName(p), k = pathKey(d)
+      if (!listings.has(k)) {
+        const r = await window.ipcRenderer.scanProject(d).catch(() => null)
+        listings.set(k, !r ? undefined : r.files ? new Set(r.files.map(f => pathKey(f.path))) : r.error ? null : undefined)
+      }
+      const list = listings.get(k)
+      if (list === null) return false            // the folder itself is gone
+      if (!list || !LISTED_EXT.has(extOf(p))) return true
+      return list.has(pathKey(p))
+    }
+  }
+  /** The bin entries whose files are gone. */
+  const findMissing = async (items: MediaFile[]): Promise<MediaFile[]> => {
+    const exists = fileChecker()
+    const out: MediaFile[] = []
+    for (const m of items) if (m.path && !(await exists(m.path))) out.push(m)
+    return out
+  }
+
+  /** Point every saved bin entry at a file that exists, keeping its id so the clips stay linked:
+   *  its place inside this folder (relPath), the same name in this folder when the project was
+   *  copied or moved, the saved path, then a same-named file in the folder. What still cannot be
+   *  found is marked offline (Relink in the Media panel) instead of leaving blank clips. */
+  const resolveMedia = async (dir: string, project: any, files: { path: string; name: string }[]) => {
+    const saved: MediaFile[] = (Array.isArray(project?.mediaBin) ? project.mediaBin : []).filter((m: MediaFile) => m && typeof m.path === 'string')
+    const top = new Map(files.map(f => [pathKey(f.path), f.path]))
+    const byName = new Map<string, string[]>()
+    for (const f of files) { const k = f.name.toLowerCase(); byName.set(k, [...(byName.get(k) || []), f.path]) }
+    const sameName = (p: string) => { const l = byName.get(baseName(p).toLowerCase()); return l && l.length === 1 ? l[0] : null }
+    const moved = typeof project?.projectDir === 'string' && pathKey(project.projectDir) !== pathKey(dir)
+    const exists = fileChecker()
+    const has = async (p: string) => top.has(pathKey(p)) || await exists(p)
+    const relinked = new Set<string>()   // ids now pointing at a different file than the save said
+    const missing: string[] = []
+    const bin: MediaFile[] = []
+    for (const m of saved) {
+      const rel = typeof m.relPath === 'string' && m.relPath ? joinPath(dir, m.relPath) : null
+      let p: string | null
+      if (rel && await has(rel)) p = top.get(pathKey(rel)) ?? rel
+      else if (moved && sameName(m.path)) p = sameName(m.path)
+      else if (await has(m.path)) p = m.path
+      else p = sameName(m.path)
+      const e: MediaFile = { ...m }
+      delete e.relPath; delete e.proxyPct
+      if (!p) { e.offline = true; missing.push(m.name) }
+      else {
+        delete e.offline
+        if (pathKey(p) !== pathKey(m.path)) { e.path = p; delete e.proxyPath; delete e.proxyWidth; delete e.proxyHeight; delete e.proxyFps; relinked.add(e.id) }
+      }
+      bin.push(e)
+    }
+    return { bin, relinked, missing }
+  }
+
+  /** Probe files found in a folder and turn the usable ones into bin entries (HDR flag included). */
+  const probeNewFiles = async (fresh: { path: string; name: string }[], probes: Map<string, Probe>) => {
+    const added: MediaFile[] = []
+    for (const f of fresh) {
+      const meta = await window.ipcRenderer.getMetadata(f.path).catch(() => null)
+      const verdict = classifyMedia(f.name, meta)
+      if ('reject' in verdict) continue
+      const entry = mediaFromProbe(f.name, f.path, verdict.type, meta as Probe)
+      probes.set(entry.id, meta as Probe)
+      added.push(entry)
+    }
+    return added
+  }
+
+  /** Restored footage: re-probe only what is missing something (the HDR flag or frame rate an older
+   *  save lacks, a preview copy with no size, or a copy that was needed and is gone) and hand it to
+   *  ensureProxies, which re-finds a cached copy with its real size or rebuilds a lost one. Ordinary
+   *  footage that never needed a copy is not probed again on every open. `recheck` names entries
+   *  that now point at a different file (relinked), which are always looked at afresh. */
+  const backfillMedia = async (items: MediaFile[], recheck: Set<string> | 'all' = new Set()) => {
+    const needs = (m: MediaFile) => recheck === 'all' || recheck.has(m.id) || m.hdr === undefined || m.fps === undefined
+      || (m.proxyPath ? !(m.proxyWidth && m.proxyHeight && m.proxyFps) : !!m.proxyNote)   // proxyNote without a copy: it was needed (lost, or the build failed)
+    const vids = items.filter(m => m.type === 'video' && !m.offline && needs(m))
+    if (!vids.length) return
+    const probes = new Map<string, Probe>()
+    const fill: Record<string, Partial<MediaFile>> = {}
+    for (const m of vids) {
+      const meta = await window.ipcRenderer.getMetadata(m.path).catch(() => null)
+      if (!meta || meta.ok === false) continue
+      probes.set(m.id, meta as Probe)
+      fill[m.id] = { hdr: isHdr({ colorTransfer: meta.colorTransfer }), ...(meta.fps ? { fps: meta.fps } : {}) }
+    }
+    if (Object.keys(fill).length) setMediaBin(prev => prev.map(x => fill[x.id] ? { ...x, ...fill[x.id] } : x))
+    await ensureProxies(vids.filter(m => probes.has(m.id)), probes)
+  }
 
   const refreshProjects = async (root: string | null) => {
     if (!root) { setProjects([]); return }
@@ -2092,96 +2874,322 @@ function App() {
   }
   useEffect(() => { refreshProjects(settings.workspace.root) }, [settings.workspace.root])   // eslint-disable-line react-hooks/exhaustive-deps
 
-  const openProjectFolder = async (dir: string, name: string) => {
-    const r = await window.ipcRenderer.scanProject(dir)
-    if (r.error) { notify(`Could not open ${name}: ${r.error}`); return }
-    setIsPlaying(false)
-    setCurrentProject({ dir, name })
+  /** Switch to a project folder. This replaces the whole document, so unsaved work is asked about
+   *  first (skipConfirm when the caller already did). An autosave newer than the folder's save is
+   *  offered back. askRecover: false (an agent opening it) does not answer that for the human: it
+   *  opens nothing and returns the autosave as `unsaved`, still in place for when they open it. */
+  const openProjectFolder = async (dir: string, name: string, opts: { skipConfirm?: boolean; recover?: Autosave; askRecover?: boolean } = {}): Promise<{ unsaved?: Autosave } | null> => {
+    if (!opts.skipConfirm && !(await confirmLeave(`opening ${name}`))) return null
+    beginSwitch()
+    try {
+      const r = await window.ipcRenderer.scanProject(dir)
+      if (r.error) { notify(`Could not open ${name}: ${r.error}`); return null }
 
-    // a saved timeline in the folder wins; otherwise start clean with the folder's media
-    if (r.project) {
-      setMediaBin(r.project.mediaBin || [])
-      setClips(r.project.clips || [])
-      setTexts(r.project.texts || [])
-      setMarkers(r.project.markers || [])
-      if (r.project.orientation) setOrientation(r.project.orientation)
-      if (r.project.resolution) setResolution(r.project.resolution)
-      if (r.project.fps) setFps(r.project.fps)
-      if (typeof r.project.masterVolume === 'number') setMasterVolume(r.project.masterVolume)
-    } else {
-      setClips([]); setTexts([]); setMarkers([]); setMediaBin([])
+      let project = r.project
+      let recovered = false
+      const auto = opts.recover ?? await readAutosave(dir)
+      if (auto?.data && (opts.recover || auto.savedAt > (Number(r.project?.savedAt) || 0))) {
+        if (!opts.recover && opts.askRecover === false) return { unsaved: auto }
+        const answer = opts.recover ? 'restore'
+          : await askChoice({ title: 'Unsaved changes found', body: `${name} has changes from ${new Date(auto.savedAt).toLocaleString()} that were never saved. Restore them?`,
+              choices: [{ id: 'restore', label: 'Restore', primary: true }, { id: 'discard', label: 'Discard them' }] })
+        if (answer === 'restore') { project = auto.data; recovered = true }
+        else if (answer === 'discard') await clearAutosave(dir)
+        else return null   // the question was swept away by another one: open nothing, lose nothing
+      } else if (auto) void clearAutosave(dir)   // older than the save: nothing in it is lost
+
+      // a saved timeline in the folder wins; otherwise start clean with the folder's media.
+      // Paths are resolved first: a moved or copied folder relinks itself, lost files are flagged.
+      const files = r.files || []
+      const res = project ? await resolveMedia(dir, project, files) : { bin: [] as MediaFile[], relinked: new Set<string>(), missing: [] as string[] }
+      resetProjectScratch()
+      setCurrentProject({ dir, name }); setSaveFile(null)
+      try { localStorage.setItem(LAST_PROJECT_KEY, JSON.stringify({ dir, name })) } catch { /* fine */ }
+      const doc = applyProjectData(project || {}, res.bin)
+      // clean (or, for restored work, unsaved) from this moment, before the probing below takes its time
+      if (recovered) markClean(null)
+      else markClean(doc)
+      let added: MediaFile[] = []
+      const probes = new Map<string, Probe>()
+      if (settings.workspace.autoLoad) {
+        // pull in everything in the folder that isn't already in the bin (by where entries resolved to)
+        const known = new Set(res.bin.map(m => pathKey(m.path)))
+        added = await probeNewFiles(files.filter(f => !known.has(pathKey(f.path))), probes)
+        if (added.length) {
+          setMediaBin(prev => [...prev, ...added])
+          // the folder's own files are not unsaved work (unless the human already started editing)
+          if (!recovered && !isDirty()) markClean({ ...doc, mediaBin: [...doc.mediaBin, ...added] })
+        }
+      }
+      // preview copies for what just arrived (phone HEVC/HDR plays black without one), plus the
+      // HDR flag and copy size for restored entries saved before those were kept
+      void ensureProxies(added, probes)
+      void backfillMedia(res.bin, res.relinked)
+      const bits = [
+        added.length ? `${added.length} new file${added.length > 1 ? 's' : ''} in the Media Bin` : settings.workspace.autoLoad ? 'no new media in the folder' : '',
+        project ? (recovered ? 'unsaved changes restored' : 'timeline restored') : '',
+        res.relinked.size ? `${res.relinked.size} moved file${res.relinked.size > 1 ? 's' : ''} relinked` : '',
+        res.missing.length ? `${res.missing.length} file${res.missing.length > 1 ? 's' : ''} missing (marked offline in the Media Bin: right-click to relink)` : '',
+      ].filter(Boolean)
+      notify(`${name}${bits.length ? ' - ' + bits.join(', ') : ''}.`, res.missing.length ? 11000 : 7000)
+      return {}
+    } finally { endSwitch() }
+  }
+
+  /** ↻: bring in files added to the open project's folder. Adds to the Media Bin and touches nothing
+   *  else; the timeline, texts and tags stay as they are. (It used to reopen the whole project from
+   *  disk, replacing unsaved work with the last save, or with nothing at all.) */
+  const [rescanning, setRescanning] = useState(false)
+  const rescanProjectFolder = async () => {
+    const p = currentProject
+    if (!p || rescanning) return
+    setRescanning(true)
+    try {
+      const r = await window.ipcRenderer.scanProject(p.dir)
+      if (r.error) { notify(`Could not rescan ${p.name}: ${r.error}`); return }
+      const known = new Set(mediaBin.map(m => pathKey(m.path)))
+      const probes = new Map<string, Probe>()
+      const added = await probeNewFiles((r.files || []).filter(f => !known.has(pathKey(f.path))), probes)
+      // offline entries whose file is there again (copied back, the drive reconnected) come back online
+      const offline = mediaBin.filter(m => m.offline)
+      const gone = new Set((await findMissing(offline)).map(m => m.id))
+      const back = offline.filter(m => !gone.has(m.id))
+      if (added.length || back.length) {
+        setMediaBin(prev => [...prev.map(x => back.some(b => b.id === x.id) ? { ...x, offline: undefined } : x),
+          ...added.filter(m => !prev.some(x => pathKey(x.path) === pathKey(m.path)))])
+        if (added.length) void ensureProxies(added, probes)
+        if (back.length) void backfillMedia(back.map(m => ({ ...m, offline: undefined })))
+      }
+      notify([added.length ? `${added.length} new file${added.length > 1 ? 's' : ''} from ${p.name} added to the Media Bin.` : `No new files in ${p.name}.`,
+        back.length ? `${back.length} missing file${back.length > 1 ? 's are' : ' is'} back.` : ''].filter(Boolean).join(' '))
+    } finally { setRescanning(false) }
+  }
+
+  /** Relink: point an offline bin entry at the file's new home, then match any other offline
+   *  entries by name in that same folder. Ids stay, so their clips come back. */
+  const relinkMedia = async (media: MediaFile) => {
+    const exts = [...new Set([extOf(media.path), ...VIDEO_EXT, ...AUDIO_EXT, ...IMAGE_EXT])].filter(Boolean)
+    const picked = await window.ipcRenderer.pickFile({ title: `Where is ${media.name}?`, extensions: exts })
+    if (!picked) return
+    const r = await window.ipcRenderer.scanProject(dirName(picked)).catch(() => null)
+    const there = new Map((r?.files || []).map(f => [f.name.toLowerCase(), f.path]))
+    const moves = new Map<string, string>([[media.id, picked]])
+    for (const m of mediaBin) if (m.offline && m.id !== media.id) { const hit = there.get(baseName(m.path).toLowerCase()); if (hit) moves.set(m.id, hit) }
+    const moved = mediaBin.filter(m => moves.has(m.id))
+      .map(m => ({ ...m, path: moves.get(m.id)!, offline: undefined, proxyPath: undefined, proxyWidth: undefined, proxyHeight: undefined, proxyFps: undefined }))
+    setMediaBin(prev => prev.map(m => moved.find(x => x.id === m.id) ?? m))
+    notify(`Relinked ${moved.length} file${moved.length > 1 ? 's' : ''}. Save to keep the new location${moved.length > 1 ? 's' : ''}.`)
+    void backfillMedia(moved, 'all')   // possibly a different file: its HDR flag, frame rate and preview copy are found afresh
+  }
+
+  /** Remove from the bin. Clips still using it would export as nothing, so they go too (after asking). */
+  const removeFromBin = async (media: MediaFile) => {
+    const using = clips.filter(c => c.mediaId === media.id).length
+    if (using) {
+      const pick = await askChoice({ title: 'Remove from the Media Bin?', body: `${using} clip${using > 1 ? 's' : ''} on the timeline use${using > 1 ? '' : 's'} ${media.name}. Removing it takes ${using > 1 ? 'those clips' : 'that clip'} off the timeline too. The file itself is not touched.`,
+        choices: [{ id: 'both', label: 'Remove both', primary: true }, { id: 'cancel', label: 'Cancel' }] })
+      if (pick !== 'both') return
+      setClips(prev => prev.filter(c => c.mediaId !== media.id))
+      if (clips.some(c => c.id === selectedId && c.mediaId === media.id)) setSelectedId(null)
     }
-    setSelectedId(null); setCurrentTime(0)
+    setMediaBin(prev => prev.filter(m => m.id !== media.id))
+  }
 
-    if (!settings.workspace.autoLoad) { notify(`Opened ${name}.`); return }
-    // pull in everything in the folder that isn't already in the bin
-    const known = new Set((r.project?.mediaBin || []).map((m: MediaFile) => m.path))
-    const fresh = (r.files || []).filter(f => !known.has(f.path))
-    const added: MediaFile[] = []
-    for (const f of fresh) {
-      const meta = await window.ipcRenderer.getMetadata(f.path).catch(() => null)
-      const verdict = classifyMedia(f.name, meta)
-      if ('reject' in verdict) continue
+  /** Generate a video clip with the AI harness and land it in the bin (and at the end of v1 unless place=false). */
+  const generateAiClip = async (o: { prompt: string; fromPath?: string; fromTime?: number; toPath?: string; toTime?: number; seconds?: number; model?: string; place?: boolean }) => {
+    const outDir = currentProject?.dir || settings.workspace.root
+    if (!outDir) return { error: 'Open or create a project folder first, so the clip has a home.' }
+    // every generation is paid for: one at a time, and a retry while one runs is refused, not bought
+    if (busyRef.current.aiClip) return { error: 'An AI clip is already being generated. Wait for it to land in the Media Bin (get_state shows it) rather than starting another.' }
+    busyRef.current.aiClip = true; setAiClipBusy(true)
+    try {
+      const r = await window.ipcRenderer.genClip({ prompt: o.prompt, fromPath: o.fromPath, fromTime: o.fromTime, toPath: o.toPath, toTime: o.toTime, seconds: o.seconds, aspect: orientation, model: o.model, keys: { fal: settings.aiGen?.falKey, gemini: settings.aiGen?.geminiKey }, outDir })
+      // stillRunning: the provider may still finish the job (and bill it), so it must not be resubmitted
+      if (r.error || !r.path) return { error: r.error || 'generation failed', ...(r.stillRunning ? { stillRunning: true } : {}) }
+      const meta = await window.ipcRenderer.getMetadata(r.path).catch(() => null)
+      const verdict = classifyMedia(r.path, meta)
+      if ('reject' in verdict) return { error: `generated a file the app cannot read: ${verdict.reject}` }
       const m = meta as Probe
-      added.push({
-        id: rid(), name: f.name, path: f.path, type: verdict.type,
-        duration: verdict.type === 'image' ? 5 : (m.duration || 5),
-        hasVideo: m.hasVideo || verdict.type === 'image', hasAudio: m.hasAudio,
-      })
-    }
-    if (added.length) setMediaBin(prev => [...prev, ...added])
-    notify(`${name} - ${added.length ? `${added.length} file${added.length > 1 ? 's' : ''} ready in the Media Bin` : 'no new media in the folder'}${r.project ? ', timeline restored' : ''}.`)
+      // The same file may already be in the bin: the main process hands an identical request that
+      // overlaps a running one (a retry from another client, a reload) the SAME file. Reuse that
+      // entry rather than adding a second one. docRef is the bin as last drawn; with one generation
+      // at a time (above) nothing can land in between.
+      const key = pathKey(r.path)
+      const prevId = docRef.current?.mediaBin.find(x => pathKey(x.path) === key)?.id
+      let media = mediaFromProbe(baseName(r.path) || 'ai-clip.mp4', r.path, 'video', m, { duration: m.duration || r.seconds || 5, hasVideo: true, hasAudio: !!m.hasAudio })
+      if (prevId) media = { ...media, id: prevId }
+      else {
+        setMediaBin(prev => [...prev, media])
+        void ensureProxies([media], new Map([[media.id, m]]))
+      }
+      if (o.place !== false) {
+        // the end of v1 as it is NOW (the generation took minutes and the timeline moved on), once
+        setClips(prev => {
+          if (prev.some(c => c.mediaId === media.id)) return prev
+          const track = prev.filter(c => c.trackId === 'v1')
+          const at = track.length ? Math.max(...track.map(c => c.start + c.duration)) : 0
+          return [...prev, { id: rid(), mediaId: media.id, type: 'video', trackId: 'v1', start: at, duration: media.duration, sourceStart: 0, volume: r.hasAudio ? 1 : 0, fadeIn: 0, fadeOut: 0 }]
+        })
+      }
+      return { ok: true, mediaId: media.id, path: r.path, model: r.model, seconds: r.seconds, hasAudio: r.hasAudio, estimateUsd: r.estimateUsd, ...(prevId ? { alreadyInBin: true } : {}) }
+    } finally { busyRef.current.aiClip = false; setAiClipBusy(false) }
+  }
+  /** The frame under the playhead: which v1 clip, which source time. */
+  const frameUnderPlayhead = () => {
+    const hit = clips.filter(c => c.trackId === 'v1' && currentTime >= c.start && currentTime < c.start + c.duration).pop()
+    if (!hit) return null
+    const media = mediaBin.find(m => m.id === hit.mediaId); if (!media) return null
+    return { path: media.path, time: media.type === 'image' ? 0 : hit.sourceStart + (currentTime - hit.start) }
+  }
+
+  const importCloudZip = async (zipPath?: string) => {
+    const root = settings.workspace.root
+    if (!root) { notify('Set a workspace folder in Settings first, then import the cloud zip.'); return }
+    if (!(await confirmLeave('importing a cloud project'))) return
+    beginSwitch()   // the download can take a while: the outgoing work is not autosaved meanwhile
+    let target: { path: string; name: string; summary: string } | null = null
+    try {
+      notify('Importing the cloud hand-off: unpacking, downloading clips and drafts…')
+      const r = await window.ipcRenderer.importCloudZip({ root, zipPath })
+      if (r.cancelled) return
+      if (r.error || !r.path) { notify(`Import failed: ${r.error || 'unknown error'}`); return }
+      await refreshProjects(root)
+      target = { path: r.path, name: r.name || 'Cloud project',
+        summary: `Imported ${r.name}: ${r.clips} clip${r.clips === 1 ? '' : 's'} downloaded, ${r.timeline} item${r.timeline === 1 ? '' : 's'} on the timeline${r.failed?.length ? `, ${r.failed.length} download${r.failed.length === 1 ? '' : 's'} failed (see NOTES.md)` : ''}.` }
+    } finally { endSwitch() }
+    await openProjectFolder(target.path, target.name, { skipConfirm: true })
+    notify(target.summary)
   }
 
   const newProjectFolder = async () => {
     const root = settings.workspace.root
     if (!root) return
-    const name = `Project ${new Date().toISOString().slice(0, 10)}`
-    const r = await window.ipcRenderer.createProject({ root, name })
-    if (r.error || !r.path) { notify(`Could not create the project: ${r.error || 'unknown error'}`); return }
-    await refreshProjects(root)
-    setCurrentProject({ dir: r.path, name: r.name || name })
-    setMediaBin([]); setClips([]); setTexts([]); setMarkers([]); setCurrentTime(0)
-    notify(`Created ${r.name}. Drop footage into that folder and hit ↻, no import needed.`)
-    window.ipcRenderer.revealFolder(r.path)
+    if (!(await confirmLeave('starting a new project'))) return
+    beginSwitch()
+    try {
+      const name = `Project ${new Date().toISOString().slice(0, 10)}`
+      const r = await window.ipcRenderer.createProject({ root, name })
+      if (r.error || !r.path) { notify(`Could not create the project: ${r.error || 'unknown error'}`); return }
+      await refreshProjects(root)
+      resetProjectScratch()
+      setCurrentProject({ dir: r.path, name: r.name || name }); setSaveFile(null)
+      try { localStorage.setItem(LAST_PROJECT_KEY, JSON.stringify({ dir: r.path, name: r.name || name })) } catch { /* fine */ }
+      markClean(applyProjectData({}, []))   // a clean start, with a clean undo history
+      notify(`Created ${r.name}. Drop footage into that folder and press ↻ to bring it in, no import needed.`)
+      window.ipcRenderer.revealFolder(r.path)
+    } finally { endSwitch() }
   }
 
-  const saveProject = async () => {
+  /** Save to wherever this project lives: its folder, or the file it came from; the first time, a
+   *  file the human picks. Save As (as = true) writes a COPY to a picked file and changes nothing
+   *  else: Save still writes where it did, and what is unsaved there stays unsaved. (With nowhere
+   *  to save yet, the picked file becomes that place.) Returns whether the project was saved. */
+  const saveProject = async (as = false): Promise<boolean> => {
     try {
-      // inside a project folder this is silent; otherwise fall back to the file dialog
-      if (currentProject) {
-        const r = await window.ipcRenderer.saveProjectTo({ dir: currentProject.dir, data: projectData() })
-        notify(r.path ? `Saved into ${currentProject.name}.` : `Save failed: ${r.error || 'unknown error'}`)
+      if (currentProject && !as) {
+        const dir = currentProject.dir
+        const data = dataForSave(dir)
+        const r = await window.ipcRenderer.saveProjectTo({ dir, data })
+        if (!r.path) { notify(`Save failed: ${r.error || 'unknown error'}`, 11000); return false }
+        // takes recorded before the project had a folder (or while it could not be written) are
+        // copied into <project>/voice by the main process, which also gave them their relPath in
+        // the saved file; follow them there, so the bin and the saved file agree
+        const moved = r.moved || []
+        const follow = (m: MediaFile) => { const hit = moved.find(x => pathKey(x.from) === pathKey(m.path)); return hit ? { ...m, path: hit.to } : m }
+        notify(`Saved into ${currentProject.name}.${moved.length ? ` ${moved.length} recording${moved.length > 1 ? 's were' : ' was'} copied into its voice folder.` : ''}`)
         refreshProjects(settings.workspace.root)
-        return
+        if (moved.length) { setMediaBin(prev => prev.map(follow)); markClean({ ...data, mediaBin: data.mediaBin.map(follow) }) }
+        else markClean(data, true)
+        void clearAutosave(dir)
+        return true
       }
-      await window.ipcRenderer.saveProject(projectData())
-    } catch (e) { console.error(e) }
+      const data = dataForSave(null)
+      if (saveFile && !as) {
+        // back into the file it was opened from; a main process without that handler asks instead
+        const r = await optionalInvoke('save-project-file', { path: saveFile, data })
+        if (r?.path) { notify(`Saved ${baseName(r.path)}.`); markClean(data, true); void clearAutosave(null); return true }
+        if (r?.error) { notify(`Save failed: ${r.error}`, 11000); return false }
+      }
+      const p = await window.ipcRenderer.saveProject(data)
+      if (!p) return false
+      // Save As picked the folder's own save file: that is a normal save, written the folder's way
+      if (as && currentProject && pathKey(p) === pathKey(joinPath(currentProject.dir, 'project.vidhelm.json'))) return await saveProject(false)
+      // Save As with somewhere to save already: a copy. The project, its Save target and its
+      // unsaved state are left exactly as they were
+      if (as && (currentProject || (saveFile && pathKey(saveFile) !== pathKey(p)))) {
+        notify(`Saved a copy as ${baseName(p)}. Save still writes ${currentProject ? `into ${currentProject.name}` : `to ${baseName(saveFile!)}`}.`, 9000)
+        return true
+      }
+      setSaveFile(p)
+      notify(`Saved ${baseName(p)}.`)
+      markClean(data, true); void clearAutosave(null)
+      return true
+    } catch (e) { console.error(e); notify(`Save failed: ${errText(e)}`, 11000); return false }
   }
 
   const loadProject = async () => {
     try {
-      const data = await window.ipcRenderer.loadProject()
-      if (!data) return
-      setIsPlaying(false)
-      setMediaBin(data.mediaBin || [])
-      setClips(data.clips || [])
-      setTexts(data.texts || [])
-      setMarkers(data.markers || [])
-      if (data.orientation) setOrientation(data.orientation)
-      if (data.resolution) setResolution(data.resolution)
-      if (data.fps) setFps(data.fps)
-      if (typeof data.masterVolume === 'number') setMasterVolume(data.masterVolume)
-      if (data.exportQuality) setExportQuality(data.exportQuality)
-      setSelectedId(null)
-      setCurrentTime(0)
-      // reset history to the loaded state
-      skipRecord.current = true
-      history.current = [{ clips: data.clips || [], texts: data.texts || [] }]
-      histIndex.current = 0
-      setCanUndo(false); setCanRedo(false)
-    } catch (e) { console.error(e) }
+      const res = await window.ipcRenderer.loadProject()
+      if (!res) return
+      // newer main processes say which file it was ({ data, path }); older ones hand back the project itself
+      const file: string | null = typeof res.path === 'string' && res.data && typeof res.data === 'object' ? res.path : null
+      const data = file ? res.data : res
+      // a project folder's own save file: open that folder properly, so Save writes back into it
+      if (file && baseName(file).toLowerCase() === 'project.vidhelm.json') { const dir = dirName(file); await openProjectFolder(dir, baseName(dir)); return }
+      if (!(await confirmLeave('opening that project'))) return
+      resetProjectScratch()
+      // Not a folder project any more: Save goes to this file (or asks, when the file is unknown),
+      // never into the folder that was open before
+      setCurrentProject(null)
+      setSaveFile(file)
+      const doc = applyProjectData(data)
+      markClean(doc)
+      notify(file ? `Opened ${baseName(file)}.` : 'Opened the project. The first Save asks where to keep it.')
+      void backfillMedia(doc.mediaBin)
+      const miss = await findMissing(doc.mediaBin)
+      if (miss.length) {
+        setMediaBin(prev => prev.map(x => miss.some(m => m.id === x.id) ? { ...x, offline: true } : x))
+        notify(`${miss.length} file${miss.length > 1 ? 's' : ''} in this project ${miss.length > 1 ? 'are' : 'is'} missing (marked offline in the Media Bin: right-click to relink).`, 11000)
+      }
+    } catch (e) { console.error(e); notify(`Could not open that project: ${errText(e)}`) }
   }
+
+  // Unsaved work from a session that ended without saving (a crash, a power cut, Don't save):
+  // offered back once, at startup. The project folder's own copy is offered again when it opens.
+  // This session starts untitled and autosaves into the untitled slot, so untitled work from the
+  // last session is moved to a pending slot first: "Not now" then really means later.
+  useEffect(() => {
+    if ((window as unknown as { __vhWeb?: boolean }).__vhWeb) return
+    let alive = true
+    void (async () => {
+      let last: { dir?: string; name?: string } | null = null
+      try { last = JSON.parse(localStorage.getItem(LAST_PROJECT_KEY) || 'null') } catch { /* none */ }
+      const [inDir, untitled] = await Promise.all([last?.dir ? readAutosave(last.dir) : Promise.resolve(null), readAutosave(null)])
+      // kind: where it lives now ('pending' only goes when Restore or Discard says so)
+      type Found = { a: Autosave; kind: 'dir' | 'live' | 'pending' }
+      const found: Found[] = inDir?.data ? [{ a: inDir, kind: 'dir' }] : []
+      if (untitled?.data) found.push({ a: untitled, kind: (await setAsideAutosave(untitled)) ? 'pending' : 'live' })
+      for (const a of readPending(null)) if (!found.some(f => f.kind === 'pending' && f.a.savedAt === a.savedAt)) found.push({ a, kind: 'pending' })
+      const pick = found.sort((x, y) => y.a.savedAt - x.a.savedAt)[0]
+      if (!alive || !pick) return
+      const p = pick.a
+      const where = p.dir ? (p.name || baseName(p.dir)) : p.file ? baseName(p.file) : 'an untitled project'
+      // work that could not be set aside would be overwritten by this session, so there is no "later" for it
+      const choice = await askChoice({ title: 'Restore unsaved work?', body: `VidHelm closed with unsaved changes in ${where} (from ${new Date(p.savedAt).toLocaleString()}). Restore them?`,
+        choices: [{ id: 'restore', label: 'Restore', primary: true }, ...(pick.kind === 'live' ? [] : [{ id: 'later', label: 'Not now' }]), { id: 'discard', label: 'Discard them' }] })
+      if (choice === 'discard') { if (pick.kind === 'pending') dropPending(p); else await clearAutosave(p.dir); return }
+      if (choice !== 'restore') return
+      if (p.dir) { await openProjectFolder(p.dir, p.name || baseName(p.dir), { skipConfirm: true, recover: p }); return }
+      resetProjectScratch(); setCurrentProject(null); setSaveFile(p.file)
+      const doc = applyProjectData(p.data)
+      markClean(null)   // restored work stays unsaved until it is saved
+      // back in the live slot before its pending copy goes, so a crash right now still loses nothing
+      if (pick.kind === 'pending') { await writeAutosave({ ...p, dir: null }); dropPending(p) }
+      notify('Restored your unsaved work. Save it to keep it.')
+      void backfillMedia(doc.mediaBin)
+    })()
+    return () => { alive = false }
+  }, [])   // eslint-disable-line react-hooks/exhaustive-deps
 
   // ---- generic drags on timeline ----
   const startClipMove = (e: React.MouseEvent, clip: TimelineClip) => {
@@ -2190,15 +3198,22 @@ function App() {
     const startX = e.clientX
     const origStart = clip.start
     draggingRef.current = false
-    const others = clips.filter(c => c.trackId === clip.trackId && c.id !== clip.id)
+    // Up or down moves it between the rows it may live on: picture between video and b-roll,
+    // sound between voice/music and SFX. The row under the pointer says which.
+    const isAudio = clip.type === 'audio'
+    let track = clip.trackId
+    const rowAt = (m: MouseEvent) => (document.elementFromPoint(m.clientX, m.clientY) as HTMLElement | null)?.closest('[data-track]')?.getAttribute('data-track') as TimelineClip['trackId'] | undefined
     const move = (m: MouseEvent) => {
       const dx = m.clientX - startX
       if (Math.abs(dx) > 3) draggingRef.current = true
+      const row = rowAt(m)
+      if (row && row !== track && (isAudio ? row === 'a1' || row === 'a2' : row === 'v1' || row === 'v2')) { track = row; draggingRef.current = true }
+      const others = clips.filter(c => c.trackId === track && c.id !== clip.id)
       let ns = Math.max(0, origStart + dx / pxPerSec)
       // snap to 0, playhead, tag points and neighbour edges
       const snaps = [0, currentTime, ...markers.map(mk => mk.t), ...others.flatMap(o => [o.start, o.start + o.duration])]
       for (const s of snaps) { if (Math.abs(ns - s) < 6 / pxPerSec) { ns = s; break } }
-      setClips(prev => prev.map(c => c.id === clip.id ? { ...c, start: ns } : c))
+      setClips(prev => prev.map(c => c.id === clip.id ? { ...c, start: ns, trackId: track } : c))
     }
     const up = () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); setTimeout(() => { draggingRef.current = false }, 0) }
     window.addEventListener('mousemove', move); window.addEventListener('mouseup', up)
@@ -2283,6 +3298,21 @@ function App() {
   const patchClip = (patch: Partial<TimelineClip>) => setClips(prev => prev.map(c => c.id === selectedId ? { ...c, ...patch } : c))
   const patchText = (patch: Partial<TextClip>) => setTexts(prev => prev.map(t => t.id === selectedId ? { ...t, ...patch } : t))
 
+  /** One place that knows how to bring up each panel: Help, the tour and the help chat all use it. */
+  const openPanel = (p: HelpPanel | HelpAction) => {
+    if (p === 'media' || p === 'sfx') { setExpanded(false); setSidebarTab(p) }
+    else if (p === 'booth') setShowBooth(true)
+    else if (p === 'narration') setShowNarration(true)
+    else if (p === 'thumbnail') setShowThumbnail(true)
+    else if (p === 'settings') setShowSettings(true)
+    else if (p === 'connect') setShowConnect(true)
+    else if (p === 'model3d') { setModel3DPath(null); setShowModel3D(true) }
+    else if (p === 'takes') setShowTakes(true)
+    else if (p === 'aiclip') setShowAiClip(true)
+    else if (p === 'tour') { setShowChat(false); setShowTour(true) }
+    else if (p === 'export' || p === 'tags') { setExpanded(false); setRightTab(p) }
+  }
+
   // ---- render ----
   // Pick a tick spacing that leaves room for its own label, otherwise zooming out prints every
   // five seconds on top of itself. Steps climb through the units people actually think in.
@@ -2299,17 +3329,18 @@ function App() {
     const media = mediaBin.find(m => m.id === c.mediaId)
     let bg: string | undefined
     let bgSize = '100% 100%'
-    if (c.trackId === 'v1' && media) {
+    if ((c.trackId === 'v1' || c.trackId === 'v2') && media && !media.offline) {
       if (media.type === 'image') { bg = `url("${fileUrl(media.path)}")`; bgSize = 'cover' }
       else if (thumbs[c.id]?.path) bg = `url("${fileUrl(thumbs[c.id].path)}")`
     }
+    const lost = !media || media.offline
     return (
       <div
         key={c.id}
         onMouseDown={(e) => startClipMove(e, c)}
-        className={`clip ${c.trackId === 'v2' ? 'b-clip' : c.trackId !== 'v1' ? 'a-clip' : 'v-clip'} ${c.type} ${bg ? 'has-thumb' : ''} ${selectedId === c.id ? 'selected' : ''}`}
+        className={`clip ${c.trackId === 'v2' ? 'b-clip' : c.trackId !== 'v1' ? 'a-clip' : 'v-clip'} ${c.type} ${bg ? 'has-thumb' : ''} ${selectedId === c.id ? 'selected' : ''} ${lost ? 'offline' : ''}`}
         style={{ left: c.start * pxPerSec, width: c.duration * pxPerSec, backgroundImage: bg, backgroundSize: bgSize, backgroundPosition: 'center', backgroundRepeat: 'no-repeat' }}
-        title={media?.name}
+        title={!media ? 'Its media was removed from the Media Bin: delete this clip or re-import the file' : media.offline ? `${media.name}: file missing, right-click it in the Media Bin to relink` : media.name}
       >
         <div className="trim-handle left" onMouseDown={(e) => startTrim(e, c, 'left')} />
         {c.fadeIn > 0 && <div className="fade-tri in" style={{ width: c.fadeIn * pxPerSec }} />}
@@ -2332,53 +3363,64 @@ function App() {
         onMouseDown={e => { if (e.button === 0 && !(e.target as HTMLElement).closest(HDR_CONTROLS)) window.ipcRenderer.windowDragStart?.() }}
         onDoubleClick={e => { if (!(e.target as HTMLElement).closest(HDR_CONTROLS)) window.ipcRenderer.windowToggleMaximize?.() }}
         title="Drag anywhere on this bar to move the window · double-click to maximize">
-        <div className="logo-section">
-          <h1>VidHelm</h1>
-          <button className="hdr-btn" onClick={saveProject} title="Save project">Save</button>
-          <button className="hdr-btn" onClick={loadProject} title="Open project">Open</button>
-          <button className="hdr-btn" onClick={runRecipe} title="Run your Start Recipe on this timeline">🚀 Recipe</button>
-          <button className="hdr-btn" onClick={() => { setModel3DPath(null); setShowModel3D(true) }} title="3D Studio, turn an STL / 3MF / OBJ into a spinning turntable clip">🧊 3D</button>
-          <button className="hdr-btn" onClick={() => setShowConnect(true)} title="Connect your AI, one-click setup + troubleshooter">🤖 AI</button>
+        <div className="hdr-left">
+          <div className="brand" title="VidHelm"><VidHelmMark /><h1>VidHelm</h1></div>
+          <div className="hdr-group">
+            <button className={`hdr-btn ${dirty ? 'unsaved' : ''}`} onClick={e => { void saveProject(e.shiftKey) }}
+              title={`${dirty ? 'Unsaved changes. ' : ''}Save project (Ctrl+S)${currentProject ? ` into ${currentProject.name}` : saveFile ? ` to ${baseName(saveFile)}` : ''}.${currentProject || saveFile ? ' Shift+click or Ctrl+Shift+S saves a copy as a file; Save keeps writing here.' : ''}`}><IcSave /><span>Save</span></button>
+            <button className="hdr-btn" onClick={loadProject} title="Open project"><IcOpen /><span>Open</span></button>
+            <button className="hdr-btn" onClick={() => importCloudZip()} title="Import a VidHelm Cloud hand-off (.zip): clips, plan, notes and narration land in a new project"><IcCloud /><span>Import</span></button>
+          </div>
+          <span className="hdr-sep" />
+          <div className="hdr-group">
+            <button className="hdr-btn" onClick={runRecipe} title="Run your Start Recipe on this timeline"><IcRecipe /><span>Recipe</span></button>
+            <button className="hdr-btn" onClick={() => { setModel3DPath(null); setShowModel3D(true) }} title="3D Studio, turn an STL / 3MF / OBJ into a spinning turntable clip"><IcCube /><span>3D</span></button>
+            <button className="hdr-btn" onClick={() => setShowAiClip(true)} title="AI clip: generate a shot from a description, or morph one picture (or the frame under the playhead) into another"><IcSparkle /><span>AI clip</span></button>
+          </div>
         </div>
-        <div className="orientation-switch">
+        <div className="orientation-switch" role="group" aria-label="Frame format">
           {(Object.keys(ORIENTATIONS) as OrientationKey[]).map(key => (
             <button key={key} className={`orient-btn ${orientation === key ? 'active' : ''}`} onClick={() => setOrientation(key)} title={`${ORIENTATIONS[key].label} (${ORIENTATIONS[key].sub})`}>
-              <span className={`orient-glyph ${key}`} />{ORIENTATIONS[key].label}
+              <span className={`orient-glyph ${key}`} /><span className="orient-label">{ORIENTATIONS[key].label}</span>
             </button>
           ))}
         </div>
-        <div className="header-info">
-          <span className="hdr-count">{clips.length + texts.length} items • {fmt(currentTime)} / {fmt(totalDuration)}</span>
-          <div className="hdr-right">
-            <button className="hdr-btn icon" onClick={e => { e.stopPropagation(); setShowLinks(v => !v) }} title="Links and contact">
-              <IconInfo />
-            </button>
-            <button className="hdr-btn icon" onClick={() => setShowHelp(true)} title="Take the tour, and see credits and licences">?</button>
-            <button className="hdr-btn icon" onClick={() => setShowSettings(true)} title="Brand kit & settings"><IconGear /></button>
-            {showLinks && (
-              <div className="links-pop" onClick={e => e.stopPropagation()}>
-                {LINKS.map(l => (
-                  <button key={l.url} onClick={() => { window.ipcRenderer.openExternal(l.url); setShowLinks(false) }}>
-                    <span className="links-ico">{l.icon}</span>
-                    <span className="links-txt">
-                      <b>{l.label}</b><i>{l.sub}</i>
-                      {l.note && <em className="links-note">{l.note}</em>}
-                    </span>
-                  </button>
-                ))}
-                <div className="links-foot">VidHelm {appVersion} · built by RandoTechNerd</div>
-              </div>
-            )}
-          </div>
+        <div className="hdr-right">
+          <button className="hdr-btn hdr-chat" onClick={() => setShowChat(c => !c)} title="Help chat: ask anything about VidHelm"><IcChat /><span>Help</span></button>
+          <button className="hdr-btn hdr-connect" onClick={() => setShowConnect(true)} title="Connect your AI, one-click setup + troubleshooter"><IcBot /><span>Connect AI</span></button>
+          <span className="hdr-sep" />
+          <button className="hdr-btn icon" onClick={() => setUiTheme(t => t === 'dark' ? 'light' : 'dark')} title={uiTheme === 'dark' ? 'Switch to the light theme' : 'Switch to the dark theme'}>{uiTheme === 'dark' ? <IcSun /> : <IcMoon />}</button>
+          <button className="hdr-btn icon" onClick={e => { e.stopPropagation(); setShowLinks(v => !v) }} title="Links and contact"><IconInfo /></button>
+          <button className="hdr-btn icon" onClick={() => setShowHelp(true)} title="Getting started, the tour, credits and licences"><IcHelp /></button>
+          <button className="hdr-btn icon" onClick={() => setShowSettings(true)} title="Brand kit & settings"><IconGear /></button>
+          <button className="hdr-export" onClick={handleExport} disabled={(clips.length === 0 && texts.length === 0) || exportProgress !== null}
+            title="Render the video with the settings in the Export panel">
+            <IconExport /><span>{exportProgress !== null ? `${Math.round(exportProgress)}%` : 'Export'}</span>
+          </button>
+          {showLinks && (
+            <div className="links-pop" onClick={e => e.stopPropagation()}>
+              {LINKS.map(l => (
+                <button key={l.url} onClick={() => { window.ipcRenderer.openExternal(l.url); setShowLinks(false) }}>
+                  <span className="links-ico">{l.icon}</span>
+                  <span className="links-txt">
+                    <b>{l.label}</b><i>{l.sub}</i>
+                    {l.note && <em className="links-note">{l.note}</em>}
+                  </span>
+                </button>
+              ))}
+              <div className="links-foot">VidHelm {appVersion} · built by RandoTechNerd</div>
+            </div>
+          )}
         </div>
       </header>
 
       <main className={expanded ? 'expanded' : ''}>
+        <div className="workspace">
         {!expanded && (
           <div className="sidebar left">
             <div className="section-header tabs">
-              <button className={`tab ${sidebarTab === 'media' ? 'active' : ''}`} onClick={() => setSidebarTab('media')}>Media Bin</button>
-              <button className={`tab ${sidebarTab === 'sfx' ? 'active' : ''}`} onClick={() => setSidebarTab('sfx')} title="Sound effects, audition and drop on the SFX track">SFX</button>
+              <button className={`tab ${sidebarTab === 'media' ? 'active' : ''}`} onClick={() => setSidebarTab('media')}>Media</button>
+              <button className={`tab ${sidebarTab === 'sfx' ? 'active' : ''}`} onClick={() => setSidebarTab('sfx')} title="Sound effects, audition and drop on the SFX track">Sound FX</button>
               {sidebarTab === 'media' && <label className="add-btn" title="Add video, audio or images, or a 3D model (STL / 3MF / OBJ / GLB)"><IconPlus /><input type="file" accept={ACCEPT_ATTR} multiple onChange={handleFileUpload} hidden /></label>}
             </div>
             {sidebarTab === 'sfx' && <SfxPanel onPlace={placeSfx}
@@ -2392,15 +3434,15 @@ function App() {
             {sidebarTab === 'media' && settings.workspace.root && (
               <div className="proj-bar">
                 <select value={currentProject?.dir || ''} title="Each sub-folder of your project folder is a project"
-                  onChange={e => { const p = projects.find(x => x.path === e.target.value); if (p) openProjectFolder(p.path, p.name) }}>
+                  onChange={e => { const p = projects.find(x => x.path === e.target.value); if (p) void openProjectFolder(p.path, p.name) }}>
                   <option value="" disabled>Open a project…</option>
                   {projects.map(p => <option key={p.path} value={p.path}>{p.name}{p.media ? ` · ${p.media} file${p.media > 1 ? 's' : ''}` : ''}{p.saved ? ' ✓' : ''}</option>)}
                 </select>
-                <button onClick={newProjectFolder} title="Create a new project folder">+</button>
-                <button title="Rescan this folder for new files" disabled={!currentProject}
-                  onClick={() => currentProject && openProjectFolder(currentProject.dir, currentProject.name)}>↻</button>
+                <button onClick={newProjectFolder} title="Create a new project folder"><IcPlus /></button>
+                <button title="Bring in new files from this folder and look again for missing ones (your timeline stays as it is)" disabled={!currentProject || rescanning}
+                  onClick={() => { void rescanProjectFolder() }}><IcRefresh /></button>
                 <button title="Show the folder in Explorer" disabled={!currentProject}
-                  onClick={() => currentProject && window.ipcRenderer.revealFolder(currentProject.dir)}>📂</button>
+                  onClick={() => currentProject && window.ipcRenderer.revealFolder(currentProject.dir)}><IcFolder /></button>
               </div>
             )}
             {sidebarTab === 'media' && <div className="media-list" onDrop={async (e) => { e.preventDefault(); await importFiles(Array.from(e.dataTransfer.files)) }} onDragOver={(e) => e.preventDefault()}>
@@ -2413,9 +3455,14 @@ function App() {
                 </InfoNote>
               </div>}
               {mediaBin.map(m => (
-                <div key={m.id} className="media-item" onDoubleClick={() => addToTimeline(m)} onContextMenu={(e) => { e.preventDefault(); setCtxMenu({ x: e.clientX, y: e.clientY, mediaId: m.id }) }} title="Double-click to add • right-click for options">
+                <div key={m.id} className={`media-item ${m.offline ? 'offline' : ''}`} draggable={!m.offline}
+                  onDragStart={e => { e.dataTransfer.setData(MEDIA_DRAG, m.id); e.dataTransfer.effectAllowed = 'copy' }}
+                  onDoubleClick={() => { if (!m.offline) addToTimeline(m) }} onContextMenu={(e) => { e.preventDefault(); setCtxMenu({ x: e.clientX, y: e.clientY, mediaId: m.id }) }}
+                  title={m.offline ? `File not found: ${m.path}. Right-click to relink it.` : 'Double-click to add, or drag onto a track row • right-click for options'}>
                   <div className="media-icon">
-                    {m.type === 'image'
+                    {m.offline
+                      ? <IcMissing />
+                      : m.type === 'image'
                       ? <img className="media-still" src={fileUrl(m.path)} alt="" />
                       : m.type === 'video'
                         ? <video className="media-still" src={`${fileUrl(m.proxyPath || m.path)}#t=0.5`} muted preload="metadata" />
@@ -2425,9 +3472,10 @@ function App() {
                     <span className="name">{m.name}</span>
                     <span className="duration">
                       {m.type === 'image' ? 'Image • 5s' : `${Math.round(m.duration)}s`}
-                      {m.proxyPct !== undefined && <span className="prox building" title={`${m.proxyNote}. Building a preview copy, the original is untouched.`}> · preview copy {m.proxyPct}%</span>}
-                      {m.proxyPct === undefined && m.proxyPath && <span className="prox" title={`${m.proxyNote}. Editing plays a preview copy; your export still uses the original file.`}> · proxy</span>}
-                      {m.proxyPct === undefined && !m.proxyPath && m.proxyNote && <span className="prox warn" title={m.proxyNote}> · no preview</span>}
+                      {m.offline && <span className="prox warn"> · offline, right-click to relink</span>}
+                      {!m.offline && m.proxyPct !== undefined && <span className="prox building" title={`${m.proxyNote}. Building a preview copy, the original is untouched.`}> · preview copy {m.proxyPct}%</span>}
+                      {!m.offline && m.proxyPct === undefined && m.proxyPath && <span className="prox" title={`${m.proxyNote}. Editing plays a preview copy. A High quality export reads the original; a Standard one uses this copy only when it already matches the export's size and frame rate.`}> · proxy</span>}
+                      {!m.offline && m.proxyPct === undefined && !m.proxyPath && m.proxyNote && <span className="prox warn" title={m.proxyNote}> · no preview</span>}
                     </span>
                   </div>
                 </div>
@@ -2451,9 +3499,13 @@ function App() {
                       muted={c.trackId === 'v2'}
                       style={{ opacity: op, filter: media.chromaKey ? `url(#${keyFilterFor(media.chromaKey)})` : undefined }} src={fileUrl(media.proxyPath || media.path)} />
               })}
-              {activeTexts.map(t => (
+              {activeTexts.map(t => t.caption ? (
+                <CaptionLayer key={t.id} t={t} time={currentTime} groupBase={texts.indexOf(t)} outW={w} outH={h} stageH={stageH} selected={selectedId === t.id && !isPlaying} onSelect={() => { if (!isPlaying) setSelectedId(t.id) }} />
+              ) : (
                 <div key={t.id} className={`text-layer ${selectedId === t.id && !isPlaying ? 'editing' : ''} ${editingTextId === t.id ? 'typing' : ''}`}
-                  style={{ left: `${t.x * 100}%`, top: `${t.y * 100}%`, fontSize: `${t.fontSize / 1080 * stageH}px`, color: t.color, opacity: fadeFactor(t, currentTime), background: t.box ? `rgba(0,0,0,${t.boxOpacity ?? 0.5})` : 'transparent', padding: t.box ? '0.15em 0.4em' : 0, borderRadius: t.box ? '4px' : 0 }}
+                  style={{ left: `${t.x * 100}%`, top: `${t.y * 100}%`, fontSize: `${t.fontSize / 1080 * stageH}px`, color: t.color, opacity: fadeFactor(t, currentTime), background: t.box ? (t.boxColor ? `${t.boxColor}${Math.round((t.boxOpacity ?? 0.5) * 255).toString(16).padStart(2, '0')}` : `rgba(0,0,0,${t.boxOpacity ?? 0.5})`) : 'transparent', padding: t.box ? '0.15em 0.4em' : 0, borderRadius: t.box ? '4px' : 0,
+                    ...(t.font && THEME_FONTS[t.font] ? { fontFamily: `'${THEME_FONTS[t.font].family}', sans-serif`, fontWeight: THEME_FONTS[t.font].bold ? 700 : 400 } : {}),
+                    ...(t.outline && !t.box ? { WebkitTextStroke: `${(t.outline * 2 * t.fontSize / 1080 * stageH).toFixed(1)}px ${t.outlineColor || '#000'}`, paintOrder: 'stroke fill' } : {}) }}
                   ref={editingTextId === t.id ? editRef : undefined}
                   contentEditable={editingTextId === t.id}
                   suppressContentEditableWarning
@@ -2488,12 +3540,122 @@ function App() {
             <button className="expand-btn" onClick={() => setExpanded(!expanded)} title="Toggle large preview"><IconExpand /></button>
           </div>
 
+        </div>
+
+        {!expanded && (
+          <div className="sidebar right">
+            <div className="section-header tabs">
+              <button className={`tab ${rightTab === 'export' ? 'active' : ''}`} onClick={() => setRightTab('export')}>Export</button>
+              <button className={`tab ${rightTab === 'tags' ? 'active' : ''}`} onClick={() => setRightTab('tags')} title="Tag points: press M at the beats that matter">Tags{markers.length > 0 && <span className="count-badge">{markers.length}</span>}</button>
+              <button className={`tab ${rightTab === 'inspect' ? 'active' : ''}`} onClick={() => setRightTab('inspect')} title="Adjust the selected clip or text">Inspector</button>
+            </div>
+            <div className="panel-body">
+              {rightTab === 'export' && (
+                <div className="panel-section">
+                <div className="field row">
+                  <div><label>Resolution</label>
+                    <select value={resolution} onChange={e => setResolution(e.target.value as ResolutionKey)}>
+                      <option value="4K">4K (2160)</option><option value="1440p">1440p</option><option value="1080p">1080p</option><option value="720p">720p</option>
+                    </select>
+                  </div>
+                  <div><label>Frame Rate</label>
+                    <select value={fps} onChange={e => setFps(parseInt(e.target.value) as 24 | 30 | 60)}>
+                      <option value={24}>24 fps</option><option value={30}>30 fps</option><option value={60}>60 fps</option>
+                    </select>
+                  </div>
+                </div>
+                <div className="field"><label>Encoding Quality</label>
+                  <select value={exportQuality} onChange={e => setExportQuality(e.target.value as any)}><option value="medium">Standard (faster)</option><option value="high">High (larger file)</option></select>
+                </div>
+                <div className="field"><label><IconVolume /> Master Volume - {Math.round(masterVolume * 100)}%</label>
+                  <input type="range" min="0" max="1.5" step="0.05" value={masterVolume} onChange={e => setMasterVolume(parseFloat(e.target.value))} style={{ width: '100%', accentColor: 'var(--accent-primary)' }} />
+                </div>
+                <div className="field chk" onClick={() => setSettings(s => ({ ...s, audio: { ...s.audio, optimize: !s.audio.optimize } }))}><input type="checkbox" checked={settings.audio.optimize} readOnly id="norm" /><label htmlFor="norm" style={{ cursor: 'pointer', marginBottom: 0 }}>Optimize loudness (−14 LUFS)</label></div>
+                <div className="field chk" onClick={() => setSettings(s => ({ ...s, audio: { ...s.audio, noiseReduction: !s.audio.noiseReduction } }))}><input type="checkbox" checked={settings.audio.noiseReduction} readOnly id="nr" /><label htmlFor="nr" style={{ cursor: 'pointer', marginBottom: 0 }}>Noise reduction</label></div>
+                <div className="field"><label>Save To</label><div className="path-box" onClick={pickExportPath}><IconFolder /><span>{customExportPath ? customExportPath.split(/[\\/]/).pop() : 'Choose on export…'}</span></div></div>
+                <div className={`progress-line ${exportProgress !== null ? 'show' : ''}`}><div className="fill" style={{ width: `${exportProgress || 0}%` }} /></div>
+                <button className="action-btn export" onClick={handleExport} disabled={(clips.length === 0 && texts.length === 0) || exportProgress !== null}><IconExport /> <span>{exportProgress !== null ? `Rendering ${Math.round(exportProgress)}%${eta && eta > 0 ? ` • ${fmtEta(eta)} left` : ''}` : 'Export Video'}</span></button>
+                {lastExport && exportProgress === null && (
+                  <div className="post-export">
+                    <button className="reveal-link" onClick={() => window.ipcRenderer.revealFile(lastExport)}><IcCheck /> Show in folder</button>
+                    <button className="reveal-link" onClick={() => runQualityCheck(lastExport)}><IcEye /> Watch &amp; Verify</button>
+                  </div>
+                )}
+                </div>
+              )}
+              {rightTab === 'tags' && (
+                <div className="panel-section">
+                  <MarkerPanel markers={markers} currentTime={currentTime} onChange={setMarkers} onSeek={t => setCurrentTime(t)} />
+                </div>
+              )}
+              {rightTab === 'inspect' && selClip && (
+                <div className="panel-section">
+                  <h3 className="group-title">Clip</h3>
+                  <div className="field"><label>Track</label>
+                    <select value={selClip.trackId} onChange={e => patchClip({ trackId: e.target.value as TimelineClip['trackId'] })}>
+                      {selClip.type === 'audio'
+                        ? <><option value="a1">Voice / music</option><option value="a2">Sound effects</option></>
+                        : <><option value="v1">Video</option><option value="v2">B-roll (picture only, over the video)</option></>}
+                    </select>
+                    {selClip.trackId === 'v2' && <p className="hint">B-roll covers the video underneath while its sound keeps playing; this clip's own sound is not used.</p>}
+                  </div>
+                  <div className="field"><label>Volume - {Math.round(selClip.volume * 100)}%</label>
+                    <input type="range" min="0" max="2" step="0.05" value={selClip.volume} onChange={e => patchClip({ volume: parseFloat(e.target.value), volumePoints: [] })} style={{ width: '100%', accentColor: 'var(--accent-primary)' }} />
+                  </div>
+                  <div className="field">
+                    <label>Volume Automation {selClip.volumePoints?.length ? `(${selClip.volumePoints.length} pts)` : ''}</label>
+                    <VolumeGraph points={selClip.volumePoints || []} duration={selClip.duration} base={selClip.volume} onChange={pts => patchClip({ volumePoints: pts })} />
+                    <div className="vg-actions">
+                      <button onClick={() => { const rel = clamp(currentTime - selClip.start, 0, selClip.duration); patchClip({ volumePoints: [...(selClip.volumePoints || []), { t: rel, v: selClip.volume }].sort((a, b) => a.t - b.t) }) }}>+ Point at playhead</button>
+                      <button onClick={() => patchClip({ volumePoints: [] })} disabled={!selClip.volumePoints?.length}>Clear</button>
+                    </div>
+                    <p className="hint">Click the graph to add points, drag to shape the line, double-click a point to remove. Drag down to silence pops. Unity gain = the middle line.</p>
+                  </div>
+                  <div className="field row">
+                    <div><label>Fade In (s)</label><input type="number" step="0.1" min="0" className="duration-input" value={selClip.fadeIn} onChange={e => patchClip({ fadeIn: clamp(parseFloat(e.target.value) || 0, 0, selClip.duration) })} /></div>
+                    <div><label>Fade Out (s)</label><input type="number" step="0.1" min="0" className="duration-input" value={selClip.fadeOut} onChange={e => patchClip({ fadeOut: clamp(parseFloat(e.target.value) || 0, 0, selClip.duration) })} /></div>
+                  </div>
+                  <div className="field"><label>Duration (s)</label><input type="number" step="0.1" min="0.1" className="duration-input" value={selClip.duration.toFixed(2)} onChange={e => patchClip({ duration: parseFloat(e.target.value) || 0.1 })} /></div>
+                  <p className="hint">Overlap two video clips and give them fades for a transparent crossfade.</p>
+                </div>
+              )}
+              {rightTab === 'inspect' && selText && (
+                <div className="panel-section">
+                  <h3 className="group-title">Text</h3>
+                  <div className="field"><label>Content</label><textarea className="duration-input" rows={2} value={selText.text} onChange={e => patchText({ text: e.target.value })} /></div>
+                  <div className="field row">
+                    <div><label>Size</label><input type="number" min="8" step="2" className="duration-input" value={selText.fontSize} onChange={e => patchText({ fontSize: parseFloat(e.target.value) || 12 })} /></div>
+                    <div><label>Color</label><input type="color" className="color-input" value={selText.color} onChange={e => patchText({ color: e.target.value })} /></div>
+                  </div>
+                  <div className="field row">
+                    <div><label>Start (s)</label><input type="number" step="0.1" min="0" className="duration-input" value={selText.start.toFixed(2)} onChange={e => patchText({ start: parseFloat(e.target.value) || 0 })} /></div>
+                    <div><label>Duration (s)</label><input type="number" step="0.1" min="0.2" className="duration-input" value={selText.duration.toFixed(2)} onChange={e => patchText({ duration: parseFloat(e.target.value) || 0.2 })} /></div>
+                  </div>
+                  <div className="field row">
+                    <div><label>Fade In (s)</label><input type="number" step="0.1" min="0" className="duration-input" value={selText.fadeIn} onChange={e => patchText({ fadeIn: parseFloat(e.target.value) || 0 })} /></div>
+                    <div><label>Fade Out (s)</label><input type="number" step="0.1" min="0" className="duration-input" value={selText.fadeOut} onChange={e => patchText({ fadeOut: parseFloat(e.target.value) || 0 })} /></div>
+                  </div>
+                  <div className="field chk" onClick={() => patchText({ box: !selText.box })}><input type="checkbox" checked={!!selText.box} readOnly id="tbox" /><label htmlFor="tbox" style={{ cursor: 'pointer', marginBottom: 0 }}>Background bar</label></div>
+                  <p className="hint">Drag the text on the preview to position it.</p>
+                </div>
+              )}
+              {rightTab === 'inspect' && !selClip && !selText && (
+                <div className="empty-hint">Select a clip or a text layer on the timeline to adjust it here.</div>
+              )}
+            </div>
+          </div>
+        )}
+        </div>
+
+        <div className="resize-handle" onMouseDown={startResizeTimeline} title="Drag to resize the timeline" />
+        <section className="timeline-area">
           <div className="timeline-actions">
             {/* The primary tools scroll if the centre panel gets narrow, so the bar is always
                 exactly one row. More and the zoom group sit outside the scroller and stay put,
                 which also keeps the dropdown clear of the scroll container's clipping. */}
             <div className="tool-group">
             <button className="tool-btn play" onClick={() => setIsPlaying(p => !p)} disabled={totalDuration <= 0}>{isPlaying ? <IconPause /> : <IconPlay />} {isPlaying ? 'Pause' : 'Play'}</button>
+            <span className="timecode" title="Playhead / total length"><b>{fmt(currentTime)}</b><i>/</i>{fmt(totalDuration)}</span>
             <div className="divider" />
             <button className="tool-btn compactable" onClick={undo} disabled={!canUndo} title="Undo (Ctrl+Z)"><IconUndo /> <span className="tb-label">Undo</span></button>
             <button className="tool-btn compactable" onClick={redo} disabled={!canRedo} title="Redo (Ctrl+Shift+Z)"><IconRedo /> <span className="tb-label">Redo</span></button>
@@ -2502,37 +3664,21 @@ function App() {
             <button className="tool-btn compactable" onClick={deleteSelected} disabled={!selectedId} title="Delete the selection"><IconTrash /> <span className="tb-label">Delete</span></button>
             <button className="tool-btn compactable" onClick={addText} title="Add a text layer"><IconText /> <span className="tb-label">Text</span></button>
             <button className={`tool-btn compactable ${isRecording ? 'recording' : ''}`} onClick={toggleRecord} title="Record a voiceover"><IconMic /> <span className="tb-label">{isRecording ? 'Stop' : 'Voiceover'}</span></button>
-            <button className="tool-btn compactable captions-btn" onClick={generateCaptions} disabled={captioning !== null || totalDuration <= 0} title="Auto-caption the whole timeline (on-device Whisper)">
+            <button className="tool-btn compactable captions-btn" onClick={() => generateCaptions()} disabled={captioning !== null || totalDuration <= 0} title="Auto-caption the whole timeline (on-device Whisper)">
               <IconCaptions /> <span className="tb-label">{captioning ? `${captioning}${captionPct !== null ? ` ${captionPct}%` : '…'}` : 'Captions'}</span>
               {captioning && captionPct !== null && <span className="cap-bar"><span className="cap-fill" style={{ width: `${captionPct}%` }} /></span>}
             </button>
-
-            </div>
-
-            {/* The speech and take tools sit behind one button. They are the least reached for,
-                and moving them here is what lets the bar hold a single row at any width. */}
-            <div className="tool-more" onClick={e => e.stopPropagation()}>
-              <button className={`tool-btn ${showMore ? 'active' : ''}`} onClick={() => setShowMore(m => !m)}
-                aria-haspopup="menu" aria-expanded={showMore} title="Booth, Narrate, Cut Pauses and Takes">
-                More <IconChevron open={showMore} />
-                {moreCount > 0 && <span className="tk-badge">{moreCount}</span>}
-                {moreBusy && moreCount === 0 && <span className="more-dot" />}
-              </button>
-              {showMore && (
-                <div className="tool-menu" role="menu">
-                  <button role="menuitem" className={showBooth ? 'on' : ''} onClick={() => { setShowMore(false); setShowBooth(b => !b) }}
-                    title="Karaoke booth, read a script along with the video in one take">🎙 <span>Booth</span></button>
-                  <button role="menuitem" onClick={() => { setShowMore(false); setShowNarration(true) }}
-                    title="Generate narration with a cloned voice (external TTS tool)">🗣 <span>Narrate</span></button>
-                  <div className="ctx-sep" />
-                  <button role="menuitem" onClick={() => { setShowMore(false); cutDeadSpace() }} disabled={silenceBusy !== null || totalDuration <= 0}
-                    title="Detect & remove long silent pauses (great for faceless videos)">✂ <span>{silenceBusy || 'Cut Pauses'}</span></button>
-                  <button role="menuitem" onClick={() => { setShowMore(false); setShowTakes(true) }} disabled={takesBusy !== null}
-                    title="Takes & history: find repeated takes, keep the best one, and see the full transcript of what was cut">
-                    📋 <span>{takesBusy || 'Takes & history'}</span>{takeStats(takes).cuts > 0 && <span className="tk-badge">{takeStats(takes).cuts}</span>}
-                  </button>
-                </div>
-              )}
+            <div className="divider" />
+            <button className={`tool-btn compactable ${showBooth ? 'active' : ''}`} onClick={() => setShowBooth(b => !b)}
+              title="Karaoke booth, read a script along with the video in one take"><IcBooth /> <span className="tb-label">Booth</span></button>
+            <button className="tool-btn compactable" onClick={() => setShowNarration(true)}
+              title="Generate narration with a cloned voice (external TTS tool)"><IcVoice /> <span className="tb-label">Narrate</span></button>
+            <button className="tool-btn compactable" onClick={cutDeadSpace} disabled={silenceBusy !== null || totalDuration <= 0}
+              title="Detect & remove long silent pauses (great for faceless videos)"><IcCut /> <span className="tb-label">{silenceBusy || 'Cut Pauses'}</span></button>
+            <button className="tool-btn compactable" onClick={() => setShowTakes(true)} disabled={takesBusy !== null}
+              title="Takes & history: find repeated takes, keep the best one, and see the full transcript of what was cut">
+              <IcList /> <span className="tb-label">{takesBusy || 'Takes'}</span>{takeStats(takes).cuts > 0 && <span className="tk-badge">{takeStats(takes).cuts}</span>}
+            </button>
             </div>
 
             <div className="spacer" />
@@ -2544,7 +3690,6 @@ function App() {
             </div>
           </div>
 
-          <div className="resize-handle" onMouseDown={startResizeTimeline} title="Drag to resize timeline" />
 
           <div className="timeline-panel" style={{ height: timelineH }}>
             <div className={`timeline ${scrubbing ? 'scrubbing' : ''}`} ref={timelineRef} onClick={onTimelineClick} onDrop={onTimelineDrop} onDragOver={(e) => e.preventDefault()}
@@ -2589,121 +3734,42 @@ function App() {
                   </div>
                 )}
                 <button className="track-label" onClick={() => setCollapsed(c => ({ ...c, broll: !c.broll }))} title="Picture only: cutaways here cover the video track while the audio underneath keeps playing"><IconChevron open={!collapsed.broll} /> B-ROLL</button>
-                {!collapsed.broll && <div className="track v-track broll-track">{clips.filter(c => c.trackId === 'v2').map(renderClip)}</div>}
+                {!collapsed.broll && <div className="track v-track broll-track" data-track="v2" onDragOver={e => e.preventDefault()} onDrop={e => { e.stopPropagation(); void dropMedia(e, 'v2') }}>
+                  {clips.filter(c => c.trackId === 'v2').map(renderClip)}
+                  {!clips.some(c => c.trackId === 'v2') && <span className="row-hint">Drag a picture here (from the Media panel or a folder) to cut away to it</span>}
+                </div>}
                 <button className="track-label" onClick={() => setCollapsed(c => ({ ...c, video: !c.video }))}><IconChevron open={!collapsed.video} /> VIDEO</button>
-                {!collapsed.video && <div className="track v-track">{clips.filter(c => c.trackId === 'v1').map(renderClip)}</div>}
+                {!collapsed.video && <div className="track v-track" data-track="v1" onDragOver={e => e.preventDefault()} onDrop={e => { e.stopPropagation(); void dropMedia(e, 'v1') }}>{clips.filter(c => c.trackId === 'v1').map(renderClip)}</div>}
                 <button className="track-label" onClick={() => setCollapsed(c => ({ ...c, audio: !c.audio }))}><IconChevron open={!collapsed.audio} /> VOICE / MUSIC</button>
-                {!collapsed.audio && <div className="track a-track">{clips.filter(c => c.trackId === 'a1').map(renderClip)}</div>}
+                {!collapsed.audio && <div className="track a-track" data-track="a1" onDragOver={e => e.preventDefault()} onDrop={e => { e.stopPropagation(); void dropMedia(e, 'a1') }}>{clips.filter(c => c.trackId === 'a1').map(renderClip)}</div>}
                 <button className="track-label" onClick={() => setCollapsed(c => ({ ...c, sfx: !c.sfx }))}><IconChevron open={!collapsed.sfx} /> SFX</button>
-                {!collapsed.sfx && <div className="track a-track sfx-track">{clips.filter(c => c.trackId === 'a2').map(renderClip)}</div>}
+                {!collapsed.sfx && <div className="track a-track sfx-track" data-track="a2" onDragOver={e => e.preventDefault()} onDrop={e => { e.stopPropagation(); void dropMedia(e, 'a2') }}>{clips.filter(c => c.trackId === 'a2').map(renderClip)}</div>}
               </div>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <Tour open={showTour} onClose={() => setShowTour(false)} onFinish={() => setShowChat(true)} />
+      <HelpChat open={showChat} onClose={() => setShowChat(false)} onAction={openPanel}
+        context={{ version: appVersion, clips: clips.length + texts.length, duration: totalDuration, format: ORIENTATIONS[orientation].label, aiKeys: !!(settings.aiGen?.falKey || settings.aiGen?.geminiKey) }} />
+      <div className="toasts">{toasts.map(t => <div key={t.id} className="toast" onClick={() => setToasts(x => x.filter(y => y.id !== t.id))}>{t.text}</div>)}</div>
+      {ask && (
+        <div className="modal-backdrop ask-backdrop">
+          <div className="modal ask-modal" role="alertdialog" aria-modal="true" aria-label={ask.title}>
+            <div className="modal-head"><h2>{ask.title}</h2></div>
+            <div className="modal-body"><p>{ask.body}</p></div>
+            <div className="modal-foot ask-foot">
+              {ask.choices.map(c => <button key={c.id} className={c.primary ? 'primary' : ''} autoFocus={c.primary} onClick={() => ask.resolve(c.id)}>{c.label}</button>)}
             </div>
           </div>
         </div>
-
-        {!expanded && (
-          <div className="sidebar right">
-            <div className="control-group">
-              <h3 className="group-title">Export Settings</h3>
-              <div className="card">
-                <div className="field"><label>Format</label><div className="format-readout">{ORIENTATIONS[orientation].label} · {ORIENTATIONS[orientation].sub} · {w}×{h}</div></div>
-                <div className="field row">
-                  <div><label>Resolution</label>
-                    <select value={resolution} onChange={e => setResolution(e.target.value as ResolutionKey)}>
-                      <option value="4K">4K (2160)</option><option value="1440p">1440p</option><option value="1080p">1080p</option><option value="720p">720p</option>
-                    </select>
-                  </div>
-                  <div><label>Frame Rate</label>
-                    <select value={fps} onChange={e => setFps(parseInt(e.target.value) as 24 | 30 | 60)}>
-                      <option value={24}>24 fps</option><option value={30}>30 fps</option><option value={60}>60 fps</option>
-                    </select>
-                  </div>
-                </div>
-                <div className="field"><label>Encoding Quality</label>
-                  <select value={exportQuality} onChange={e => setExportQuality(e.target.value as any)}><option value="medium">Standard (faster)</option><option value="high">High (larger file)</option></select>
-                </div>
-                <div className="field"><label><IconVolume /> Master Volume - {Math.round(masterVolume * 100)}%</label>
-                  <input type="range" min="0" max="1.5" step="0.05" value={masterVolume} onChange={e => setMasterVolume(parseFloat(e.target.value))} style={{ width: '100%', accentColor: 'var(--accent-primary)' }} />
-                </div>
-                <div className="field chk" onClick={() => setSettings(s => ({ ...s, audio: { ...s.audio, optimize: !s.audio.optimize } }))}><input type="checkbox" checked={settings.audio.optimize} readOnly id="norm" /><label htmlFor="norm" style={{ cursor: 'pointer', marginBottom: 0 }}>Optimize loudness (−14 LUFS)</label></div>
-                <div className="field chk" onClick={() => setSettings(s => ({ ...s, audio: { ...s.audio, noiseReduction: !s.audio.noiseReduction } }))}><input type="checkbox" checked={settings.audio.noiseReduction} readOnly id="nr" /><label htmlFor="nr" style={{ cursor: 'pointer', marginBottom: 0 }}>Noise reduction</label></div>
-                <div className="field"><label>Save To</label><div className="path-box" onClick={pickExportPath}><IconFolder /><span>{customExportPath ? customExportPath.split(/[\\/]/).pop() : 'Choose on export…'}</span></div></div>
-                <div className={`progress-line ${exportProgress !== null ? 'show' : ''}`}><div className="fill" style={{ width: `${exportProgress || 0}%` }} /></div>
-                <button className="action-btn export" onClick={handleExport} disabled={(clips.length === 0 && texts.length === 0) || exportProgress !== null}><IconExport /> <span>{exportProgress !== null ? `Rendering ${Math.round(exportProgress)}%${eta && eta > 0 ? ` • ${fmtEta(eta)} left` : ''}` : 'Export Video'}</span></button>
-                {lastExport && exportProgress === null && (
-                  <div className="post-export">
-                    <button className="reveal-link" onClick={() => window.ipcRenderer.revealFile(lastExport)}>✓ Show in folder</button>
-                    <button className="reveal-link" onClick={() => runQualityCheck(lastExport)}>🔍 Watch &amp; Verify</button>
-                  </div>
-                )}
-              </div>
-            </div>
-
-            <div className="control-group">
-              <h3 className="group-title">Tag Points {markers.length > 0 && <span className="count-badge">{markers.length}</span>}</h3>
-              <div className="card">
-                <MarkerPanel markers={markers} currentTime={currentTime} onChange={setMarkers} onSeek={t => setCurrentTime(t)} />
-              </div>
-            </div>
-
-            {selClip && (
-              <div className="control-group">
-                <h3 className="group-title">Clip Adjustments</h3>
-                <div className="card">
-                  <div className="field"><label>Volume - {Math.round(selClip.volume * 100)}%</label>
-                    <input type="range" min="0" max="2" step="0.05" value={selClip.volume} onChange={e => patchClip({ volume: parseFloat(e.target.value), volumePoints: [] })} style={{ width: '100%', accentColor: 'var(--accent-primary)' }} />
-                  </div>
-                  <div className="field">
-                    <label>Volume Automation {selClip.volumePoints?.length ? `(${selClip.volumePoints.length} pts)` : ''}</label>
-                    <VolumeGraph points={selClip.volumePoints || []} duration={selClip.duration} base={selClip.volume} onChange={pts => patchClip({ volumePoints: pts })} />
-                    <div className="vg-actions">
-                      <button onClick={() => { const rel = clamp(currentTime - selClip.start, 0, selClip.duration); patchClip({ volumePoints: [...(selClip.volumePoints || []), { t: rel, v: selClip.volume }].sort((a, b) => a.t - b.t) }) }}>+ Point at playhead</button>
-                      <button onClick={() => patchClip({ volumePoints: [] })} disabled={!selClip.volumePoints?.length}>Clear</button>
-                    </div>
-                    <p className="hint">Click the graph to add points, drag to shape the line, double-click a point to remove. Drag down to silence pops. Unity gain = the middle line.</p>
-                  </div>
-                  <div className="field row">
-                    <div><label>Fade In (s)</label><input type="number" step="0.1" min="0" className="duration-input" value={selClip.fadeIn} onChange={e => patchClip({ fadeIn: clamp(parseFloat(e.target.value) || 0, 0, selClip.duration) })} /></div>
-                    <div><label>Fade Out (s)</label><input type="number" step="0.1" min="0" className="duration-input" value={selClip.fadeOut} onChange={e => patchClip({ fadeOut: clamp(parseFloat(e.target.value) || 0, 0, selClip.duration) })} /></div>
-                  </div>
-                  <div className="field"><label>Duration (s)</label><input type="number" step="0.1" min="0.1" className="duration-input" value={selClip.duration.toFixed(2)} onChange={e => patchClip({ duration: parseFloat(e.target.value) || 0.1 })} /></div>
-                  <p className="hint">Overlap two video clips and give them fades for a transparent crossfade.</p>
-                </div>
-              </div>
-            )}
-
-            {selText && (
-              <div className="control-group">
-                <h3 className="group-title">Text</h3>
-                <div className="card">
-                  <div className="field"><label>Content</label><textarea className="duration-input" rows={2} value={selText.text} onChange={e => patchText({ text: e.target.value })} /></div>
-                  <div className="field row">
-                    <div><label>Size</label><input type="number" min="8" step="2" className="duration-input" value={selText.fontSize} onChange={e => patchText({ fontSize: parseFloat(e.target.value) || 12 })} /></div>
-                    <div><label>Color</label><input type="color" className="color-input" value={selText.color} onChange={e => patchText({ color: e.target.value })} /></div>
-                  </div>
-                  <div className="field row">
-                    <div><label>Start (s)</label><input type="number" step="0.1" min="0" className="duration-input" value={selText.start.toFixed(2)} onChange={e => patchText({ start: parseFloat(e.target.value) || 0 })} /></div>
-                    <div><label>Duration (s)</label><input type="number" step="0.1" min="0.2" className="duration-input" value={selText.duration.toFixed(2)} onChange={e => patchText({ duration: parseFloat(e.target.value) || 0.2 })} /></div>
-                  </div>
-                  <div className="field row">
-                    <div><label>Fade In (s)</label><input type="number" step="0.1" min="0" className="duration-input" value={selText.fadeIn} onChange={e => patchText({ fadeIn: parseFloat(e.target.value) || 0 })} /></div>
-                    <div><label>Fade Out (s)</label><input type="number" step="0.1" min="0" className="duration-input" value={selText.fadeOut} onChange={e => patchText({ fadeOut: parseFloat(e.target.value) || 0 })} /></div>
-                  </div>
-                  <div className="field chk" onClick={() => patchText({ box: !selText.box })}><input type="checkbox" checked={!!selText.box} readOnly id="tbox" /><label htmlFor="tbox" style={{ cursor: 'pointer', marginBottom: 0 }}>Background bar</label></div>
-                  <p className="hint">Drag the text on the preview to position it.</p>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-      </main>
-
-      <div className="toasts">{toasts.map(t => <div key={t.id} className="toast" onClick={() => setToasts(x => x.filter(y => y.id !== t.id))}>{t.text}</div>)}</div>
+      )}
 
       <KaraokeBooth open={showBooth} onClose={() => setShowBooth(false)} markers={markers}
         totalDuration={totalDuration} currentTime={currentTime} isPlaying={isPlaying}
         onSeek={t => setCurrentTime(t)} onPlay={p => setIsPlaying(p)} onRecorded={boothRecorded}
-        script={boothScript} onScript={setBoothScript} onDraft={draftBoothScript} />
+        script={boothScript} onScript={setBoothScript} onDraft={draftBoothScript} projectDir={currentProject?.dir} />
       <NarrationModal open={showNarration} onClose={() => setShowNarration(false)}
         command={settings.narration.command}
         onCommand={c => setSettings(s => ({ ...s, narration: { command: c } }))}
@@ -2711,15 +3777,7 @@ function App() {
 
       <ConnectModal open={showConnect} onClose={() => setShowConnect(false)} />
       <HelpModal open={showHelp} onClose={() => setShowHelp(false)} version={appVersion}
-        onOpenPanel={(p: HelpPanel) => {
-          if (p === 'media' || p === 'sfx') setSidebarTab(p)
-          else if (p === 'booth') setShowBooth(true)
-          else if (p === 'narration') setShowNarration(true)
-          else if (p === 'thumbnail') setShowThumbnail(true)
-          else if (p === 'settings') setShowSettings(true)
-          else if (p === 'connect') setShowConnect(true)
-          else if (p === 'model3d') { setModel3DPath(null); setShowModel3D(true) }
-        }} />
+        onOpenPanel={openPanel} onTour={() => setShowTour(true)} onChat={() => setShowChat(true)} />
       <Model3DModal open={showModel3D} onClose={() => setShowModel3D(false)} initialPath={model3DPath} apiRef={model3dApi}
         getFrame={async () => {
           // the frame under the playhead, so a turntable can be rendered over real footage
@@ -2746,7 +3804,8 @@ function App() {
           } else addToTimeline(media)
         }} />
       <ThumbnailModal open={showThumbnail} onClose={() => setShowThumbnail(false)}
-        videoPath={firstVideo()?.path || null} videoName={firstVideo()?.name || 'video'} logoPath={settings.brand.logoPath} />
+        videoPath={firstVideo()?.path || null} videoName={firstVideo()?.name || 'video'} logoPath={settings.brand.logoPath}
+        photos={thumbPhotos()} theme={thumbTheme()} themeName={chooseTheme(thumbTheme()).theme.name} />
 
       <TakesModal open={showTakes} onClose={() => setShowTakes(false)} analysis={takes} busy={takesBusy}
         canReapply={!!takeSnap.current && takeSnap.current.after === stateKey()}
@@ -2759,18 +3818,68 @@ function App() {
         if (!media) return null
         return (
           <div className="ctx-menu" style={{ left: ctxMenu.x, top: ctxMenu.y }} onClick={e => e.stopPropagation()}>
-            <button onClick={() => { addToTimeline(media); setCtxMenu(null) }}>Add to timeline</button>
-            <button onClick={() => { addAsIntro(media); setCtxMenu(null) }}>Add as intro clip ({settings.intro.segment} {settings.intro.seconds}s)</button>
-            {media.type !== 'audio' && <button title="Remove a solid green or magenta backdrop so the clip below shows through, applied on export and in the preview"
-              onClick={() => { setMediaBin(prev => prev.map(m => m.id === media.id ? { ...m, chromaKey: m.chromaKey ? undefined : KEY_GREEN } : m)); setCtxMenu(null) }}>
-              {media.chromaKey ? 'Stop keying the backdrop' : 'Key out a green screen'}
-            </button>}
-            <div className="ctx-sep" />
-            <button onClick={() => { setMediaBin(prev => prev.filter(m => m.id !== media.id)); setCtxMenu(null) }}>Remove from bin</button>
+            {media.offline && <>
+              <button title={media.path} onClick={() => { setCtxMenu(null); void relinkMedia(media) }}>Relink… (find the moved file)</button>
+              <div className="ctx-sep" />
+            </>}
+            {!media.offline && <>
+              <button onClick={() => { addToTimeline(media); setCtxMenu(null) }}>Add to timeline</button>
+              {media.type !== 'audio' && <button title="Picture only: covers the video at the playhead while its sound keeps playing"
+                onClick={() => { placeOnTimeline(media, currentTime, 'v2'); setCtxMenu(null) }}>Add as B-roll at the playhead</button>}
+              {media.type === 'audio' && <button onClick={() => { placeOnTimeline(media, currentTime, 'a2'); setCtxMenu(null) }}>Add as a sound effect at the playhead</button>}
+              <button onClick={() => { addAsIntro(media); setCtxMenu(null) }}>Add as intro clip ({settings.intro.segment} {settings.intro.seconds}s)</button>
+              {media.type !== 'audio' && <button title="Remove a solid green or magenta backdrop so the clip below shows through, applied on export and in the preview"
+                onClick={() => { setMediaBin(prev => prev.map(m => m.id === media.id ? { ...m, chromaKey: m.chromaKey ? undefined : KEY_GREEN } : m)); setCtxMenu(null) }}>
+                {media.chromaKey ? 'Stop keying the backdrop' : 'Key out a green screen'}
+              </button>}
+              <div className="ctx-sep" />
+            </>}
+            <button onClick={() => { setCtxMenu(null); void removeFromBin(media) }}>Remove from bin</button>
           </div>
         )
       })()}
 
+      {showAiClip && (
+        <div className="modal-backdrop" onClick={() => { if (!aiClipBusy) setShowAiClip(false) }}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-head"><h2>AI clip</h2><button className="modal-close" onClick={() => setShowAiClip(false)}>✕</button></div>
+            <div className="modal-body">
+              <section>
+                <p style={{ opacity: .8 }}>Describe a shot, or start from a picture (or the frame under the playhead) and end on another picture: the clip morphs one into the other. It lands in the Media Bin and at the end of v1, in the project's format. Kling and Luma run through fal.ai; Veo 3.1 (with sound) through Gemini.</p>
+                <textarea className="duration-input" style={{ width: '100%', minHeight: 70, marginTop: 8 }} placeholder="e.g. slow push-in as the flames rise, dusk, cinematic" value={aiPrompt} onChange={e => setAiPrompt(e.target.value)} />
+                <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 8, alignItems: 'center' }}>
+                  <label>From <select value={aiFrom} onChange={e => setAiFrom(e.target.value)}><option value="">(none, text only)</option><option value="__frame">frame under the playhead</option>{mediaBin.filter(m => m.type === 'image' || m.type === 'video').map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</select></label>
+                  <label>To <select value={aiTo} onChange={e => setAiTo(e.target.value)}><option value="">(none)</option>{mediaBin.filter(m => m.type === 'image').map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</select></label>
+                  <label>Length <select value={aiSeconds} onChange={e => setAiSeconds(+e.target.value)}><option value={5}>5 s</option><option value={8}>8 s</option><option value={10}>10 s</option></select></label>
+                </div>
+                <div style={{ marginTop: 10 }}>
+                  <input className="duration-input" style={{ width: '100%' }} placeholder="fal.ai API key (fal.ai → Keys → Add key). Saved in your settings, never leaves this machine except to fal." value={settings.aiGen?.falKey || ''} onChange={e => setSettings(s => ({ ...s, aiGen: { ...(s.aiGen || {}), falKey: e.target.value.trim() } }))} />
+                  <input className="duration-input" style={{ width: '100%', marginTop: 6 }} placeholder="Gemini API key (optional: Veo 3.1 with sound, first + last frame)" value={settings.aiGen?.geminiKey || ''} onChange={e => setSettings(s => ({ ...s, aiGen: { ...(s.aiGen || {}), geminiKey: e.target.value.trim() } }))} />
+                </div>
+                <div style={{ display: 'flex', gap: 10, marginTop: 10, alignItems: 'center' }}>
+                  <button className="hdr-btn" disabled={aiClipBusy} onClick={async () => {
+                    if (!aiPrompt.trim() && !aiFrom) { notify('Describe the clip, or pick a picture to start from.'); return }
+                    let fromPath: string | undefined, fromTime: number | undefined
+                    if (aiFrom === '__frame') { const f = frameUnderPlayhead(); if (!f) { notify('Nothing under the playhead.'); return } fromPath = f.path; fromTime = f.time }
+                    else if (aiFrom) fromPath = mediaBin.find(m => m.id === aiFrom)?.path
+                    const toPath = aiTo ? mediaBin.find(m => m.id === aiTo)?.path : undefined
+                    notify('Generating the clip: 1 to 4 minutes. Keep editing, it lands in the bin when done.')
+                    const r = await generateAiClip({ prompt: aiPrompt.trim() || 'bring this picture to life, subtle realistic motion', fromPath, fromTime, toPath, seconds: aiSeconds })
+                    if ('error' in r) {
+                      // stillRunning: the provider may still deliver (and bill) it, so pressing Generate again would pay twice
+                      notify(`AI clip failed: ${r.error}${'stillRunning' in r && r.stillRunning ? ' The job may still finish on the provider’s side, so check your provider dashboard before generating it again.' : ''}`, 'stillRunning' in r && r.stillRunning ? 15000 : undefined)
+                      return
+                    }
+                    notify(`AI clip ready (${r.model}, ${r.seconds}s${r.hasAudio ? ', with sound' : ''}, about $${r.estimateUsd}). It is in the bin and on v1.`)
+                    setShowAiClip(false)
+                  }}>{aiClipBusy ? 'Generating…' : '✨ Generate'}</button>
+                  <span style={{ opacity: .7, fontSize: 12 }}>Roughly 35 to 75 cents per 5 seconds, charged by the provider.</span>
+                </div>
+              </section>
+            </div>
+          </div>
+        </div>
+      )}
       {showSettings && (
         <div className="modal-backdrop" onClick={() => setShowSettings(false)}>
           <div className="modal" onClick={e => e.stopPropagation()}>
@@ -2810,7 +3919,7 @@ function App() {
                 <div className="sec-title">
                   <h3>Project folder <span className="hint" style={{ fontWeight: 400 }}> -  skip importing altogether</span></h3>
                 </div>
-                <p className="hint">Point VidHelm at one folder you keep your video work in. Every sub-folder inside it is a project, and opening one loads whatever footage is sitting in that folder, drop files in with Explorer and they’re simply there, no import step. Saving writes back into the same folder, so a project is just a folder you can copy, back up or move.</p>
+                <p className="hint">Point VidHelm at one folder you keep your video work in. Every sub-folder inside it is a project, and opening one loads whatever footage is sitting in that folder. Drop more files in with Explorer and press ↻ in the Media Bin: they’re added, no import step, and your timeline stays as it is. Saving writes back into the same folder, so a project is just a folder you can copy, back up or move (moved files are found again by name).</p>
                 <div className="recipe-files">
                   <div className="recipe-file">
                     <span>Folder:</span>
@@ -2855,6 +3964,44 @@ function App() {
 
               <section>
                 <h3>Caption Style</h3>
+                {(() => {
+                  const cs = settings.caption
+                  const classic = cs.theme === 'classic'
+                  const choice = classic ? null : chooseTheme(themeRequest(cs))
+                  const capCount = texts.filter(t => t.caption).length
+                  const setCap = (patch: Partial<AppSettings['caption']>) => setSettings(s => ({ ...s, caption: { ...s.caption, ...patch } }))
+                  return (
+                    <div className="theme-picker">
+                      <div className="theme-grid">
+                        {THEMES.map(th => {
+                          const f = THEME_FONTS[th.caption.font]
+                          const on = !classic && choice?.theme.id === th.id
+                          return (
+                            <button key={th.id} type="button" className={`theme-chip ${on ? 'active' : ''}`} title={th.blurb} onClick={() => setCap({ theme: th.id })}>
+                              <span className="theme-sample" style={{ fontFamily: `'${f.family}', sans-serif`, fontWeight: f.bold ? 700 : 400, color: th.caption.color, background: th.caption.box ? th.caption.boxColor : '#2a2f3a',
+                                WebkitTextStroke: th.caption.outline && !th.caption.box ? `1px ${th.caption.outlineColor}` : undefined, letterSpacing: th.caption.tracking ? `${th.caption.tracking}em` : undefined,
+                                textShadow: th.caption.motion === 'glow' ? `0 0 6px ${th.caption.accent}` : th.caption.shadow ? `1px 1px 0 ${th.caption.shadowColor}` : undefined }}>
+                                {th.caption.uppercase ? 'SAY ' : 'Say '}<span style={{ color: th.caption.accentCycle?.[0] || th.caption.accent }}>{th.caption.uppercase ? 'HI' : 'hi'}</span>
+                              </span>
+                              <span className="theme-name">{th.name}</span>
+                            </button>
+                          )
+                        })}
+                        <button type="button" className={`theme-chip ${classic ? 'active' : ''}`} title="The plain style: your own font size, colour, position and box below" onClick={() => setCap({ theme: 'classic' })}>
+                          <span className="theme-sample" style={{ background: '#2a2f3a' }}>Say hi</span><span className="theme-name">Classic (manual)</span>
+                        </button>
+                      </div>
+                      {!classic && choice && <>
+                        <label>Tweak it
+                          <input type="text" value={cs.tweak || ''} placeholder="e.g. but blue, bigger, at the top, all caps, no box" onChange={e => setCap({ tweak: e.target.value })} />
+                        </label>
+                        <p className="hint"><b>{choice.theme.name}</b>: {choice.theme.blurb}{Object.keys(choice.tweaks).length ? ` Tweaked: ${Object.entries(choice.tweaks).map(([k, v]) => `${k} ${v}`).join(', ')}.` : ''}</p>
+                        {capCount > 0 && <button type="button" className="ghost-btn" onClick={() => { const r = restyleCaptions(themeRequest(cs)); notify(`Restyled ${r.captions} caption${r.captions === 1 ? '' : 's'} as ${choice.theme.name}.`) }}>Restyle the {capCount} caption{capCount === 1 ? '' : 's'} on the timeline</button>}
+                      </>}
+                    </div>
+                  )
+                })()}
+                {settings.caption.theme === 'classic' && <>
                 <div className="grid2">
                   <label>Position
                     <select value={settings.caption.position} onChange={e => setSettings(s => ({ ...s, caption: { ...s.caption, position: e.target.value as any } }))}>
@@ -2866,6 +4013,7 @@ function App() {
                   <label>Box opacity - {Math.round(settings.caption.boxOpacity * 100)}%<input type="range" min="0" max="1" step="0.05" value={settings.caption.boxOpacity} onChange={e => setSettings(s => ({ ...s, caption: { ...s.caption, boxOpacity: parseFloat(e.target.value) } }))} /></label>
                 </div>
                 <label className="switch"><input type="checkbox" checked={settings.caption.box} onChange={e => setSettings(s => ({ ...s, caption: { ...s.caption, box: e.target.checked } }))} /> Background bar behind captions</label>
+                </>}
                 <div className="grid2">
                   <label>Accuracy / speed
                     <select value={settings.caption.model} onChange={e => setSettings(s => ({ ...s, caption: { ...s.caption, model: e.target.value as any } }))}>
@@ -2985,6 +4133,19 @@ function App() {
       )}
     </div>
   )
+}
+
+/** The editor inside its crash guard, so one bad state shows a recover-and-reload screen instead of
+ *  a blank window. The bridge check lives here, ahead of the editor's hooks rather than among them. */
+function App() {
+  if (!window.ipcRenderer) {
+    return (
+      <div style={{ background: '#131314', color: '#ffb4ab', height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', textAlign: 'center', padding: '20px' }}>
+        <div><h1>Bridge Error</h1><p>Electron IPC bridge (window.ipcRenderer) is missing.</p></div>
+      </div>
+    )
+  }
+  return <CrashGuard><Editor /></CrashGuard>
 }
 
 export default App

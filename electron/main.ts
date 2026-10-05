@@ -1,7 +1,9 @@
 import { app, BrowserWindow, ipcMain, dialog, shell, screen, nativeTheme } from 'electron'
 import { restoreDragOffset, plainDragOffset, shouldSnapMaximize } from './dragMath'
 import { findModelInHtml } from './modelSniff'
-import { planProxy, proxyFilter, proxyKey, HDR_TO_SDR, type ProbeInfo } from './playable'
+import { buildAss, chooseTheme, THEME_FONTS, type ThemeFont } from './styletheme'
+import { scoreFrame, rankFrames, sampleTimes, thumbTextLayout, photoNudge, type FrameScore } from './thumbpick'
+import { planProxy, proxyFilter, proxyFits, proxyKey, quarterTurn, HDR_TO_SDR, type ProbeInfo } from './playable'
 import { refineFromEnvelope } from './speech'
 import { planCrop, cropExpr, type Frame as GrayFrame } from './framing'
 import { classify, profileFor, benchmark, type MachineSpecs } from './capability'
@@ -12,10 +14,17 @@ import { matchRecipe, nameToFilename, MIN_CONFIDENCE } from './sfxmatch'
 import { composeScore, type Intensity, type Style } from './score'
 import { spellOut, parseTable, mergeTables } from './pronounce'
 import { planVisualIndex, timecode, stackLayout } from './visual'
+import { readZip, parseHandoff, downloadList, buildProject, entriesToWrite, isCloudMediaUrl, CLOUD_ORIGINS } from './cloudimport'
+import { generateClip, videoGenAvailable, estimateUsd, VIDEO_MODELS, GenTimeout } from './videogen'
+import { bridgeTimeoutMs, QUICK_MS } from '../agent/timeouts.mjs'
+import { stillInput, clipAudioChain, masterChain, friendlyExportError, stderrTail, UNREADABLE_STILL } from './exportgraph'
+import { bridgeRefusal, commandForEditor, replyAlias, replyKey, type PendingReply } from './bridgeguard'
 import path from 'node:path'
 import fs from 'node:fs'
 import os from 'node:os'
-import { spawn } from 'node:child_process'
+import { spawn, type ChildProcess } from 'node:child_process'
+import { Readable } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
 import https from 'node:https'
 import ffmpeg from 'fluent-ffmpeg'
 
@@ -44,6 +53,8 @@ const getBinaryPath = () => {
 }
 
 const paths = getBinaryPath()
+// style-theme fonts (OFL): public/fonts in dev, copied beside the app by electron-builder when packaged
+const themeFontsDir = () => app.isPackaged ? path.join(process.resourcesPath, 'fonts') : path.join(__dirname, '..', 'public', 'fonts')
 ffmpeg.setFfmpegPath(paths.ffmpeg)
 ffmpeg.setFfprobePath(paths.ffprobe)
 
@@ -52,6 +63,14 @@ process.env.VITE_PUBLIC = app.isPackaged ? process.env.DIST : path.join(process.
 
 let win: BrowserWindow | null
 
+// The window buttons are drawn by Windows over the header, so they must match its colours
+// (src/App.css --bg-header / --text-muted) and its height in each theme.
+const TITLEBAR_H = 40
+const TITLEBAR = {
+  dark: { color: '#141416', symbolColor: '#a1a1aa' },
+  light: { color: '#ffffff', symbolColor: '#52525b' },
+}
+
 function createWindow() {
   win = new BrowserWindow({
     width: 1280,
@@ -59,11 +78,7 @@ function createWindow() {
     title: 'VidHelm',
     icon: path.join(process.env.VITE_PUBLIC, 'icon.png'),   // SVG is not a valid window/taskbar icon on Windows
     titleBarStyle: 'hidden',
-    titleBarOverlay: {
-      color: '#0f0f11',
-      symbolColor: '#f8fafc',
-      height: 32
-    },
+    titleBarOverlay: { ...TITLEBAR.dark, height: TITLEBAR_H },
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,
@@ -89,6 +104,67 @@ function createWindow() {
   win.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
     console.error(`Page failed to load: ${errorDescription} (${errorCode}) at ${validatedURL}`);
   });
+
+  // Unsaved work. The renderer blocks unloading (window.onbeforeunload) while the timeline has
+  // changes that are not saved; Chromium then asks main what to do, and with no handler here the
+  // close was silently cancelled or, worse, hours of editing went with one click on the X.
+  // event.preventDefault() here means "ignore the page's objection and leave".
+  // 'close' fires before the page's beforeunload, so it tells a real close (the X, Alt+F4, quitting)
+  // from a reload: only a close can offer Save, because the renderer finishes it with window.close().
+  let closing = false
+  win.on('close', () => { closing = true })
+  win.webContents.on('will-prevent-unload', (event) => {
+    const isClose = closing
+    closing = false   // whatever is chosen here, the next close or reload asks again
+    if (process.env.VH_SHOOT) { event.preventDefault(); return }   // the screenshot helper quits unattended
+    if (isClose) {
+      const choice = dialog.showMessageBoxSync(win!, {
+        type: 'warning',
+        title: 'Unsaved changes',
+        message: 'This project has changes that are not saved.',
+        detail: "Save them before closing? Don't save and they are lost.",
+        buttons: ['Save', "Don't save", 'Cancel'],
+        defaultId: 0,
+        cancelId: 2,
+        noLink: true,
+      })
+      // Save: the close is cancelled here, the renderer saves and then closes the window itself; a
+      // save that fails or is cancelled (no file picked) leaves the window open with the work in it
+      if (choice === 0) win!.webContents.send('save-before-close')
+      else if (choice === 1) event.preventDefault()
+      return
+    }
+    const choice = dialog.showMessageBoxSync(win!, {
+      type: 'warning',
+      title: 'Unsaved changes',
+      message: 'This project has changes that are not saved.',
+      detail: 'Leave now and they are lost. Stay to go back and save them first.',
+      buttons: ['Leave', 'Stay'],
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true,
+    })
+    if (choice === 0) event.preventDefault()
+  })
+
+  // If the editor itself dies, say so rather than leave a blank window with a dead agent bridge
+  // (the bridge talks to the page, so every agent call would just time out).
+  win.webContents.on('render-process-gone', (_event, details) => {
+    console.error('renderer gone:', details.reason, details.exitCode)
+    if (details.reason === 'clean-exit' || !win || win.isDestroyed()) return
+    const choice = dialog.showMessageBoxSync(win, {
+      type: 'error',
+      title: 'VidHelm stopped',
+      message: 'The editor stopped unexpectedly.',
+      detail: `Reason: ${details.reason}. Reload it to keep working; anything since your last save may be gone.`,
+      buttons: ['Reload', 'Quit'],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true,
+    })
+    if (choice === 0) win.webContents.reload()
+    else app.quit()
+  })
 
   // Dev helper: VH_SHOOT=<path.png> stages a small demo state, captures the window, writes the PNG and quits.
   // Used to regenerate docs/screenshot.png reproducibly (see docs/ARCHITECTURE.md).
@@ -190,31 +266,97 @@ ipcMain.handle('sample-frames', async (_event, { filePath, count = 8, sourceStar
   return { frames }
 })
 
-// Compose a YouTube thumbnail: full-res frame + catchy subtitle + brand logo -> 1280x720 image
-ipcMain.handle('compose-thumbnail', async (_event, { filePath, t, subtitle, logoPath, outPath }: { filePath: string; t: number; subtitle?: string; logoPath?: string | null; outPath: string }) => {
-  if (!filePath || !fs.existsSync(filePath)) return { error: 'no video' }
-  const fontFile = escFilter(path.join(process.env.WINDIR || 'C:/Windows', 'Fonts', 'arialbd.ttf'))
-  const hasLogo = logoPath && fs.existsSync(logoPath)
-  const args = ['-y', '-hide_banner', '-loglevel', 'error', '-ss', String(t), '-i', filePath]
+// Rank frames for a thumbnail: sharp, well exposed, colourful, a person (skin) in the middle,
+// near-duplicates dropped. Scored from tiny raw RGB frames, then the keepers are saved as JPGs.
+ipcMain.handle('rank-frames', async (_event, { filePath, count = 24, keep = 8, sourceStart = 0, duration }: { filePath: string; count?: number; keep?: number; sourceStart?: number; duration?: number }) => {
+  if (!filePath || !fs.existsSync(filePath)) return { error: 'no file' }
+  const dur: number = duration || await new Promise(res => ffmpeg.ffprobe(filePath, (e, d) => res(e ? 0 : (d.format.duration || 0))))
+  if (!dur) return { error: 'cannot read duration' }
+  const SW = 160, SH = 90
+  const grab = (t: number) => new Promise<Buffer | null>(res => {
+    const p = spawn(paths.ffmpeg, ['-hide_banner', '-loglevel', 'error', '-ss', String(t), '-i', filePath, '-frames:v', '1',
+      '-vf', `scale=${SW}:${SH}:force_original_aspect_ratio=increase,crop=${SW}:${SH}`, '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'])
+    const parts: Buffer[] = []
+    p.stdout.on('data', d => parts.push(d))
+    p.on('close', () => { const b = Buffer.concat(parts); res(b.length === SW * SH * 3 ? b : null) })
+    p.on('error', () => res(null))
+  })
+  const scored: { t: number; score: FrameScore }[] = []
+  const times = sampleTimes(dur, Math.max(4, Math.min(60, count)), sourceStart)
+  for (let i = 0; i < times.length; i += 4) {   // four decoders at a time
+    const batch = await Promise.all(times.slice(i, i + 4).map(async t => ({ t, buf: await grab(t) })))
+    for (const b of batch) if (b.buf) scored.push({ t: b.t, score: scoreFrame(new Uint8Array(b.buf), SW, SH) })
+  }
+  if (!scored.length) return { error: 'no frames could be read' }
+  const best = rankFrames(scored, Math.max(1, Math.min(12, keep)))
+  const dir = path.join(app.getPath('temp'), 'vidhelm_frames', 'rank_' + Date.now())
+  fs.mkdirSync(dir, { recursive: true })
+  const frames: { t: number; path: string; score: number; why: string }[] = []
+  for (const [i, f] of best.entries()) {
+    const out = path.join(dir, `best_${i}.jpg`)
+    await new Promise<void>(res => { const p = spawn(paths.ffmpeg, ['-y', '-hide_banner', '-loglevel', 'error', '-ss', String(f.t), '-i', filePath, '-frames:v', '1', '-vf', 'scale=480:-2', out]); p.on('close', () => res()); p.on('error', () => res()) })
+    const sc = f.score
+    const why = [sc.sharpness > 0.6 ? 'sharp' : sc.sharpness < 0.35 ? 'soft' : '', sc.skin > 0.5 ? 'person in shot' : '', sc.exposure < 0.5 ? (sc.exposure < 0.3 ? 'badly exposed' : 'a bit dark/bright') : '', sc.color > 0.55 ? 'colourful' : ''].filter(Boolean).join(', ')
+    if (fs.existsSync(out)) frames.push({ t: f.t, path: out, score: sc.score, why })
+  }
+  return { frames, sampled: scored.length }
+})
+
+// Compose a YouTube thumbnail -> 1280x720 PNG. The picture is, in order of preference: the creator's
+// own photo (imagePath), a real frame of the video (filePath at t), or a placeholder card that says it
+// is one. Text and colours come from the style theme; a second line ("hook | detail") is the accent.
+ipcMain.handle('compose-thumbnail', async (_event, { filePath, t, imagePath, subtitle, logoPath, outPath, theme }: { filePath?: string | null; t?: number; imagePath?: string | null; subtitle?: string; logoPath?: string | null; outPath: string; theme?: string }) => {
+  // an image file only: the agent bridge reaches this, and a thumbnail has no business writing a .cmd or a .json
+  if (!outPath || !/\.(png|jpe?g|webp)$/i.test(outPath)) return { error: 'outPath must be an image file (.png or .jpg)' }
+  const source: 'photo' | 'frame' | 'placeholder' = imagePath && fs.existsSync(imagePath) ? 'photo' : filePath && fs.existsSync(filePath) ? 'frame' : 'placeholder'
+  const spec = chooseTheme(theme || 'randotechnerd').thumb
+  const fi = THEME_FONTS[spec.font]
+  const fontFile = escFilter(path.join(themeFontsDir(), fi.file))
+  const hasLogo = !!(logoPath && fs.existsSync(logoPath))
+  const args = ['-y', '-hide_banner', '-loglevel', 'error']
+  if (source === 'photo') args.push('-i', imagePath!)
+  else if (source === 'frame') args.push('-ss', String(t ?? 1), '-i', filePath!)
+  else args.push('-f', 'lavfi', '-i', 'color=c=0x0d1b26:s=1280x720:d=1')
   if (hasLogo) args.push('-i', logoPath!)
-  let vf = `[0:v]scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720`
-  if (subtitle && subtitle.trim()) {
-    const tmp = path.join(app.getPath('temp'), `rs_sub_${Date.now()}.txt`)
-    fs.writeFileSync(tmp, subtitle.trim(), 'utf8')
-    vf += `,drawtext=fontfile='${fontFile}':textfile='${escFilter(tmp)}':fontcolor=white:fontsize=72:borderw=8:bordercolor=black@0.9:x=48:y=h-text_h-48`
+  let vf = `[0:v]scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720,setsar=1`
+  if (source === 'placeholder') {
+    // obviously not finished: a dashed photo frame and a label, so it never ships by accident
+    const ph = path.join(app.getPath('temp'), `rs_ph_${Date.now()}.txt`)
+    fs.writeFileSync(ph, 'YOUR PHOTO HERE', 'utf8')
+    vf += `,drawbox=x=640:y=60:w=580:h=600:color=white@0.10:t=fill`
+    for (let k = 0; k < 12; k++) vf += `,drawbox=x=${652 + k * 48}:y=60:w=24:h=6:color=white@0.5:t=fill,drawbox=x=${652 + k * 48}:y=654:w=24:h=6:color=white@0.5:t=fill`
+    for (let k = 0; k < 12; k++) vf += `,drawbox=x=640:y=${72 + k * 48}:w=6:h=24:color=white@0.5:t=fill,drawbox=x=1214:y=${72 + k * 48}:w=6:h=24:color=white@0.5:t=fill`
+    vf += `,drawtext=fontfile='${fontFile}':textfile='${escFilter(ph)}':expansion=none:fontcolor=white@0.55:fontsize=46:x=930-text_w/2:y=360-text_h/2`
+  } else {
+    // a smooth dark gradient rising from the bottom keeps the text readable on any photo (no visible band)
+    vf += `[pic];color=c=black:s=1280x720:d=1,format=rgba,geq=r=0:g=0:b=0:a='255*0.62*pow(max(0\,(Y-280)/440)\,1.6)'[shade];[pic][shade]overlay=0:0:format=auto`
+  }
+  const lines = thumbTextLayout(subtitle || '', spec)
+  const tmpFiles: string[] = []
+  for (const [i, ln] of lines.entries()) {
+    const tf = path.join(app.getPath('temp'), `rs_sub_${Date.now()}_${i}.txt`)
+    fs.writeFileSync(tf, ln.text, 'utf8'); tmpFiles.push(tf)
+    const stroke = spec.stroke > 0 ? `:borderw=${Math.max(2, Math.round(ln.size * spec.stroke))}:bordercolor=0x${spec.strokeColor.slice(1)}` : ''
+    const plate = spec.plate ? `:box=1:boxcolor=0x${spec.plate.slice(1)}@0.92:boxborderw=${Math.round(ln.size * 0.22)}` : ''
+    // expansion=none: with the default, '%' starts an expansion sequence and '100% WORTH IT' drew nothing at all
+    vf += `,drawtext=fontfile='${fontFile}':textfile='${escFilter(tf)}':expansion=none:fontcolor=0x${ln.color.slice(1)}:fontsize=${ln.size}${stroke}${plate}:shadowcolor=black@0.5:shadowx=4:shadowy=4:x=48:y=${ln.y}`
   }
   if (hasLogo) { vf += `[base];[1:v]format=rgba,scale=170:-1[lg];[base][lg]overlay=main_w-overlay_w-28:28` }
   args.push('-filter_complex', vf, '-frames:v', '1', outPath)
   return new Promise(resolve => {
     const p = spawn(paths.ffmpeg, args)
     let err = ''; p.stderr.on('data', d => err += d)
-    p.on('close', code => resolve(code === 0 && fs.existsSync(outPath) ? { ok: true, outPath } : { error: err.slice(-400) || 'compose failed' }))
+    p.on('close', code => {
+      for (const f of tmpFiles) fs.rm(f, () => {})
+      resolve(code === 0 && fs.existsSync(outPath) ? { ok: true, outPath, source, placeholder: source === 'placeholder', ...(photoNudge(source) ? { nudge: photoNudge(source) } : {}) } : { error: err.slice(-400) || 'compose failed' })
+    })
     p.on('error', e => resolve({ error: String(e) }))
   })
 })
 
 ipcMain.handle('open-external', async (_event, url: string) => {
-  if (/^(https?:\/\/|mailto:)/.test(url)) shell.openExternal(url)
+  // ms-settings: opens a Windows Settings page (the booth links the Sound page for the mic)
+  if (/^(https?:\/\/|mailto:|ms-settings:)/.test(url)) shell.openExternal(url)
 })
 
 ipcMain.handle('reveal-file', async (_event, filePath: string) => {
@@ -552,7 +694,7 @@ ipcMain.handle('visual-index', async (_event, { filePath, interval, maxFrames, p
         let e = ''
         const p = spawn(paths.ffmpeg, ['-y', '-hide_banner', '-loglevel', 'error', '-ss', String(t), '-i', filePath,
           '-frames:v', '1', '-vf',
-          `scale=${width}:-2,drawtext=fontfile='${font}':textfile='${escFilter(labelFile)}':x=10:y=10:fontsize=${Math.round(width / 14)}:fontcolor=white:box=1:boxcolor=black@0.7:boxborderw=8`,
+          `scale=${width}:-2,drawtext=fontfile='${font}':textfile='${escFilter(labelFile)}':expansion=none:x=10:y=10:fontsize=${Math.round(width / 14)}:fontcolor=white:box=1:boxcolor=black@0.7:boxborderw=8`,
           '-q:v', '3', tile])
         p.stderr.on('data', d => { e += d.toString() })
         p.on('close', () => res(e)); p.on('error', ex => res(String(ex)))
@@ -981,37 +1123,197 @@ ipcMain.handle('machine-profile', async (_event, { refresh }: { refresh?: boolea
   }
 })
 
+let proxyDirSwept = false
 const proxyDir = () => {
   const dir = path.join(app.getPath('userData'), 'proxies')
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+  // A build cut off by a crash or a closed app leaves its temp file behind; clear those once per run.
+  // Only old ones: a dev build often runs beside the installed app with the same data folder, and
+  // the other copy's build in progress must not be pulled out from under it.
+  if (!proxyDirSwept) {
+    proxyDirSwept = true
+    const stale = Date.now() - 30 * 60_000
+    try {
+      for (const f of fs.readdirSync(dir)) {
+        if (!f.endsWith('.part.mp4')) continue
+        const p = path.join(dir, f)
+        try { if (fs.statSync(p).mtimeMs < stale) fs.rmSync(p, { force: true }) } catch { /* in use or gone */ }
+      }
+    } catch { /* best effort */ }
+  }
   return dir
 }
 
 /**
- * Build (or reuse) a preview proxy: an H.264 8-bit SDR copy the preview can actually decode.
- * The original file stays the master, exports still read from it, this is only what you watch
- * while editing. Progress goes back to the renderer so the Media Bin can show it.
+ * Phones store a portrait clip as landscape frames plus a "rotate 90" flag, and ffmpeg applies the
+ * flag when decoding. Every size decision (the proxy's scale, whether it is big enough to export
+ * from) has to use the DISPLAYED shape: the coded one sized a portrait phone proxy 1920x3413.
+ */
+const displaySize = (v: any): { width: number; height: number; rotation: number } => {
+  // `rotation` (the display matrix, as ffprobe reports it) is counter-clockwise; the old `rotate`
+  // tag is clockwise. Hand back one convention: degrees CLOCKWISE, 0/90/180/270, the way ffmpeg's
+  // own autorotate reads it (a phone's -90 matrix = turn 90 clockwise).
+  const side = v?.rotation !== undefined && v?.rotation !== '' ? Number(v.rotation) : NaN
+  const rotation = quarterTurn(Number.isFinite(side) ? -side : Number(v?.tags?.rotate) || 0)
+  const w = v?.width || 0, h = v?.height || 0
+  return rotation === 90 || rotation === 270 ? { width: h, height: w, rotation } : { width: w, height: h, rotation }
+}
+
+type ProxyDims = { width: number; height: number; fps: number; duration: number }
+/**
+ * What a proxy file really is (displayed size, frame rate), or null when it does not parse, has no
+ * picture, or is clearly shorter than its source (a build that was cut off before the fix below).
+ */
+const probeProxy = (file: string, expectDuration?: number) => new Promise<ProxyDims | null>(resolve => {
+  ffmpeg.ffprobe(file, (err, d) => {
+    if (err || !d) return resolve(null)
+    const v: any = d.streams.find((s: any) => s.codec_type === 'video')
+    if (!v) return resolve(null)
+    const dur = Number(d.format?.duration) || 0
+    if (!(dur > 0)) return resolve(null)
+    if (expectDuration && expectDuration > 1 && dur < expectDuration - Math.max(2, expectDuration * 0.05)) return resolve(null)
+    const { width, height } = displaySize(v)
+    resolve({ width, height, fps: fpsOf(v.avg_frame_rate || v.r_frame_rate), duration: +dur.toFixed(3) })
+  })
+})
+// A frame from the last second must decode. A file cut short can keep a perfectly valid header
+// (+faststart puts the index at the FRONT), so only reading the end proves the end is there.
+const tailDecodes = (file: string, duration: number) => new Promise<boolean>(resolve => {
+  const p = spawn(paths.ffmpeg, ['-v', 'error', '-ss', Math.max(0, duration - 1).toFixed(3), '-i', file, '-frames:v', '1', '-s', '16x16', '-pix_fmt', 'gray', '-f', 'rawvideo', '-'])
+  let n = 0
+  p.stdout.on('data', d => { n += d.length })
+  p.on('close', code => resolve(code === 0 && n >= 256))
+  p.on('error', () => resolve(false))
+})
+// A finished proxy's measured size sits beside it, so a cache hit needs no probe and an old,
+// unverified one is checked exactly once. The version marks sidecars written by code that builds
+// and checks proxies the right way round; one without it is re-checked like a proxy with none.
+const PROXY_META_V = 2
+const proxyMetaPath = (outPath: string) => outPath.replace(/\.mp4$/i, '.json')
+const readProxyMeta = (outPath: string): ProxyDims | null => {
+  try {
+    const j = JSON.parse(fs.readFileSync(proxyMetaPath(outPath), 'utf8'))
+    return j && j.v === PROXY_META_V && j.width > 0 && j.height > 0 ? { width: j.width, height: j.height, fps: Number(j.fps) || 0, duration: Number(j.duration) || 0 } : null
+  } catch { return null }
+}
+const writeProxyMeta = (outPath: string, dims: ProxyDims) => {
+  try { fs.writeFileSync(proxyMetaPath(outPath), JSON.stringify({ ...dims, v: PROXY_META_V })) } catch { /* only a cache */ }
+}
+// The source as displayed, measured here rather than taken from the renderer: whether a cached copy
+// is the right way round, and whether a Quick Sync build turns its frames, both hang on it.
+const probeShape = (file: string) => new Promise<{ width: number; height: number; rotation: number } | null>(resolve => {
+  ffmpeg.ffprobe(file, (err, d) => {
+    const v: any = !err && d ? d.streams.find((s: any) => s.codec_type === 'video') : null
+    resolve(v && v.width > 0 && v.height > 0 ? displaySize(v) : null)
+  })
+})
+
+/**
+ * fs.renameSync, retried for a moment. On Windows a file that was just written is often held
+ * briefly by Defender or the search indexer (EPERM / EBUSY / EACCES); graceful-fs retries for the
+ * same reason. MoveFileEx replaces the destination, so no delete is needed first.
+ */
+const renameRetry = async (from: string, to: string, tries = 6) => {
+  for (let i = 1; ; i++) {
+    try { fs.renameSync(from, to); return } catch (e) {
+      const code = (e as NodeJS.ErrnoException)?.code || ''
+      if (i >= tries || !['EPERM', 'EBUSY', 'EACCES'].includes(code)) throw e
+      await new Promise(r => setTimeout(r, 60 * i))
+    }
+  }
+}
+
+/**
+ * Write JSON to a temp file beside `file`, then rename it over the old one, so a crash or a full
+ * disk mid-write never leaves a half-written project or autosave. The temp file is removed if it
+ * cannot be put in place.
+ */
+const writeJsonAtomic = async (file: string, data: unknown, pretty = true) => {
+  const tmp = file + '.tmp'
+  try {
+    fs.writeFileSync(tmp, pretty ? JSON.stringify(data, null, 2) : JSON.stringify(data), 'utf8')
+    // retried: right after the write, Defender or the indexer often holds the file for a moment
+    await renameRetry(tmp, file)
+  } catch (e) {
+    try { fs.rmSync(tmp, { force: true }) } catch { /* locked: the next write overwrites it */ }
+    throw e
+  }
+}
+
+// The same clip asked for twice (a drag-drop plus a folder rescan) shares one build instead of two
+// ffmpegs writing one file. The children are tracked so quitting does not leave them running.
+const proxyBuilds = new Map<string, Promise<any>>()
+const proxyChildren = new Set<ChildProcess>()
+app.on('before-quit', () => { for (const c of proxyChildren) { try { c.kill() } catch { /* already gone */ } } })
+
+/**
+ * Build (or reuse) a preview proxy: an H.264 8-bit SDR copy the preview can actually decode. The
+ * original stays the master. The reply carries the proxy's real width, height and fps, because the
+ * renderer only lets an export read the proxy when it is big enough and fast enough to lose nothing.
+ * Progress goes back to the renderer so the Media Bin can show it.
  */
 ipcMain.handle('make-proxy', async (event, { filePath, info, maxWidth, maxFps }: { filePath: string; info: ProbeInfo; maxWidth?: number; maxFps?: number }) => {
   try {
     if (!filePath || !fs.existsSync(filePath)) return { error: 'file not found' }
-    const plan = planProxy(info || {}, { maxWidth, maxFps })
+    // the measured shape wins over whatever the renderer sent (an older caller sends no rotation)
+    const shape = await probeShape(filePath)
+    const src: ProbeInfo = { ...(info || {}), ...(shape ? { width: shape.width, height: shape.height, rotation: shape.rotation } : {}) }
+    const plan = planProxy(src, { maxWidth, maxFps })
     if (!plan.needed) return { ok: true, skipped: true }
     const stat = fs.statSync(filePath)
     const outPath = path.join(proxyDir(), proxyKey(filePath, stat.size, stat.mtimeMs))
-    if (fs.existsSync(outPath) && fs.statSync(outPath).size > 0) return { ok: true, path: outPath, cached: true, reason: plan.reason }
+    const running = proxyBuilds.get(outPath)
+    if (running) return await running
+    const job = buildProxy(event.sender, filePath, src, plan, outPath).finally(() => proxyBuilds.delete(outPath))
+    proxyBuilds.set(outPath, job)
+    return await job
+  } catch (e) { return { error: String((e as Error)?.message || e) } }
+})
+
+const buildProxy = async (sender: Electron.WebContents, filePath: string, info: ProbeInfo, plan: ReturnType<typeof planProxy>, outPath: string) => {
+  try {
+    // Reuse a finished proxy only when it is a complete file, the picture's shape, no bigger than its
+    // source, and at least as big and as fast as this plan wants (the setting may have gone up a tier
+    // since it was made); otherwise build it again. An export reads the proxy when it covers the
+    // frame, so a copy lying on its side here becomes an export lying on its side.
+    let keep: ProxyDims | null = null   // a sound copy that is only too small: kept if it cannot be replaced
+    if (fs.existsSync(outPath)) {
+      let dims = readProxyMeta(outPath)
+      if (!dims) {
+        // Made before proxies were built atomically and the right way round: check it properly, once.
+        // An old copy of a ROTATED clip is never trusted: Quick Sync built those on their side, which
+        // a square or upside-down picture does not even show in its size, and software builds of
+        // portrait clips were blown up past the source. Those are simply made again.
+        if (!quarterTurn(info?.rotation)) {
+          dims = await probeProxy(outPath, info?.duration)
+          if (dims && !(await tailDecodes(outPath, dims.duration))) dims = null
+          if (dims) writeProxyMeta(outPath, dims)
+        }
+      }
+      if (dims && proxyFits(dims, info || {}, plan)) {
+        return { ok: true, path: outPath, cached: true, reason: plan.reason, ...dims }
+      }
+      if (dims && proxyFits(dims, info || {}, { ...plan, long: 0, fps: 0 })) keep = dims
+    }
 
     const { video, hwDecode } = await pickEncoder()
+    // Written to a temp name and renamed only after ffmpeg exits cleanly. Written straight to the
+    // cache path, a build cut off part way (app closed, crash) left a file with no moov atom that was
+    // then served as "cached" forever: blank preview, failed filmstrip, broken export.
+    // (.part.mp4, not .part: ffmpeg picks the container from the extension.)
+    const tmp = outPath.replace(/\.mp4$/i, '.part.mp4')
     const args = ['-y', '-v', 'error', '-stats']
     if (hwDecode && video === 'h264_qsv') args.push('-hwaccel', 'qsv')
     else if (hwDecode && video === 'h264_nvenc') args.push('-hwaccel', 'cuda')
     args.push('-i', filePath, '-vf', proxyFilter(plan, hwDecode && video === 'h264_qsv'))
     args.push('-c:v', video)
     args.push(...(video === 'libx264' ? ['-preset', 'veryfast', '-crf', '24'] : ['-global_quality', '24']))
-    args.push('-c:a', 'aac', '-b:a', '160k', '-movflags', '+faststart', outPath)
+    args.push('-c:a', 'aac', '-b:a', '160k', '-movflags', '+faststart', tmp)
 
     await new Promise<void>((resolve, reject) => {
       const p = spawn(paths.ffmpeg, args)
+      proxyChildren.add(p)
+      const fail = (e: Error) => { proxyChildren.delete(p); try { fs.rmSync(tmp, { force: true }) } catch { /* locked */ } reject(e) }
       let err = ''
       p.stderr.on('data', d => {
         const line = d.toString()
@@ -1021,16 +1323,36 @@ ipcMain.handle('make-proxy', async (event, { filePath, info, maxWidth, maxFps }:
         if (m && info?.duration) {
           const secs = (+m[1]) * 3600 + (+m[2]) * 60 + (+m[3])
           const pct = Math.max(0, Math.min(99, Math.round((secs / info.duration) * 100)))
-          event.sender.send('proxy-progress', { filePath, pct })
+          if (!sender.isDestroyed()) sender.send('proxy-progress', { filePath, pct })
         }
       })
-      p.on('close', code => code === 0 && fs.existsSync(outPath) ? resolve() : reject(new Error(err.slice(-400) || 'proxy failed')))
-      p.on('error', reject)
+      p.on('close', code => {
+        if (code !== 0 || !fs.existsSync(tmp)) return fail(new Error(err.slice(-400) || 'proxy failed'))
+        proxyChildren.delete(p)
+        resolve()
+      })
+      p.on('error', fail)
     })
-    event.sender.send('proxy-progress', { filePath, pct: 100 })
-    return { ok: true, path: outPath, reason: plan.reason, encoder: video }
+    // Swap it in. The copy being replaced may be open in the preview, and Windows will not replace an
+    // open file: then a sound old copy (only too small for the new tier) stays in use rather than
+    // the clip losing its preview, and the bigger one is built again next time.
+    try { fs.rmSync(proxyMetaPath(outPath), { force: true }) } catch { /* only a cache */ }
+    try { await renameRetry(tmp, outPath) } catch (e) {
+      try { fs.rmSync(tmp, { force: true }) } catch { /* locked */ }
+      if (keep && fs.existsSync(outPath)) {
+        console.warn('proxy: could not replace the preview copy in use, keeping the old one:', outPath, e)
+        writeProxyMeta(outPath, keep)
+        return { ok: true, path: outPath, cached: true, reason: plan.reason, ...keep }
+      }
+      throw e
+    }
+    const dims = await probeProxy(outPath)
+    if (!dims) { try { fs.rmSync(outPath, { force: true }) } catch { /* locked */ } return { error: 'the preview copy came out unreadable' } }
+    writeProxyMeta(outPath, dims)
+    if (!sender.isDestroyed()) sender.send('proxy-progress', { filePath, pct: 100 })
+    return { ok: true, path: outPath, reason: plan.reason, encoder: video, ...dims }
   } catch (e) { return { error: String((e as Error)?.message || e) } }
-})
+}
 
 ipcMain.handle('get-metadata', async (event, filePath: string) => {
   return new Promise((resolve, reject) => {
@@ -1057,8 +1379,8 @@ ipcMain.handle('get-metadata', async (event, filePath: string) => {
           // decide whether the file will actually show anything (see electron/playable.ts)
           pixFmt: v?.pix_fmt || '',
           colorTransfer: v?.color_transfer || '',
-          width: v?.width || 0,
-          height: v?.height || 0,
+          // as displayed: a portrait phone clip is coded landscape with a rotate-90 flag
+          ...(() => { const d = displaySize(v); return { width: d.width, height: d.height, ...(d.rotation ? { rotation: d.rotation } : {}) } })(),
           fps: fpsOf(v?.avg_frame_rate || v?.r_frame_rate),
         })
       }
@@ -1066,13 +1388,70 @@ ipcMain.handle('get-metadata', async (event, filePath: string) => {
   })
 })
 
-ipcMain.handle('save-recording', async (_event, base64: string) => {
-  const dir = path.join(app.getPath('temp'), 'vidhelm_vo')
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
-  const filePath = path.join(dir, `vo_${Date.now()}.webm`)
-  fs.writeFileSync(filePath, Buffer.from(base64, 'base64'))
-  return filePath
+// Voiceover and booth takes. They used to go to %TEMP%, which Storage Sense and every disk cleaner
+// empty, while the saved project kept pointing at them: the user's own performance, the hardest
+// thing in the project to recreate, silently gone. Now: <project>/voice when the renderer passes a
+// folder, else the app's own data folder, which nothing cleans. The take arrives as bytes
+// (Uint8Array/ArrayBuffer, structured-cloned by IPC) or, from older callers, as a base64 string.
+const recordingsDir = () => path.join(app.getPath('userData'), 'recordings')
+/** <project>/voice: where takes go when a project folder is open (the renderer passes it). */
+const VOICE_DIR = 'voice'
+/** Local wall-clock time for a file name: the bin shows the name, and a take recorded at 9:52 must not read 16-52. */
+const localStamp = (d = new Date()) => {
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}-${p(d.getMinutes())}-${p(d.getSeconds())}`
+}
+ipcMain.handle('save-recording', async (_event, data: string | Uint8Array | ArrayBuffer, targetDir?: string) => {
+  const bytes = typeof data === 'string' ? Buffer.from(data, 'base64')
+    : data instanceof ArrayBuffer ? Buffer.from(new Uint8Array(data))
+    : Buffer.from(data.buffer, data.byteOffset, data.byteLength)
+  if (!bytes.length) throw new Error('the recording is empty')
+  const stamp = localStamp()
+  const writeIn = (dir: string) => {
+    fs.mkdirSync(dir, { recursive: true })
+    let filePath = path.join(dir, `voiceover ${stamp}.webm`), n = 2
+    while (fs.existsSync(filePath)) filePath = path.join(dir, `voiceover ${stamp} (${n++}).webm`)
+    fs.writeFileSync(filePath, bytes)
+    return filePath
+  }
+  const wanted = typeof targetDir === 'string' && targetDir.trim() && path.isAbsolute(targetDir) ? targetDir : ''
+  if (wanted) {
+    // The only other copy of this performance is in the renderer's memory, so a project folder that
+    // cannot be written right now (an offline network drive, a OneDrive placeholder, read-only media)
+    // must not lose it: it goes to the app's own folder instead, and moves into the project on save.
+    try { return writeIn(wanted) } catch (e) { console.warn(`save-recording: could not write into ${wanted}, keeping the take in the app's recordings folder:`, e) }
+  }
+  return writeIn(recordingsDir())
 })
+
+/**
+ * Takes recorded before this fix (or before a project folder was open) live in %TEMP% or the app's
+ * recordings folder. When a project is saved into a folder, copy any of those it uses into
+ * <project>/voice and point the saved file at the copies, so the project carries its own voice.
+ * Returns what moved so the renderer can update its paths too.
+ */
+const adoptLooseRecordings = (dir: string, data: any): { from: string; to: string; relPath: string }[] => {
+  const moved: { from: string; to: string; relPath: string }[] = []
+  const loose = [path.join(app.getPath('temp'), 'vidhelm_vo'), path.join(os.tmpdir(), 'vidhelm_vo'), recordingsDir()].map(d => path.resolve(d).toLowerCase() + path.sep)
+  const isLoose = (p: unknown) => typeof p === 'string' && loose.some(d => path.resolve(p).toLowerCase().startsWith(d))
+  const voiceDir = path.join(dir, VOICE_DIR)
+  for (const m of Array.isArray(data?.mediaBin) ? data.mediaBin : []) {
+    if (!isLoose(m?.path) || !fs.existsSync(m.path)) continue
+    try {
+      fs.mkdirSync(voiceDir, { recursive: true })
+      let to = path.join(voiceDir, path.basename(m.path)), n = 2
+      while (fs.existsSync(to) && fs.statSync(to).size !== fs.statSync(m.path).size) to = path.join(voiceDir, path.basename(m.path).replace(/(\.[^.]+)?$/, ` (${n++})$1`))
+      if (!fs.existsSync(to)) fs.copyFileSync(m.path, to)
+      // where it sits inside the project, in the renderer's relInside form, so a moved folder relinks
+      // it; returned too, so the renderer needs no second write just to add it
+      const relPath = path.relative(dir, to)
+      moved.push({ from: m.path, to, relPath })
+      m.path = to
+      m.relPath = relPath
+    } catch (e) { console.warn('could not copy a recording into the project:', m.path, e) }
+  }
+  return moved
+}
 
 // ---------------- Project folder (workspace) ----------------
 // Point VidHelm at one folder; every sub-folder inside it is a project. Opening a project
@@ -1102,13 +1481,19 @@ ipcMain.handle('list-projects', async (_event, root: string) => {
   } catch (e) { return { error: String(e) } }
 })
 
-// Everything usable sitting in a project folder, newest first, so it can be loaded without an import step
+// Everything usable sitting in a project folder, newest first, so it can be loaded without an import step.
+// That includes <project>/voice, where takes are recorded: a take from a session that was never
+// saved is on disk there, and has to come back when the project is opened again.
 ipcMain.handle('scan-project', async (_event, dir: string) => {
   try {
     if (!dir || !fs.existsSync(dir)) return { error: 'that project folder is not there any more' }
-    const files = fs.readdirSync(dir, { withFileTypes: true })
+    const mediaIn = (d: string) => fs.readdirSync(d, { withFileTypes: true })
       .filter(f => f.isFile() && MEDIA_RE.test(f.name))
-      .map(f => ({ path: path.join(dir, f.name), name: f.name, mtime: fs.statSync(path.join(dir, f.name)).mtimeMs }))
+      .map(f => ({ path: path.join(d, f.name), name: f.name, mtime: fs.statSync(path.join(d, f.name)).mtimeMs }))
+    const voice = path.join(dir, VOICE_DIR)
+    let takes: ReturnType<typeof mediaIn> = []
+    try { if (fs.statSync(voice).isDirectory()) takes = mediaIn(voice) } catch { /* no voice folder */ }
+    const files = [...mediaIn(dir), ...takes]
       .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
     const projectFile = path.join(dir, PROJECT_FILE)
     let project = null
@@ -1129,6 +1514,102 @@ ipcMain.handle('create-project', async (_event, { root, name }: { root: string; 
 
 ipcMain.handle('reveal-folder', async (_event, dir: string) => { if (dir && fs.existsSync(dir)) shell.openPath(dir) })
 
+// AI clip: a still (or a frame of a clip) → JPEG → the video harness (fal.ai / Gemini) → mp4 in the project folder.
+// Every generation costs money, so an identical request that arrives while one is already running
+// (an agent retrying after a timeout, a double click) joins that job instead of buying another.
+type GenClipArgs = { prompt: string; fromPath?: string; fromTime?: number; toPath?: string; toTime?: number; seconds?: number; aspect: 'landscape' | 'portrait' | 'square'; model?: string; keys?: { fal?: string; gemini?: string }; outDir: string }
+const genClipInflight = new Map<string, Promise<any>>()
+ipcMain.handle('gen-clip', async (_event, a: GenClipArgs) => {
+  const key = JSON.stringify([a?.prompt, a?.fromPath, a?.fromTime, a?.toPath, a?.toTime, a?.seconds, a?.aspect, a?.model, a?.outDir])
+  const running = genClipInflight.get(key)
+  if (running) return running
+  const job = genClipRun(a).finally(() => genClipInflight.delete(key))
+  genClipInflight.set(key, job)
+  return job
+})
+const genClipRun = async (a: GenClipArgs) => {
+  try {
+    const env = { FAL_KEY: a.keys?.fal || undefined, GEMINI_API_KEY: a.keys?.gemini || undefined }
+    if (!videoGenAvailable(env)) return { error: 'Add a fal.ai key (or a Gemini key) in the AI clip panel first. fal.ai → Keys → Add key.' }
+    const frame = async (p?: string, t?: number): Promise<ArrayBuffer | undefined> => {
+      if (!p) return undefined
+      const out = path.join(os.tmpdir(), `vh-frame-${Date.now()}-${Math.random().toString(36).slice(2)}.jpg`)
+      await new Promise<void>((res, rej) => {
+        let c = ffmpeg(p); if (typeof t === 'number' && t > 0) c = c.seekInput(t)
+        c.outputOptions(['-frames:v', '1', '-q:v', '2', '-vf', 'scale=1280:-2']).on('end', () => res()).on('error', rej).save(out)
+      })
+      const b = fs.readFileSync(out); try { fs.unlinkSync(out) } catch { /* tmp */ }
+      return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength)
+    }
+    const image = await frame(a.fromPath, a.fromTime), lastImage = await frame(a.toPath, a.toTime)
+    const clip = await generateClip(env, { prompt: a.prompt, image, lastImage, aspect: a.aspect, seconds: a.seconds, model: a.model })
+    if (!clip) return { error: 'No configured video model produced a clip. Check the key and the balance at fal.ai, then try again.' }
+    fs.mkdirSync(a.outDir, { recursive: true })
+    const file = path.join(a.outDir, `ai-clip-${(a.prompt || 'clip').replace(/[^\w]+/g, '-').slice(0, 30)}-${Date.now().toString(36)}.mp4`)
+    fs.writeFileSync(file, Buffer.from(clip.bytes))
+    return { path: file, model: VIDEO_MODELS[clip.model]?.label || clip.model, seconds: clip.seconds, hasAudio: clip.hasAudio, estimateUsd: estimateUsd(clip.model, clip.seconds) }
+  } catch (e) {
+    if (e instanceof GenTimeout) return { error: e.message, stillRunning: true }
+    return { error: String(e) }
+  }
+}
+
+// VidHelm Cloud hand-off (.zip): pick it, unpack it into a new project folder under the workspace root,
+// download the clips and finished drafts, and write a project file with the cloud's edit plan on the timeline.
+ipcMain.handle('import-cloud-zip', async (_event, { root, zipPath }: { root: string; zipPath?: string }) => {
+  try {
+    let file = zipPath
+    if (!file) {
+      const { filePaths } = await dialog.showOpenDialog(win!, { title: 'Import a VidHelm Cloud hand-off (.zip)', filters: [{ name: 'VidHelm Cloud hand-off', extensions: ['zip'] }], properties: ['openFile'] })
+      file = filePaths?.[0]
+    }
+    if (!file) return { cancelled: true }
+    const entries = readZip(fs.readFileSync(file))
+    // Untrusted names: entriesToWrite throws on any entry that would leave the folder (zip slip)
+    // BEFORE anything is written, and keeps only the files the cloud actually makes.
+    const unpack = entriesToWrite(entries)
+    const { manifest, plan, notesMd, reviews } = parseHandoff(entries)
+    // eslint-disable-next-line no-control-regex
+    const named = String(manifest.project?.name || '').replace(/[<>:"/\\|?*\x00-\x1f]/g, '').replace(/^[. ]+|[. ]+$/g, '').trim() || 'Cloud project'
+    const safe = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\..*)?$/i.test(named) ? '_' + named : named   // Windows device names
+    let dir = path.join(root, safe), n = 2
+    while (fs.existsSync(dir)) dir = path.join(root, `${safe} ${n++}`)
+    // every path written below must resolve inside these, whatever the names said
+    const inside = (base: string, p: string) => { const b = path.resolve(base), r = path.resolve(p); return r.startsWith(b + path.sep) }
+    if (!inside(root, dir)) throw new Error('that project name is not usable as a folder name')
+    const cloudDir = path.join(dir, 'cloud')
+    fs.mkdirSync(cloudDir, { recursive: true })
+    const narration: Record<string, string> = {}
+    for (const e of unpack) {
+      const p = path.join(cloudDir, e.name)
+      if (!inside(cloudDir, p)) throw new Error(`unsafe entry in the zip: ${e.name}`)
+      fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, e.data)
+      if (e.name.startsWith('narration/')) narration[e.name] = p
+    }
+    if (notesMd) fs.writeFileSync(path.join(dir, 'NOTES.md'), notesMd)
+    const files: Record<string, { path: string; hasAudio: boolean }> = {}
+    const failed: string[] = []
+    // Downloads only from VidHelm Cloud's own media links: the manifest could otherwise point the
+    // app at any URL, localhost included. VH_CLOUD_ORIGIN adds a dev server (e.g. http://localhost:8787).
+    const origins = [...CLOUD_ORIGINS, ...(process.env.VH_CLOUD_ORIGIN ? [process.env.VH_CLOUD_ORIGIN.replace(/\/+$/, '')] : [])]
+    for (const d of downloadList(manifest)) {
+      const dest = path.join(dir, d.file)
+      try {
+        if (!inside(dir, dest)) throw new Error('unsafe file name')
+        if (!isCloudMediaUrl(d.url, origins)) throw new Error('refused: not a VidHelm Cloud media link')
+        const r = await fetch(d.url, { redirect: 'error', signal: AbortSignal.timeout(30 * 60 * 1000) })
+        if (!r.ok || !r.body) throw new Error('HTTP ' + r.status)
+        // streamed to disk, so a long proxy is not held in memory whole
+        await pipeline(Readable.fromWeb(r.body as any), fs.createWriteStream(dest))
+        if (d.clipId) files[d.clipId] = { path: dest, hasAudio: d.kind !== 'image' }
+      } catch (e) { try { fs.rmSync(dest, { force: true }) } catch { /* nothing written */ } failed.push(`${d.file}: ${String((e as Error)?.message || e)}`) }
+    }
+    const project = buildProject(manifest, plan, files, narration, reviews)
+    fs.writeFileSync(path.join(dir, PROJECT_FILE), JSON.stringify(project, null, 2))
+    return { path: dir, name: path.basename(dir), clips: Object.keys(files).length, timeline: (project.clips as unknown[]).length, failed }
+  } catch (e) { return { error: String(e) } }
+})
+
 // Where flattened renders for video-analysis services go. Kept out of the project folder so
 // they do not get picked up as project media on the next scan.
 ipcMain.handle('analysis-path', async (_event, name: string) => {
@@ -1137,15 +1618,25 @@ ipcMain.handle('analysis-path', async (_event, name: string) => {
   return path.join(dir, `${(name || 'timeline').replace(/[^\w-]+/g, '_')}_${Date.now()}.mp4`)
 })
 
-// Save straight into the project folder, no dialog once a project is open
+// Save straight into the project folder, no dialog once a project is open. Written to a temp file
+// and renamed over the old save, so a crash or a full disk mid-write never leaves a half project file.
 ipcMain.handle('save-project-to', async (_event, { dir, data }: { dir: string; data: any }) => {
   try {
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+    const moved = adoptLooseRecordings(dir, data)
     const file = path.join(dir, PROJECT_FILE)
-    fs.writeFileSync(file, JSON.stringify(data, null, 2), 'utf8')
-    return { path: file }
+    // The previous save survives one more save as project.vidhelm.json.bak, so a save of the wrong
+    // state (undone too far, the wrong project open) can still be walked back by hand. Neither the
+    // project list nor the media scan looks at it.
+    if (fs.existsSync(file)) {
+      try { fs.copyFileSync(file, file + '.bak') } catch (e) { console.warn('could not keep a backup of the previous save:', e) }
+    }
+    await writeJsonAtomic(file, data)
+    return { path: file, ...(moved.length ? { moved } : {}) }
   } catch (e) { return { error: String(e) } }
 })
+
+const PROJECT_FILE_RE = /\.(rsnap|json)$/i
 
 ipcMain.handle('save-project', async (_event, data: any) => {
   if (!win) return null
@@ -1154,18 +1645,83 @@ ipcMain.handle('save-project', async (_event, data: any) => {
     filters: [{ name: 'VidHelm Project', extensions: ['rsnap', 'json'] }],
   })
   if (!filePath) return null
-  fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf8')
+  await writeJsonAtomic(filePath, data)
   return filePath
 })
 
+// Save back into the .rsnap / .json file the project was opened from (or first saved as), with no
+// dialog: Save means "where it lives", the same as a folder project.
+ipcMain.handle('save-project-file', async (_event, { path: file, data }: { path: string; data: any } = { path: '', data: null }) => {
+  try {
+    if (typeof file !== 'string' || !path.isAbsolute(file) || !PROJECT_FILE_RE.test(file)) return { error: 'that is not a project file (.rsnap or .json)' }
+    if (!data || typeof data !== 'object') return { error: 'nothing to save' }
+    if (!fs.existsSync(path.dirname(file))) return { error: `the folder ${path.dirname(file)} is not there any more (use Save As to keep it somewhere else)` }
+    await writeJsonAtomic(file, data)
+    return { path: file }
+  } catch (e) { return { error: String(e) } }
+})
+
+// Says which file it was, so Save can write back to it (and a folder's own project.vidhelm.json
+// opens as that folder). The renderer still accepts the bare project an older build returned.
 ipcMain.handle('load-project', async () => {
   if (!win) return null
   const { filePaths } = await dialog.showOpenDialog(win, {
     title: 'Open Project', properties: ['openFile'],
     filters: [{ name: 'VidHelm Project', extensions: ['rsnap', 'json'] }],
   })
-  if (!filePaths || !filePaths[0]) return null
-  try { return JSON.parse(fs.readFileSync(filePaths[0], 'utf8')) } catch { return null }
+  const file = filePaths?.[0]
+  if (!file) return null
+  try {
+    const data = JSON.parse(fs.readFileSync(file, 'utf8'))
+    if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('it holds no project')
+    return { data, path: file }
+  } catch (e) {
+    // a silent nothing looked like the Open button was broken
+    await dialog.showMessageBox(win, { type: 'error', title: 'Open Project', message: `${path.basename(file)} could not be opened as a VidHelm project.`, detail: String((e as Error)?.message || e), noLink: true })
+    return null
+  }
+})
+
+// ---- Autosave ----
+// Unsaved work, written every 30 s or so while there is any: <project>/project.vidhelm.autosave.json
+// beside the real save, or the app's own folder when no project folder is open. The renderer offers
+// it back when that project (or, untitled, the app) opens after a session that ended without saving.
+// Neither the project list nor the media scan picks the file up.
+const AUTOSAVE_FILE = 'project.vidhelm.autosave.json'
+const autosavePath = (dir: unknown): string | null => {
+  if (dir === null || dir === undefined || dir === '') return path.join(app.getPath('userData'), 'autosave', 'untitled.json')
+  return typeof dir === 'string' && path.isAbsolute(dir) ? path.join(dir, AUTOSAVE_FILE) : null
+}
+
+ipcMain.handle('autosave-write', async (_event, { dir, data }: { dir?: string | null; data?: any } = {}) => {
+  try {
+    const file = autosavePath(dir)
+    if (!file) return { error: 'not a project folder' }
+    if (!data || typeof data !== 'object') return { error: 'nothing to autosave' }
+    // A project folder that has gone (renamed, a drive unplugged) is not re-created by an autosave:
+    // the renderer keeps its own copy instead.
+    if (dir && !fs.existsSync(dir)) return { error: 'that project folder is not there any more' }
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    await writeJsonAtomic(file, data, false)
+    return { path: file }
+  } catch (e) { return { error: String(e) } }
+})
+
+ipcMain.handle('autosave-read', async (_event, { dir }: { dir?: string | null } = {}) => {
+  try {
+    const file = autosavePath(dir)
+    if (!file || !fs.existsSync(file)) return null
+    const data = JSON.parse(fs.readFileSync(file, 'utf8'))
+    return data && typeof data === 'object' && !Array.isArray(data) ? { data } : null
+  } catch { return null }   // unreadable or torn: there is no autosave to offer
+})
+
+ipcMain.handle('autosave-clear', async (_event, { dir }: { dir?: string | null } = {}) => {
+  try {
+    const file = autosavePath(dir)
+    if (file) for (const f of [file, file + '.tmp']) fs.rmSync(f, { force: true })
+    return { ok: true }
+  } catch (e) { return { error: String(e) } }
 })
 
 // ---- Persistent app settings (brand kit, intro defaults, audio) ----
@@ -1174,7 +1730,7 @@ const DEFAULT_SETTINGS = {
   brand: { enabled: false, logoPath: null as string | null, position: 'br', sizePct: 16, margin: 40, opacity: 0.85, showMode: 'whole' as 'whole' | 'intro' | 'outro', windowSec: 5, fade: 0.5 },
   intro: { segment: 'first' as 'first' | 'last', seconds: 5, fade: 0.6, treatment: 'ripple' as 'ripple' | 'overlay' },
   audio: { optimize: true, noiseReduction: false },
-  caption: { fontSize: 44, color: '#ffffff', position: 'lower' as 'lower' | 'top' | 'center', box: true, boxOpacity: 0.5, model: 'tiny' as 'tiny' | 'base' | 'small', language: 'en', mode: 'phrase' as 'phrase' | 'word' },
+  caption: { fontSize: 44, color: '#ffffff', position: 'lower' as 'lower' | 'top' | 'center', box: true, boxOpacity: 0.5, model: 'tiny' as 'tiny' | 'base' | 'small', language: 'en', mode: 'phrase' as 'phrase' | 'word', theme: 'creator', tweak: '' },
   silence: { minPause: 0.8, thresholdDb: -30, pad: 0.12, smooth: true, transition: 0.12, detectBy: 'auto' as 'auto' | 'audio' | 'motion', freezeDb: -50 },
 }
 
@@ -1255,6 +1811,11 @@ ipcMain.on('window-drag-end', () => {
   if (!win || win.isDestroyed()) return
   const p = screen.getCursorScreenPoint()
   if (shouldSnapMaximize(p.y, screen.getDisplayNearestPoint(p).workArea.y)) win.maximize()
+})
+
+ipcMain.on('window-theme', (_e, theme: 'dark' | 'light') => {
+  if (!win || win.isDestroyed()) return
+  try { win.setTitleBarOverlay({ ...(TITLEBAR[theme] || TITLEBAR.dark), height: TITLEBAR_H }) } catch { /* not supported on this platform */ }
 })
 
 ipcMain.on('window-toggle-maximize', () => {
@@ -1512,25 +2073,47 @@ import http from 'node:http'
 
 const AGENT_PORT = Number(process.env.VH_AGENT_PORT || 5959)
 let agentSeq = 0
-const agentPending = new Map<number, (result: any) => void>()
+// Requests waiting on the editor, by correlation id (reqId: see electron/bridgeguard.ts for why it
+// is not the command's `id`)
+const agentPending = new Map<number, PendingReply & { done: (result: any) => void }>()
 
-ipcMain.on('agent-response', (_e, { id, result }: { id: number; result: any }) => {
-  const cb = agentPending.get(id)
-  if (cb) { agentPending.delete(id); cb(result) }
+ipcMain.on('agent-response', (_e, msg: { id?: unknown; reqId?: unknown; result: any }) => {
+  const key = replyKey(agentPending, msg)
+  const p = key === undefined ? undefined : agentPending.get(key)
+  if (p) { agentPending.delete(key!); p.done(msg?.result) }
 })
 
-const askRenderer = (cmd: any, timeoutMs = 15000) => new Promise<any>(resolve => {
+const askRenderer = (cmd: any, timeoutMs = QUICK_MS) => new Promise<any>(resolve => {
   if (!win) return resolve({ error: 'VidHelm window is not open' })
   const id = ++agentSeq
-  const timer = setTimeout(() => { agentPending.delete(id); resolve({ error: `renderer timeout after ${timeoutMs / 1000}s` }) }, timeoutMs)
-  agentPending.set(id, r => { clearTimeout(timer); resolve(r) })
-  win.webContents.send('agent-command', { id, ...cmd })
+  const alias = replyAlias(cmd)
+  const timer = setTimeout(() => {
+    const secs = Math.round(timeoutMs / 1000)
+    if (cmd.action === 'get_state') { agentPending.delete(id); return resolve({ error: `renderer timeout after ${secs}s (the editor window is not answering)` }) }
+    // The editor is NOT interrupted: the command carries on and may still land. Say so, so an
+    // agent looks before it retries (a retried generate_clip is a second paid generation), and
+    // keep listening so the late result at least shows up in the log instead of vanishing.
+    agentPending.set(id, { alias, done: late => console.log(`agent: '${cmd.action}' finished ${secs}s+ after it was sent:`, JSON.stringify(late)?.slice(0, 300)) })
+    setTimeout(() => agentPending.delete(id), 60 * 60 * 1000).unref?.()
+    resolve({ error: `renderer timeout after ${secs}s: '${cmd.action}' is still running in the app and was not cancelled, so it may still finish. Call get_state to see whether it landed before retrying.`, stillRunning: true })
+  }, timeoutMs)
+  agentPending.set(id, { alias, done: r => { clearTimeout(timer); resolve(r) } })
+  // the command keeps its own `id` (delete_item, label_broll); the request's travels as reqId
+  win.webContents.send('agent-command', commandForEditor(cmd, id))
 })
 
 const agentServer = http.createServer(async (req, res) => {
   // localhost only
   const remote = req.socket.remoteAddress || ''
   if (!/^(127\.0\.0\.1|::1|::ffff:127\.0\.0\.1)$/.test(remote)) { res.writeHead(403); return res.end() }
+  // ...and never a web page: every site the user has open can reach 127.0.0.1 too, with no CORS
+  // preflight for a text/plain POST, and a DNS-rebinding page could read /state and /screenshot.
+  // Checked before any routing, so all four endpoints are covered (electron/bridgeguard.ts).
+  const refused = bridgeRefusal(req.headers, AGENT_PORT)
+  if (refused) {
+    res.writeHead(403, { 'Content-Type': 'application/json' })
+    return res.end(JSON.stringify({ error: refused }))
+  }
   res.setHeader('Content-Type', 'application/json')
   try {
     if (req.method === 'GET' && req.url === '/ping') {
@@ -1553,16 +2136,10 @@ const agentServer = http.createServer(async (req, res) => {
       for await (const c of req) chunks.push(c as Buffer)
       let cmd: any
       try { cmd = JSON.parse(Buffer.concat(chunks).toString() || '{}') } catch { res.writeHead(400); return res.end(JSON.stringify({ error: 'bad json' })) }
-      if (!cmd.action) { res.writeHead(400); return res.end(JSON.stringify({ error: 'missing action' })) }
-      // b-roll scanning, speech reading and framing analysis are all deliberately slow: they
-      // decode real footage rather than sampling a few frames, so they belong here too
-      const LONG = ['export', 'cut_pauses', 'run_recipe', 'sample_frames', 'compose_thumbnail', 'render_3d', 'prepare_analysis',
-        'scan_broll', 'plan_broll', 'place_broll', 'analyze_speech', 'find_phrase', 'cut_at_phrase', 'plan_framing', 'look_through',
-        'find_word', 'capture_site', 'make_score']
-      // a fourteen minute cut takes about half an hour to render here, so a flat 30 minute cap
-      // reported a timeout on an export that was going perfectly well
-      const timeout = cmd.action === 'export' ? 4 * 60 * 60 * 1000 : LONG.includes(cmd.action) ? 20 * 60 * 1000 : 15000
-      return res.end(JSON.stringify(await askRenderer(cmd, timeout)))
+      if (!cmd || typeof cmd !== 'object' || !cmd.action) { res.writeHead(400); return res.end(JSON.stringify({ error: 'missing action' })) }
+      // How long each action may take lives in agent/timeouts.mjs, shared with the MCP proxy so
+      // the two ends can never disagree again (and the proxy always waits a little longer).
+      return res.end(JSON.stringify(await askRenderer(cmd, bridgeTimeoutMs(cmd))))
     }
     res.writeHead(404); res.end(JSON.stringify({ error: 'not found' }))
   } catch (e) { res.writeHead(500); res.end(JSON.stringify({ error: String(e) })) }
@@ -1944,6 +2521,11 @@ ipcMain.handle('capture-site', async (_event, { url, width = 1920, height = 1080
   url: string; width?: number; height?: number; theme?: 'light' | 'dark'; script?: string; settle?: number; seconds?: number; fps?: number; outPath?: string
 }) => {
   if (!url) return { error: 'url required' }
+  // web pages only: file:, data:, chrome: and friends would let a caller read local files into a capture
+  try { if (!/^https?:$/.test(new URL(url).protocol)) return { error: 'url must start with http:// or https://' } } catch { return { error: 'that url is not valid' } }
+  if (outPath && !(Number(seconds) > 0 ? /\.(mp4|m4v|mov|mkv)$/i : /\.(png|jpe?g)$/i).test(outPath)) {
+    return { error: Number(seconds) > 0 ? 'outPath must be a video file (.mp4) for a recording' : 'outPath must be an image file (.png) for a still' }
+  }
   const W = Math.max(320, Math.min(3840, Math.round(width))), H = Math.max(240, Math.min(2160, Math.round(height)))
   const FPS = Math.max(5, Math.min(60, Math.round(fps)))
   const prevTheme = nativeTheme.themeSource
@@ -2055,13 +2637,37 @@ ipcMain.handle('voice-clone', async (_event, { command, scriptText, pronounce }:
   })
 })
 
+// Exports in flight, by output file: two renders writing one file produce garbage (an agent retrying
+// after a timeout while the first export still runs is exactly how that happens).
+const exportsRunning = new Set<string>()
+// A failure must say WHY, in words, with the end of ffmpeg's log after it: the renderer shows the
+// message in a toast (it used to just make the progress bar disappear).
+const exportError = (reason: string, detail = '') => new Error(`Export failed: ${reason}${detail ? `\n${detail}` : ''}`)
+
 ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outputPath, settings }: { clips: any[], texts: any[], brand: any, audio: any, outputPath: string, settings: any }) => {
   let cleanupGraph = ''   // the filtergraph is written to a file, see below
+  clips = clips || []
+  texts = texts || []
+  if (clips.length === 0 && texts.length === 0) throw exportError('there is nothing on the timeline to export')
+  // A video container only. Besides failing late inside ffmpeg, a bridge caller could otherwise aim
+  // the render at any file name it liked (a .cmd in the Startup folder, say).
+  if (!outputPath || !/\.(mp4|m4v|mov|mkv)$/i.test(outputPath)) throw exportError('the output file needs a video extension such as .mp4', outputPath ? `got: ${outputPath}` : '')
+  // Check every source before ffmpeg starts, and name what is wrong. A clip whose media was removed
+  // from the bin arrives with no path at all, which used to throw deep inside fluent-ffmpeg.
+  const at = (c: any) => `${c.trackId || 'a track'} at ${Number(c.start || 0).toFixed(1)}s`
+  const problems: string[] = []
+  for (const c of clips) {
+    if (!c.path) problems.push(`the clip on ${at(c)} has no media (it was removed from the bin)`)
+    else if (!fs.existsSync(c.path)) problems.push(`${path.basename(c.path)} (on ${at(c)}) is missing`)
+    else if (c.type === 'image' && UNREADABLE_STILL.test(c.path)) problems.push(`${path.basename(c.path)} is a HEIC/HEIF photo, which the exporter cannot read: convert it to JPG or PNG`)
+  }
+  // one problem is the headline by itself; several get a count, then the list
+  if (problems.length) throw exportError(problems.length === 1 ? problems[0] : `${problems.length} clips cannot be read`, problems.length === 1 ? '' : problems.slice(0, 6).join('\n'))
+  const outKey = path.resolve(outputPath).toLowerCase()
+  if (exportsRunning.has(outKey)) throw exportError('an export to that file is already running')
+  exportsRunning.add(outKey)
   return new Promise((resolve, reject) => {
-    clips = clips || []
-    texts = texts || []
     audio = audio || { optimize: settings?.normalizeAudio !== false, noiseReduction: false }
-    if (clips.length === 0 && texts.length === 0) return reject('Nothing to export')
 
     const W = Math.round(settings?.width) || 1920
     const H = Math.round(settings?.height) || 1080
@@ -2074,6 +2680,8 @@ ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outp
     const tmpDir = path.join(app.getPath('temp'), 'vidhelm_text')
     if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true })
 
+    // what was at the output path before this run, so a failure only removes a file THIS run wrote
+    const before = (() => { try { const st = fs.statSync(outputPath); return `${st.mtimeMs}|${st.size}` } catch { return null } })()
     let command = ffmpeg()
     // 0: black base video at target resolution/fps, 1: silent base audio at 48kHz (YouTube spec)
     command.input(`color=c=black:s=${W}x${H}:r=${FPS}:d=${totalDuration}`).inputFormat('lavfi')
@@ -2082,12 +2690,22 @@ ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outp
     const filterComplex: string[] = []
     let currentVOut = '0:v'
     const audioMixInputs: string[] = ['1:a']
+    // One decoder per clip, and each decoder sizes its thread pool to the whole CPU: a long pause-cut
+    // of 4K phone footage opened 90 of those at once and took the machine down. Past a handful of
+    // video inputs, cap each one; the encoder is the bottleneck by then anyway.
+    const videoInputs = clips.filter(c => c.type !== 'image' && c.hasVideo).length
+    const decodeThreads = videoInputs > 4 ? ['-threads', '2'] : []
 
     clips.forEach((clip, i) => {
       const idx = i + 2
       const end = clip.start + clip.duration
+      let stillVf = ''
       if (clip.type === 'image') {
-        command.input(clip.path).inputOptions([`-loop 1`, `-t ${clip.duration}`])
+        // -loop 1 is image2-only: a GIF, AVIF or ICO used to fail the whole export
+        const still = stillInput(clip.path, clip.duration, FPS)
+        if (still.opts.length) command.input(clip.path).inputOptions(still.opts)
+        else command.input(clip.path)
+        stillVf = still.vf
       } else {
         // Honour the clip's trim window. Without this the export renders every clip from the
         // START of its source file and only uses the overlay window to decide when it is on
@@ -2098,6 +2716,7 @@ ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outp
         const opts: string[] = []
         if (ss > 0) opts.push(`-ss ${ss.toFixed(3)}`)
         opts.push(`-t ${(clip.duration + 0.2).toFixed(3)}`)
+        if (clip.hasVideo) opts.push(...decodeThreads)
         command.input(clip.path).inputOptions(opts)
       }
 
@@ -2116,7 +2735,7 @@ ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outp
         // does. Scaling happens after, since tone mapping at output size is the cheaper order.
         const hdrChain = clip.hdr ? `${HDR_TO_SDR},` : ''
         // Fit into frame with transparent padding so overlapping clips can crossfade through each other
-        let v = `[${idx}:v]${keyChain}${hdrChain}format=yuva420p,scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=0x00000000,setpts=PTS-STARTPTS+${clip.start}/TB`
+        let v = `[${idx}:v]${stillVf}${keyChain}${hdrChain}format=yuva420p,scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=0x00000000,setpts=PTS-STARTPTS+${clip.start}/TB`
         if (clip.fadeIn > 0) v += `,fade=t=in:st=${clip.start}:d=${clip.fadeIn}:alpha=1`
         if (clip.fadeOut > 0) v += `,fade=t=out:st=${(end - clip.fadeOut).toFixed(3)}:d=${clip.fadeOut}:alpha=1`
         filterComplex.push(`${v}[v_scaled_${idx}]`)
@@ -2126,36 +2745,52 @@ ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outp
 
       if (clip.hasAudio) {
         const vExpr = volumeExpr(clip.volumePoints, clip.start, clip.volume ?? 1.0)
-        let a = `[${idx}:a]aresample=48000,adelay=${Math.round(clip.start * 1000)}|${Math.round(clip.start * 1000)}`
-        // Volume automation (graph) takes precedence over the flat per-clip volume
-        a += vExpr ? `,volume='${vExpr}':eval=frame` : `,volume=${clip.volume ?? 1.0}`
-        // Audio-only ramps override the picture fades. A pause cut sets these to a
-        // few milliseconds so the picture cuts hard while the waveform still reaches
-        // zero before the splice; without it the join is a step, and a step clicks.
-        const aIn = clip.aFadeIn ?? clip.fadeIn
-        const aOut = clip.aFadeOut ?? clip.fadeOut
-        if (aIn > 0) a += `,afade=t=in:st=${clip.start}:d=${aIn}`
-        if (aOut > 0) a += `,afade=t=out:st=${(end - aOut).toFixed(3)}:d=${aOut}`
-        filterComplex.push(`${a}[a_delayed_${idx}]`)
+        // Trimmed to exactly the clip (the input carries a 0.2 s tail for the picture fades, which
+        // used to play on under the next clip), and every splice ramped by a few milliseconds so the
+        // picture can cut hard without the join clicking. See electron/exportgraph.ts.
+        // Volume automation (graph) takes precedence over the flat per-clip volume.
+        filterComplex.push(clipAudioChain(`${idx}:a`, clip, vExpr ?? (clip.volume ?? 1.0), `a_delayed_${idx}`))
         audioMixInputs.push(`a_delayed_${idx}`)
       }
     })
 
+    // Themed captions: one ASS script per caption style, rendered by the same code as VidHelm Cloud
+    const capTexts = texts.filter(t => t.caption && t.caption.spec)
+    const byStyle = new Map<string, any[]>()
+    for (const t of capTexts) { const k = JSON.stringify(t.caption.spec); if (!byStyle.has(k)) byStyle.set(k, []); byStyle.get(k)!.push(t) }
+    let assNo = 0
+    for (const [k, group] of byStyle) {
+      const cues = group.map((t: any) => ({ start: t.start, end: t.start + t.duration, text: String(t.text ?? ''),
+        words: Array.isArray(t.caption.words) ? t.caption.words.map((w: any) => ({ s: t.start + w.s, e: t.start + w.e, t: w.t })) : undefined }))
+      const assFile = path.join(tmpDir, `caps_${assNo}_${Date.now()}.ass`)
+      fs.writeFileSync(assFile, buildAss(cues, JSON.parse(k), W, H), 'utf8')
+      filterComplex.push(`[${currentVOut}]subtitles=filename='${escFilter(assFile)}':fontsdir='${escFilter(themeFontsDir())}'[v_cap_${assNo}]`)
+      currentVOut = `v_cap_${assNo}`
+      assNo++
+    }
+
     // Burn in text overlays on top of the video chain
     texts.forEach((t, i) => {
+      if (t.caption && t.caption.spec) return   // burned above with its theme
       const end = t.start + t.duration
       const txtFile = path.join(tmpDir, `t_${i}_${Date.now()}.txt`)
       fs.writeFileSync(txtFile, String(t.text ?? ''), 'utf8')
       const color = `0x${(t.color || '#ffffff').replace('#', '')}`
       const size = Math.max(8, Math.round((t.fontSize / 1080) * H))
+      const themeFont = t.font && THEME_FONTS[t.font as ThemeFont] ? escFilter(path.join(themeFontsDir(), THEME_FONTS[t.font as ThemeFont].file)) : null
+      const outline = typeof t.outline === 'number' && t.outline > 0 && !t.box ? [`borderw=${Math.max(1, Math.round(size * t.outline))}`, `bordercolor=0x${String(t.outlineColor || '#000000').replace('#', '')}`] : []
       const dt = [
-        `fontfile='${fontFile}'`,
+        `fontfile='${themeFont || fontFile}'`,
+        ...outline,
         `textfile='${escFilter(txtFile)}'`,
+        // the text is the user's, literally: under the default expansion a '%' ('100% PLA', 'Save 20%')
+        // made drawtext draw NOTHING for the whole overlay (exit 0, no error), and backslashes vanished
+        `expansion=none`,
         `fontcolor=${color}`,
         `fontsize=${size}`,
         `x=${Math.round(t.x * W)}-text_w/2`,
         `y=${Math.round(t.y * H)}-text_h/2`,
-        ...(t.box ? [`box=1`, `boxcolor=black@${typeof t.boxOpacity === 'number' ? t.boxOpacity : 0.5}`, `boxborderw=${Math.round(size * 0.25)}`] : [`box=0`]),
+        ...(t.box ? [`box=1`, `boxcolor=${t.boxColor ? '0x' + String(t.boxColor).replace('#', '') : 'black'}@${typeof t.boxOpacity === 'number' ? t.boxOpacity : 0.5}`, `boxborderw=${Math.round(size * 0.25)}`] : [`box=0`]),
         `enable='between(t,${t.start},${end})'`,
         `alpha='${alphaExpr(t.start, end, t.fadeIn || 0, t.fadeOut || 0)}'`,
       ].join(':')
@@ -2166,7 +2801,9 @@ ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outp
     // Brand logo / outro watermark (applied on top of everything), from persistent settings
     if (brand && brand.enabled && brand.logoPath && fs.existsSync(brand.logoPath)) {
       const logoIdx = 2 + clips.length
-      command.input(brand.logoPath).inputOptions(['-loop 1', '-t', String(totalDuration)])
+      const logo = stillInput(brand.logoPath, totalDuration, FPS)
+      if (logo.opts.length) command.input(brand.logoPath).inputOptions(logo.opts)
+      else command.input(brand.logoPath)
       const m = Math.round((brand.margin ?? 40) / 1080 * H)
       const logoW = Math.max(16, Math.round((brand.sizePct ?? 16) / 100 * W))
       const op = typeof brand.opacity === 'number' ? brand.opacity : 0.85
@@ -2181,7 +2818,7 @@ ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outp
         br: `main_w-overlay_w-${m}:main_h-overlay_h-${m}`,
         center: `(main_w-overlay_w)/2:(main_h-overlay_h)/2`,
       }
-      let lf = `[${logoIdx}:v]format=rgba,scale=${logoW}:-1,colorchannelmixer=aa=${op}`
+      let lf = `[${logoIdx}:v]${logo.vf}format=rgba,scale=${logoW}:-1,colorchannelmixer=aa=${op}`
       if (fade > 0) { lf += `,fade=t=in:st=${s}:d=${fade}:alpha=1,fade=t=out:st=${(e - fade).toFixed(3)}:d=${fade}:alpha=1` }
       filterComplex.push(`${lf}[logo]`)
       filterComplex.push(`[${currentVOut}][logo]overlay=${posMap[brand.position] || posMap.br}:enable='between(t,${s},${e})'[v_brand]`)
@@ -2194,15 +2831,9 @@ ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outp
       let chain = '[amixed]'
       if (audio.noiseReduction) { filterComplex.push(`${chain}highpass=f=80,afftdn=nf=-25[aclean]`); chain = '[aclean]' }
       filterComplex.push(`${chain}volume=${master}[amaster]`)
-      // "Loud for YouTube" master: compress dynamics for higher perceived loudness, then land at -13 LUFS
-      // (the loud end of YouTube's window; tighter LRA=7 = denser/punchier). loudnorm runs single-pass here,
-      // and its internal true-peak limiter only approximates the ceiling, it measured -0.9 dBTP against the
-      // -1 dBTP target, i.e. the export failed our own quality check. Asking loudnorm for -1.5 and following
-      // it with a hard ceiling leaves enough room for inter-sample peaks to still land under -1 dBTP.
-      // level=disabled matters: without it alimiter re-normalises the level and undoes loudnorm.
-      filterComplex.push(audio.optimize
-        ? `[amaster]acompressor=threshold=-18dB:ratio=3:attack=20:release=250:makeup=3,loudnorm=I=-13:LRA=7:TP=-1.5,alimiter=limit=0.85:level=disabled[aout]`
-        : `[amaster]alimiter=limit=0.891:level=disabled[aout]`)
+      // "Loud for YouTube" (compressor, loudnorm to -13 LUFS, hard ceiling) or just the ceiling. The
+      // loudnorm branch also mends loudnorm's own timestamp jump near the end; see electron/exportgraph.ts.
+      filterComplex.push(masterChain(!!audio.optimize))
     } else {
       filterComplex.push(`[1:a]volume=${master}[aout]`)
     }
@@ -2241,8 +2872,18 @@ ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outp
       ])
       .on('start', (cmd) => console.log('FFmpeg started:', cmd))
       .on('progress', (progress) => { if (win) win.webContents.send('export-progress', progress.percent) })
-      .on('end', () => { if (cleanupGraph) { try { fs.unlinkSync(cleanupGraph) } catch { /* already gone */ } } resolve({ success: true }) })
-      .on('error', (err) => { if (cleanupGraph) { try { fs.unlinkSync(cleanupGraph) } catch { /* already gone */ } } console.error('FFmpeg error:', err); reject(err) })
+      .on('end', () => { exportsRunning.delete(outKey); if (cleanupGraph) { try { fs.unlinkSync(cleanupGraph) } catch { /* already gone */ } } resolve({ success: true }) })
+      .on('error', (err: Error, _stdout: string, stderr: string) => {
+        exportsRunning.delete(outKey)
+        if (cleanupGraph) { try { fs.unlinkSync(cleanupGraph) } catch { /* already gone */ } }
+        // A half-written file would otherwise sit there looking like a finished export. Only one this
+        // run actually wrote: a failure while opening the inputs never touches the output, and an
+        // earlier good export at the same path must survive that.
+        try { const st = fs.statSync(outputPath); if (`${st.mtimeMs}|${st.size}` !== before) fs.rmSync(outputPath, { force: true }) } catch { /* locked or never created */ }
+        console.error('FFmpeg error:', err, stderr)
+        const raw = `${err?.message || err}\n${stderr || ''}`
+        reject(exportError(friendlyExportError(raw, outputPath), stderrTail(stderr || String(err?.message || ''))))
+      })
       .save(outputPath)
-  })
+  }).finally(() => exportsRunning.delete(outKey))
 })

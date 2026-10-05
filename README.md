@@ -40,12 +40,12 @@ Your footage never leaves your machine: FFmpeg does the rendering, Whisper runs 
 - **Cloned-voice narration**: a built-in **🧬 setup wizard** records a ~20s sample of your voice and sets up a free local engine for you: **XTTS-v2** (guided Python install) or **[audio.cpp](https://github.com/0xShug0/audio.cpp)** (prebuilt exe, no Python, Apache-licensed models, safe for monetized videos). Any TTS/voice-clone CLI works too, see [docs/VOICE_CLONE.md](docs/VOICE_CLONE.md); generated lines are placed at your tag points automatically
 - Loudness done right: one checkbox masters the mix to YouTube's target with a compressor + `loudnorm`; optional noise reduction
 
-**🤖 AI copilot built in, bring your AI of choice**
+**AI copilot built in, bring your AI of choice**
 - VidHelm ships an **MCP server**: your AI assistant drives the running app **while you watch**: read the timeline, drop SFX on your tag points, write titles, seek your window, take screenshots of what you see, and export with a quality report
 - You edit in the GUI, the agent edits through the bridge: same timeline, live, with shared undo. Tag points become the language between you: you mark the beats, it does the busywork
 - **Zero config** for Claude Code, Cursor, and VS Code (configs ship in the repo) · copy-paste setup for Claude Desktop, Windsurf, Cline, Codex CLI, Gemini CLI · **fully-local setups** with LM Studio, Jan, Open WebUI, Ollama, or AMD Lemonade Server · plain-HTTP fallback for everything else, see [docs/CONNECT.md](docs/CONNECT.md)
 - A **portable skillset** teaches any assistant the workflow: `AGENTS.md` (read automatically by most agentic tools), a Claude Code skill in `.claude/skills/`, and a paste-anywhere version in `agent/skills/`
-- Stuck? Click **🤖 AI** in the app header: live connection diagnostics, per-client configs generated with your real install path, and fixes for the usual snags
+- Stuck? Click **Connect AI** in the app header: live connection diagnostics, per-client configs generated with your real install path, and fixes for the usual snags
 
 **Finishing**
 - On-device **Whisper captions** (phrase or word-by-word karaoke style, 10+ languages)
@@ -61,7 +61,7 @@ Your footage never leaves your machine: FFmpeg does the rendering, Whisper runs 
 
 **3. Export.** Hit **Export Video**, pick a location, and let **Watch & Verify** confirm it's upload-ready (resolution, loudness, true peak, black frames).
 
-**4. Add your AI (optional, and the fun part).** Click **🤖 AI** in the header. It health-checks everything and gives you the exact setup line for your assistant, for Claude Code that's one command:
+**4. Add your AI (optional, and the fun part).** Click **Connect AI** in the header. It health-checks everything and gives you the exact setup line for your assistant, for Claude Code that's one command:
 
 ```bash
 claude mcp add vidhelm -- node "C:\Program Files\VidHelm\resources\agent\mcp-server.mjs"

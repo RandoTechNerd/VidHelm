@@ -1,9 +1,11 @@
 {
   "name": "vidhelm",
   "private": true,
-  "version": "1.9.0",
+  "version": "1.9.1",
   "main": "dist-electron/main.js",
   "scripts": {
+    "test:cloudimport": "tsx electron/cloudimport.test.ts",
+    "test:videogen": "tsx electron/videogen.test.ts",
     "dev": "vite",
     "dev:web": "vite --mode web",
     "build": "tsc -b && vite build && electron-builder",
@@ -23,11 +25,14 @@
     "test:sfxsearch": "node scripts/sfxsearch.test.mjs",
     "test:sfxmatch": "node scripts/sfxmatch.test.mjs",
     "test:visual": "node scripts/visual.test.mjs",
-    "test": "npm run typecheck && npm run test:takes && npm run test:playable && npm run test:speech && npm run test:framing && npm run test:broll && npm run test:capability && npm run test:score && npm run test:sfxsynth && npm run test:sfxsearch && npm run test:sfxmatch && npm run test:visual && npm run test:threemf && npm run test:grid && npm run test:textlayout && npm run test:pronounce && npm run selftest",
+    "test": "npm run typecheck && npm run test:takes && npm run test:playable && npm run test:speech && npm run test:framing && npm run test:broll && npm run test:capability && npm run test:score && npm run test:sfxsynth && npm run test:sfxsearch && npm run test:sfxmatch && npm run test:visual && npm run test:threemf && npm run test:grid && npm run test:textlayout && npm run test:styletheme && npm run test:thumbpick && npm run test:pronounce && npm run test:helpdesk && npm run selftest",
     "test:threemf": "node scripts/threemf.test.mjs",
     "test:grid": "node scripts/grid.test.mjs",
     "test:textlayout": "node scripts/textlayout.test.mjs",
-    "test:pronounce": "node scripts/pronounce.test.mjs"
+    "test:pronounce": "node scripts/pronounce.test.mjs",
+    "test:styletheme": "node scripts/styletheme.test.mjs",
+    "test:thumbpick": "node scripts/thumbpick.test.mjs",
+    "test:helpdesk": "node scripts/helpdesk.test.mjs"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",
@@ -80,6 +85,13 @@
       {
         "from": "agent",
         "to": "agent",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "public/fonts",
+        "to": "fonts",
         "filter": [
           "**/*"
         ]
