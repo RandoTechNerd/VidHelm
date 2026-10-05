@@ -106,6 +106,11 @@ console.log('App.css cascade')
 ok(specificity('.modal input[type="text"]') === 201 && specificity('.tool-btn:hover:not(:disabled)') === 300 && specificity('.secret-field .duration-input') === 200, 'the specificity reader agrees with the spec')
 for (const [what, matching] of [['a Media Bin still', ['img', '.media-still']], ['a still on the stage', ['img', '.layer']], ['the logo on the stage', ['img', '.brand-logo']]])
   ok(winner(['-webkit-user-drag'], matching)?.value === 'none', `${what} is not a drag source of its own`)
+const toolBtn = ['.tool-btn', '.tool-btn:disabled']
+ok(winner(['color'], [...toolBtn, '.tool-btn.play', '.tool-btn.play:disabled'])?.value === 'var(--text-dim)', 'a disabled Play (empty timeline) reads as unavailable')
+ok(winner(['color'], ['.tool-btn', '.tool-btn.play'])?.value === 'var(--text-main)', 'an enabled Play keeps its full-strength label')
+ok(winner(['color'], [...toolBtn, '.tool-btn.active', '.tool-btn.active:disabled'])?.value === 'var(--text-dim)', 'a disabled tool that is toggled on reads as unavailable too')
+ok(winner(['background', 'background-color'], [...toolBtn, '.tool-btn.play', '.tool-btn.play:disabled'])?.sel === '.tool-btn.play:disabled', 'and drops Play\'s filled background')
 
 console.log(`\n${fail ? 'FAILED' : 'ALL PASSED'} - ${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

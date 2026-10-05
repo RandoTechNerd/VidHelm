@@ -561,6 +561,9 @@ main {
 .tool-btn.play:hover:not(:disabled) { background: rgb(var(--ink) / 0.12); color: var(--text-main); }
 .tool-btn.play.playing, .tool-btn.play.playing:hover:not(:disabled) { background: var(--accent-soft); color: var(--accent-text); }
 .tool-btn.play svg { width: 13px; height: 13px; }
+/* After the fills above: they weigh the same as .tool-btn:disabled and come later, so without this
+   a disabled Play (an empty timeline, the first screen) still read as a live button. */
+.tool-btn.play:disabled, .tool-btn.active:disabled { background: rgb(var(--ink) / 0.05); color: var(--text-dim); }
 .tool-btn.recording { background: var(--accent-error); color: #fff; animation: pulse 1.2s infinite; }
 
 .timecode {
