@@ -55,6 +55,16 @@
   --radius-md: 7px;
   --radius-lg: 10px;
 
+  --font-mono: 'JetBrains Mono', 'Cascadia Mono', Consolas, ui-monospace, monospace;
+
+  /* Motion. Hover and press answer in --dur-1, menus and switches settle in --dur-2, larger moves
+     (the tour spotlight, progress) take --dur-3. Everything eases out: fast start, soft landing. */
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --dur-1: 90ms;
+  --dur-2: 160ms;
+  --dur-3: 240ms;
+
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
   --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.35);
   --shadow-lg: 0 16px 40px rgba(0, 0, 0, 0.5);
@@ -121,6 +131,18 @@ body, html, #root {
 button, input, select, textarea { font-family: inherit; }
 :focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
 
+/* Windows' "Show animations" off (and the OS equivalents) means no slides, pops or pulses. State
+   still changes, it just lands at once. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+@keyframes pop-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+
 .app-container { display: flex; flex-direction: column; height: 100vh; }
 
 /* ============ Header ============ */
@@ -166,7 +188,7 @@ header .hdr-btn, header .orient-btn, header .hdr-export, header .links-pop butto
   font-size: 12.5px;
   font-weight: 500;
   white-space: nowrap;
-  transition: background 0.12s, color 0.12s;
+  transition: background var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out), transform var(--dur-1) var(--ease-out);
 }
 .hdr-btn:hover { background: rgb(var(--ink) / 0.07); color: var(--text-main); }
 .hdr-btn.icon { width: 28px; padding: 0; justify-content: center; }
@@ -178,6 +200,7 @@ header .hdr-btn, header .orient-btn, header .hdr-export, header .links-pop butto
   border: none; border-radius: var(--radius-sm);
   font-size: 12.5px; font-weight: 600; white-space: nowrap;
   font-variant-numeric: tabular-nums;
+  transition: background var(--dur-1) var(--ease-out), transform var(--dur-1) var(--ease-out);
 }
 .hdr-export svg { width: 14px; height: 14px; }
 .hdr-export:hover:not(:disabled) { background: var(--accent-hover); }
@@ -212,7 +235,7 @@ header .hdr-btn, header .orient-btn, header .hdr-export, header .links-pop butto
   font-weight: 500;
   padding: 0 10px;
   border-radius: var(--radius-sm);
-  transition: background 0.12s, color 0.12s;
+  transition: background var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out);
 }
 .orient-btn:hover { color: var(--text-main); }
 .orient-btn.active { background: var(--bg-surface); color: var(--text-main); box-shadow: var(--shadow-sm), 0 0 0 1px var(--border-subtle); }
@@ -291,7 +314,7 @@ main {
   color: var(--text-muted);
   background: transparent;
   border: 1px solid var(--border);
-  transition: background 0.12s, color 0.12s, border-color 0.12s;
+  transition: background var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out), border-color var(--dur-1) var(--ease-out), transform var(--dur-1) var(--ease-out);
 }
 .add-btn svg { width: 14px; height: 14px; }
 .add-btn:hover { background: var(--accent-primary); border-color: var(--accent-primary); color: #fff; }
@@ -317,7 +340,7 @@ main {
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
   cursor: pointer;
-  transition: background 0.12s, border-color 0.12s;
+  transition: background var(--dur-1) var(--ease-out), border-color var(--dur-1) var(--ease-out);
 }
 .media-item:hover { background: rgb(var(--ink) / 0.05); border-color: var(--border-subtle); }
 .media-icon {
@@ -388,7 +411,7 @@ main {
   border-radius: var(--radius-sm);
   cursor: pointer;
   opacity: 0.8;
-  transition: opacity 0.12s, color 0.12s;
+  transition: opacity var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out);
 }
 .expand-btn:hover { opacity: 1; color: var(--text-main); }
 
@@ -423,7 +446,7 @@ main {
   align-items: center;
   justify-content: center;
 }
-.resize-handle::before { content: ''; width: 40px; height: 2px; border-radius: 2px; background: var(--border-strong); transition: background 0.12s; }
+.resize-handle::before { content: ''; width: 40px; height: 2px; border-radius: 2px; background: var(--border-strong); transition: background var(--dur-1) var(--ease-out); }
 .resize-handle:hover::before { background: var(--accent-primary); }
 
 .timeline-area {
@@ -465,7 +488,7 @@ main {
   gap: 6px;
   white-space: nowrap;
   flex-shrink: 0;
-  transition: background 0.12s, color 0.12s;
+  transition: background var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out), transform var(--dur-1) var(--ease-out);
 }
 .tool-btn:hover:not(:disabled) { background: rgb(var(--ink) / 0.07); color: var(--text-main); }
 /* Disabled tools stay readable (opacity .38 put them at 2:1); the icon alone steps back. */
@@ -483,7 +506,7 @@ main {
 .timecode {
   display: inline-flex; align-items: baseline; gap: 5px;
   margin: 0 4px 0 10px;
-  font-family: 'JetBrains Mono', 'Cascadia Mono', Consolas, ui-monospace, monospace;
+  font-family: var(--font-mono);
   font-size: 12px; color: var(--text-dim);
   font-variant-numeric: tabular-nums; white-space: nowrap; flex-shrink: 0;
 }
@@ -492,7 +515,7 @@ main {
 
 .captions-btn { position: relative; }
 .cap-bar { position: absolute; left: 4px; right: 4px; bottom: 2px; height: 2px; background: rgb(var(--ink) / 0.15); border-radius: 2px; overflow: hidden; }
-.cap-fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--accent-secondary); transition: width 0.2s; }
+.cap-fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--accent-secondary); transition: width var(--dur-3) var(--ease-out); }
 @keyframes pulse { 50% { opacity: 0.55; } }
 
 /* Zoom is a low-traffic control, so it reads as one small segmented group. */
@@ -527,6 +550,7 @@ main {
   background: var(--bg-surface-elevated); border: 1px solid var(--border-strong);
   border-radius: var(--radius-md); box-shadow: var(--shadow-lg); padding: 4px;
   display: flex; flex-direction: column;
+  animation: pop-in var(--dur-2) var(--ease-out);
 }
 .tool-menu button {
   background: none; border: none; color: var(--text-main); text-align: left;
@@ -565,7 +589,7 @@ main {
 .tick.major { top: 6px; border-left-color: rgb(var(--ink) / 0.28); }
 .tick.major span { top: -4px; color: var(--text-muted); font-weight: 600; }
 
-.scrubber { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--accent-primary); z-index: 20; pointer-events: none; transition: box-shadow 0.12s; }
+.scrubber { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--accent-primary); z-index: 20; pointer-events: none; transition: box-shadow var(--dur-1) var(--ease-out); }
 .scrubber::before {
   content: '';
   position: absolute;
@@ -575,7 +599,7 @@ main {
   height: 14px;
   background: var(--accent-primary);
   border-radius: 2px 2px 6px 6px;
-  transition: transform 0.12s, box-shadow 0.12s;
+  transition: transform var(--dur-1) var(--ease-out), box-shadow var(--dur-1) var(--ease-out);
 }
 
 .tracks { padding: 4px 0 10px; display: flex; flex-direction: column; gap: 0; }
@@ -627,14 +651,20 @@ main {
   overflow: hidden;
   cursor: grab;
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.18);
+  transition: filter var(--dur-1) var(--ease-out), box-shadow var(--dur-1) var(--ease-out), opacity var(--dur-1) var(--ease-out);
 }
+.clip:hover { filter: brightness(1.08); }
 .v-clip { background: var(--clip-video); }
 .v-clip.image { background: var(--clip-image); }
 .a-clip { background: var(--clip-audio); }
 .b-clip { background: var(--clip-broll); }
 .b-clip.image { background: color-mix(in srgb, var(--clip-broll) 80%, #000); }
 .text-clip { background: var(--clip-text); color: var(--clip-text-ink); }
-.clip.selected { box-shadow: 0 0 0 2px var(--text-main), inset 0 0 0 1px rgba(255, 255, 255, 0.2); z-index: 5; }
+/* Selection is the brand ring with a soft halo: a white (or, in light, black) ring read as just
+   another border on a busy timeline. */
+.clip.selected { box-shadow: 0 0 0 2px var(--accent-primary), 0 0 0 4px var(--accent-soft); z-index: 5; }
+/* picked up and moving: lifted above its neighbours */
+.clip.dragging { cursor: grabbing; box-shadow: var(--shadow-lg); opacity: 0.94; z-index: 10; }
 .clip-label { pointer-events: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: flex; align-items: center; gap: 4px; z-index: 1; }
 
 /* video clips with filmstrip thumbnails, keep the label legible */
@@ -645,13 +675,129 @@ main {
   border-radius: 3px;
   max-width: calc(100% - 16px);
 }
-.trim-handle { position: absolute; top: 0; bottom: 0; width: 7px; cursor: ew-resize; z-index: 3; }
+/* Trim handles were invisible 7px strips nobody found. Hovering a clip shows a bar at each end;
+   a selected clip gets solid accent handles with grip lines, the way the selected clip in any
+   editor says "grab here". A handle stopped by the end of its media turns red (at-limit). */
+.trim-handle { position: absolute; top: 0; bottom: 0; width: 7px; cursor: ew-resize; z-index: 3; transition: background var(--dur-1) var(--ease-out); }
 .trim-handle.left { left: 0; }
 .trim-handle.right { right: 0; }
-.trim-handle:hover { background: rgba(255, 255, 255, 0.35); }
+.trim-handle::after {
+  content: ''; position: absolute; top: 6px; bottom: 6px; left: 2px; width: 3px; border-radius: 2px;
+  background: rgb(255 255 255 / 0.85); opacity: 0; transition: opacity var(--dur-1) var(--ease-out);
+}
+.clip:hover .trim-handle::after { opacity: 1; }
+.clip.selected .trim-handle { width: 8px; background: var(--accent-primary); }
+.clip.selected .trim-handle.left { border-radius: 4px 0 0 4px; }
+.clip.selected .trim-handle.right { border-radius: 0 4px 4px 0; }
+.clip.selected .trim-handle::after {
+  opacity: 1; top: 30%; bottom: 30%; left: 2px; width: 4px; border-radius: 0; background: none;
+  border-left: 1px solid rgb(255 255 255 / 0.75); border-right: 1px solid rgb(255 255 255 / 0.75);
+}
+.clip.at-limit .trim-handle, .trim-handle.at-limit { background: var(--accent-error); }
+.trim-handle.at-limit::after { opacity: 1; }
+/* drag feedback: the edge a move or trim snapped to, and a readout of the new time. The HUD is
+   placed at the cursor (left/top) and lifts itself 14px above it. */
+.snap-line {
+  position: absolute; top: 0; bottom: 0; width: 1px; margin-left: -0.5px; z-index: 19; pointer-events: none;
+  background: var(--accent-warning); box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent-warning) 25%, transparent);
+}
+.drag-hud {
+  position: fixed; z-index: 300; pointer-events: none; transform: translate(-50%, calc(-100% - 14px));
+  background: var(--bg-surface-elevated); border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md); color: var(--text-main); padding: 3px 6px; white-space: nowrap;
+  font: 500 11px var(--font-mono); font-variant-numeric: tabular-nums;
+}
 .fade-tri { position: absolute; top: 0; bottom: 0; pointer-events: none; }
 .fade-tri.in { left: 0; background: linear-gradient(to right, rgba(0,0,0,0.5), transparent); }
 .fade-tri.out { right: 0; background: linear-gradient(to left, rgba(0,0,0,0.5), transparent); }
+
+/* ============ Shared controls: buttons, sliders, switches ============
+   One button, one slider and one switch for every panel and dialog. Before these, buttons in the
+   side panels and modals fell through to Chromium's native look, and each panel reinvented its
+   own at five heights and four radii. */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  height: 30px; padding: 0 12px; border-radius: var(--radius-sm);
+  border: 1px solid var(--border); background: var(--bg-surface-elevated); color: var(--text-main);
+  font-size: 12.5px; font-weight: 500; white-space: nowrap; cursor: pointer;
+  transition: background var(--dur-1) var(--ease-out), border-color var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out), transform var(--dur-1) var(--ease-out);
+}
+.btn:hover:not(:disabled) { border-color: var(--border-strong); background: rgb(var(--ink) / 0.06); }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn.primary { background: var(--accent-primary); border-color: transparent; color: #fff; font-weight: 600; }
+.btn.primary:hover:not(:disabled) { background: var(--accent-hover); }
+.btn.primary:disabled { background: rgb(var(--ink) / 0.08); color: var(--text-dim); opacity: 1; }
+.btn.ghost { background: transparent; border-color: transparent; color: var(--text-muted); }
+.btn.ghost:hover:not(:disabled) { border-color: transparent; color: var(--text-main); }
+.btn.danger { background: var(--accent-error); border-color: transparent; color: #fff; }
+.btn.danger:hover:not(:disabled) { background: var(--accent-error); filter: brightness(1.08); }
+.btn.sm { height: 26px; padding: 0 9px; font-size: 12px; }
+.btn.icon { width: 30px; padding: 0; }
+.btn.sm.icon { width: 26px; }
+
+/* The safety net: a bare button in a panel row or a dialog body gets the same look, so nothing
+   can fall back to the native grey box again. Everything is inside :where(), which adds no
+   specificity, so any button with its own class (.booth-rec, .sfx-play, .thumb-cand...) still
+   wins. */
+:where(.vc-row, .sec-title, .sfx-gen, .sfx-rec) > :where(button), :where(.modal-body, .booth) :where(button:not([class])) {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  height: 30px; padding: 0 12px; border-radius: var(--radius-sm);
+  border: 1px solid var(--border); background: var(--bg-surface-elevated); color: var(--text-main);
+  font-size: 12.5px; font-weight: 500; white-space: nowrap; cursor: pointer;
+}
+:where(.vc-row, .sec-title, .sfx-gen, .sfx-rec) > :where(button:hover:not(:disabled)), :where(.modal-body, .booth) :where(button:not([class]):hover:not(:disabled)) {
+  border-color: var(--border-strong); background: rgb(var(--ink) / 0.06);
+}
+:where(.vc-row, .sec-title, .sfx-gen, .sfx-rec) > :where(button:disabled), :where(.modal-body, .booth) :where(button:not([class]):disabled) { opacity: 0.45; cursor: not-allowed; }
+:where(.vc-row, .sfx-gen, .sfx-rec) > :where(button.primary) { background: var(--accent-primary); border-color: transparent; color: #fff; font-weight: 600; }
+:where(.vc-row, .sfx-gen, .sfx-rec) > :where(button.primary:hover:not(:disabled)) { background: var(--accent-hover); }
+:where(.vc-row, .sfx-gen, .sfx-rec) > :where(button.primary:disabled) { background: rgb(var(--ink) / 0.08); color: var(--text-dim); opacity: 1; }
+
+/* Pressed: a small give under the pointer, so a click registers before anything else happens. */
+.tool-btn:active:not(:disabled), .hdr-btn:active, .hdr-export:active:not(:disabled), .action-btn:active:not(:disabled),
+.add-btn:active, .btn:active:not(:disabled) { transform: scale(0.97); }
+
+/* Sliders. The fill is painted from --fill, a percentage set inline on the input; a slider that
+   does not set it shows a plain track rather than a wrong fill. Native accent-color left
+   Chromium's light grey track, a bright bar across the dark theme. */
+input[type="range"] { -webkit-appearance: none; appearance: none; height: 18px; background: transparent; cursor: pointer; }
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 4px; border-radius: 2px;
+  background: linear-gradient(var(--accent-primary), var(--accent-primary)) 0 / var(--fill, 0%) 100% no-repeat, rgb(var(--ink) / 0.14);
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none; width: 14px; height: 14px; margin-top: -5px; border-radius: 50%;
+  background: #fff; box-shadow: 0 0 0 1px rgb(0 0 0 / 0.2), 0 1px 3px rgb(0 0 0 / 0.35);
+  transition: transform var(--dur-1) var(--ease-out), box-shadow var(--dur-1) var(--ease-out);
+}
+input[type="range"]:hover:not(:disabled)::-webkit-slider-thumb { transform: scale(1.1); }
+input[type="range"]:focus-visible { outline: none; }
+input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 3px var(--border-focus), 0 1px 3px rgb(0 0 0 / 0.35); }
+input[type="range"]:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* Switches: a checkbox drawn as a pill with a sliding knob. Put it first inside a .toggle-row
+   label with its words in a span, and the whole row is the click target, exactly once. */
+.toggle {
+  -webkit-appearance: none; appearance: none; flex: none; position: relative; margin: 0;
+  width: 28px; height: 16px; border-radius: 999px; cursor: pointer;
+  background: rgb(var(--ink) / 0.22); box-shadow: inset 0 0 0 1px rgb(var(--ink) / 0.08);
+  transition: background var(--dur-2) var(--ease-out);
+}
+.toggle::after {
+  content: ''; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%;
+  background: #fff; box-shadow: 0 1px 2px rgb(0 0 0 / 0.3);
+  transition: transform var(--dur-2) var(--ease-out);
+}
+.toggle:checked { background: var(--accent-primary); box-shadow: none; }
+.toggle:checked::after { transform: translateX(12px); }
+.toggle:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
+.toggle:disabled { opacity: 0.5; cursor: not-allowed; }
+/* .modal label is a column (caption over field); a toggle row has to beat it */
+.toggle-row, .modal .toggle-row {
+  display: flex; flex-direction: row; align-items: center; gap: 8px;
+  font-size: 12.5px; font-weight: 500; color: var(--text-main); cursor: pointer; user-select: none;
+}
+.toggle-row .toggle-meta { margin-left: auto; padding-left: 8px; font-size: 11.5px; font-weight: 400; color: var(--text-dim); font-variant-numeric: tabular-nums; }
 
 /* ============ Forms (right panel and modals) ============ */
 .group-title { font-size: 11px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.07em; }
@@ -663,7 +809,6 @@ main {
 .field.chk { display: flex; align-items: center; gap: 8px; cursor: pointer; }
 .field.chk label { margin-bottom: 0; color: var(--text-main); }
 .field.chk input { accent-color: var(--accent-primary); width: 14px; height: 14px; }
-.field input[type="range"] { accent-color: var(--accent-primary); }
 
 .field select, .duration-input {
   width: 100%;
@@ -675,7 +820,7 @@ main {
   border-radius: var(--radius-sm);
   font-size: 12.5px;
   outline: none;
-  transition: border-color 0.12s;
+  transition: border-color var(--dur-1) var(--ease-out);
 }
 textarea.duration-input { height: auto; padding: 7px 9px; resize: vertical; line-height: 1.45; }
 .field select:hover, .duration-input:hover { border-color: var(--border-strong); }
@@ -693,7 +838,7 @@ textarea.duration-input { height: auto; padding: 7px 9px; resize: vertical; line
   font-variant-numeric: tabular-nums;
 }
 .volume-slider { display: flex; align-items: center; gap: 10px; }
-.volume-slider input[type="range"] { flex: 1; accent-color: var(--accent-primary); }
+.volume-slider input[type="range"] { flex: 1; }
 .volume-slider span { font-size: 12px; color: var(--text-muted); min-width: 38px; text-align: right; font-variant-numeric: tabular-nums; }
 
 .hint { font-size: 11.5px; color: var(--text-dim); line-height: 1.5; margin-top: 2px; }
@@ -718,7 +863,7 @@ textarea.duration-input { height: auto; padding: 7px 9px; resize: vertical; line
 
 .progress-line { height: 3px; background: rgb(var(--ink) / 0.08); border-radius: 2px; overflow: hidden; display: none; }
 .progress-line.show { display: block; }
-.progress-line .fill { height: 100%; background: var(--accent-primary); transition: width 0.3s; }
+.progress-line .fill { height: 100%; background: var(--accent-primary); transition: width var(--dur-3) var(--ease-out); }
 
 .action-btn {
   width: 100%;
@@ -732,7 +877,7 @@ textarea.duration-input { height: auto; padding: 7px 9px; resize: vertical; line
   align-items: center;
   justify-content: center;
   gap: 8px;
-  transition: background 0.12s;
+  transition: background var(--dur-1) var(--ease-out), transform var(--dur-1) var(--ease-out);
 }
 .action-btn svg { width: 15px; height: 15px; }
 .action-btn.export { background: var(--accent-primary); color: #fff; }
@@ -760,6 +905,7 @@ textarea.duration-input { height: auto; padding: 7px 9px; resize: vertical; line
   background: var(--bg-surface-elevated); border: 1px solid var(--border-strong);
   border-radius: var(--radius-md); box-shadow: var(--shadow-lg); padding: 4px;
   display: flex; flex-direction: column;
+  animation: pop-in var(--dur-2) var(--ease-out);
 }
 .ctx-menu button { background: none; border: none; color: var(--text-main); text-align: left; padding: 7px 9px; font-size: 12.5px; border-radius: var(--radius-sm); cursor: pointer; }
 .ctx-menu button:hover { background: rgb(var(--ink) / 0.07); }
@@ -785,7 +931,6 @@ textarea.duration-input { height: auto; padding: 7px 9px; resize: vertical; line
   border-radius: var(--radius-sm); padding: 7px 9px; font-size: 12.5px; outline: none;
 }
 .modal select:focus, .modal input:focus { border-color: var(--accent-primary); }
-.modal input[type="range"] { accent-color: var(--accent-primary); }
 .logo-row { display: flex; gap: 16px; align-items: center; }
 .logo-preview { width: 120px; height: 80px; background: var(--bg-track); border: 1px solid var(--border); border-radius: var(--radius-sm); display: flex; align-items: center; justify-content: center; overflow: hidden; }
 .logo-preview img { max-width: 100%; max-height: 100%; object-fit: contain; }
@@ -932,9 +1077,8 @@ textarea.duration-input { height: auto; padding: 7px 9px; resize: vertical; line
   position: absolute; top: calc(100% + 8px); right: 0; z-index: 120; width: 268px; padding: 6px;
   background: var(--bg-overlay); border: 1px solid rgb(var(--ink) / 0.16); border-radius: 12px; backdrop-filter: blur(12px);
   box-shadow: var(--shadow-lg); display: flex; flex-direction: column; gap: 2px;
-  animation: links-in 0.12s ease;
+  animation: pop-in var(--dur-2) var(--ease-out);
 }
-@keyframes links-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
 .links-pop button {
   display: flex; align-items: flex-start; gap: 10px; width: 100%; text-align: left;
   background: none; border: none; color: var(--text-main, #f8fafc); border-radius: 8px;
@@ -951,7 +1095,7 @@ textarea.duration-input { height: auto; padding: 7px 9px; resize: vertical; line
 
 /* ============ Toast notifications (replaces native alerts) ============ */
 .toasts { position: fixed; top: 50px; left: 50%; transform: translateX(-50%); z-index: 200; display: flex; flex-direction: column; gap: 8px; pointer-events: none; }
-.toast { pointer-events: auto; cursor: pointer; background: var(--bg-overlay); border: 1px solid var(--border-strong); border-left: 3px solid var(--accent-primary); color: var(--text-main); border-radius: var(--radius-md); padding: 12px 18px; font-size: 13.5px; line-height: 1.55; max-width: 460px; white-space: pre-line; overflow-wrap: anywhere; box-shadow: var(--shadow-lg); animation: toast-in 0.22s ease; }
+.toast { pointer-events: auto; cursor: pointer; background: var(--bg-overlay); border: 1px solid var(--border-strong); border-left: 3px solid var(--accent-primary); color: var(--text-main); border-radius: var(--radius-md); padding: 12px 18px; font-size: 13.5px; line-height: 1.55; max-width: 460px; white-space: pre-line; overflow-wrap: anywhere; box-shadow: var(--shadow-lg); animation: toast-in var(--dur-3) var(--ease-out); }
 @keyframes toast-in { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: none; } }
 
 /* ============ Connect your AI (setup + troubleshooter) ============ */
@@ -971,7 +1115,8 @@ textarea.duration-input { height: auto; padding: 7px 9px; resize: vertical; line
 .conn-actions button, .modal .conn-line button {
   background: var(--bg-surface-elevated); color: var(--text-muted);
   border: 1px solid var(--border-subtle); border-radius: 8px;
-  padding: 7px 13px; font-size: 12.5px; font-weight: 600; cursor: pointer; transition: color .12s, border-color .12s, background .12s;
+  padding: 7px 13px; font-size: 12.5px; font-weight: 600; cursor: pointer;
+  transition: color var(--dur-1) var(--ease-out), border-color var(--dur-1) var(--ease-out), background var(--dur-1) var(--ease-out);
 }
 .conn-actions button:hover, .modal .conn-line button:hover { color: var(--text-main); border-color: var(--accent-primary); }
 .conn-actions button.primary { background: var(--accent-primary); color: #fff; border-color: transparent; }
@@ -1009,7 +1154,7 @@ textarea.duration-input { height: auto; padding: 7px 9px; resize: vertical; line
 /* a cut line stays readable but obviously gone: this is the record of what was removed */
 .tk-row.cut .tk-text { color: var(--text-dim); text-decoration: line-through; }
 .tk-drop, .tk-pick { flex: 0 0 auto; background: transparent; border: 1px solid var(--border-subtle); color: var(--text-muted); border-radius: 999px;
-  font-size: 11px; font-weight: 600; padding: 3px 10px; cursor: pointer; opacity: 0; transition: opacity 0.12s, color 0.12s; }
+  font-size: 11px; font-weight: 600; padding: 3px 10px; cursor: pointer; opacity: 0; transition: opacity var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out); }
 .tk-row:hover .tk-drop, .tk-drop:focus-visible { opacity: 1; }
 .tk-drop:hover { color: var(--text-main); border-color: var(--accent-primary); }
 .tk-pick { opacity: 1; }
@@ -1176,12 +1321,12 @@ textarea.duration-input { height: auto; padding: 7px 9px; resize: vertical; line
 .tour-spot {
   position: absolute; border-radius: var(--radius-md); pointer-events: none;
   box-shadow: 0 0 0 2px var(--accent-primary), 0 0 0 9999px rgba(0, 0, 0, 0.55);
-  transition: top 0.25s ease, left 0.25s ease, width 0.25s ease, height 0.25s ease;
+  transition: top var(--dur-3) var(--ease-out), left var(--dur-3) var(--ease-out), width var(--dur-3) var(--ease-out), height var(--dur-3) var(--ease-out);
 }
 .tour-card {
   position: absolute; background: var(--bg-surface); border: 1px solid var(--border-strong);
   border-radius: var(--radius-lg); box-shadow: var(--shadow-lg); padding: 16px 16px 12px;
-  transition: top 0.25s ease, left 0.25s ease; animation: links-in 0.15s ease;
+  transition: top var(--dur-3) var(--ease-out), left var(--dur-3) var(--ease-out); animation: pop-in var(--dur-2) var(--ease-out);
 }
 .tour-step { font-size: 11px; font-weight: 600; color: var(--accent-text); letter-spacing: 0.04em; margin-bottom: 6px; }
 .tour-card h3 { font-size: 15px; font-weight: 600; margin-bottom: 6px; }
@@ -1202,7 +1347,7 @@ textarea.duration-input { height: auto; padding: 7px 9px; resize: vertical; line
   position: fixed; top: 46px; right: 6px; bottom: 6px; width: 360px; max-width: calc(100vw - 12px); z-index: 150;
   display: flex; flex-direction: column; background: var(--bg-surface);
   border: 1px solid var(--border-strong); border-radius: var(--radius-md); box-shadow: var(--shadow-lg);
-  animation: hc-in 0.16s ease;
+  animation: hc-in var(--dur-2) var(--ease-out);
 }
 @keyframes hc-in { from { opacity: 0; transform: translateX(10px); } to { opacity: 1; transform: none; } }
 .hc-head { display: flex; align-items: center; gap: 6px; height: 50px; padding: 0 8px 0 14px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
@@ -1221,7 +1366,7 @@ textarea.duration-input { height: auto; padding: 7px 9px; resize: vertical; line
 .hc-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .hc-actions button, .hc-starters button {
   background: transparent; border: 1px solid var(--border); color: var(--text-main); border-radius: 999px;
-  padding: 5px 11px; font-size: 12px; cursor: pointer; text-align: left; transition: border-color 0.12s, background 0.12s;
+  padding: 5px 11px; font-size: 12px; cursor: pointer; text-align: left; transition: border-color var(--dur-1) var(--ease-out), background var(--dur-1) var(--ease-out);
 }
 .hc-actions button { color: var(--accent-text); border-color: var(--border-focus); }
 .hc-actions button:hover, .hc-starters button:hover { background: var(--accent-soft); border-color: var(--accent-primary); }
@@ -1266,7 +1411,7 @@ textarea.duration-input { height: auto; padding: 7px 9px; resize: vertical; line
 .hc-faq details[open] { background: rgb(var(--ink) / 0.04); }
 .hc-faq summary { list-style: none; cursor: pointer; padding: 7px 8px; font-size: 13px; line-height: 1.4; color: var(--text-main); border-radius: var(--radius-sm); display: flex; gap: 8px; }
 .hc-faq summary::-webkit-details-marker { display: none; }
-.hc-faq summary::before { content: '\203A'; color: var(--text-dim); transition: transform 0.12s; display: inline-block; width: 8px; flex-shrink: 0; }
+.hc-faq summary::before { content: '\203A'; color: var(--text-dim); transition: transform var(--dur-1) var(--ease-out); display: inline-block; width: 8px; flex-shrink: 0; }
 .hc-faq details[open] summary::before { transform: rotate(90deg); }
 .hc-faq summary:hover { background: rgb(var(--ink) / 0.05); }
 .hc-faq details p { font-size: 12.5px; line-height: 1.55; color: var(--text-muted); padding: 0 10px 8px 24px; }
