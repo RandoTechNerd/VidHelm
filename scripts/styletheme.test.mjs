@@ -121,5 +121,39 @@ console.log('preview frames match the motion')
   ok(T.captionFrame(cue, T.resolveCaption({}), 2.5) === null, 'nothing after the cue ends')
 }
 
+console.log('caption edits keep word timing (retimeWords)')
+{
+  const old = [{ s: 0.0, e: 0.3, t: 'Meet' }, { s: 0.35, e: 0.7, t: 'Crux' }, { s: 0.7, e: 1.1, t: 'Study' }, { s: 1.2, e: 1.6, t: 'SAT,' }, { s: 1.7, e: 2.2, t: 'PSAT,' }, { s: 2.25, e: 2.4, t: 'and' }, { s: 2.45, e: 2.9, t: 'ACT' }, { s: 2.95, e: 3.3, t: 'prep,' }]
+  const at = (ws, t) => ws.find(w => w.t === t)
+  const same = (w, s, e) => !!w && Math.abs(w.s - s) < 1e-6 && Math.abs(w.e - e) < 1e-6
+  const merged = T.retimeWords(old, 'Meet CruxStudy: SAT, PSAT and ACT prep,', 0, 3.4)
+  ok(merged.length === 7 && same(at(merged, 'CruxStudy:'), 0.35, 1.1), 'a merge spans both old words')
+  ok(same(at(merged, 'Meet'), 0, 0.3) && same(at(merged, 'ACT'), 2.45, 2.9) && same(at(merged, 'prep,'), 2.95, 3.3), 'every other word keeps its slot')
+  const inserted = T.retimeWords(old, 'Meet CruxStudy SAT, PSAT, and ACT test prep,', 0, 3.4)
+  const test = at(inserted, 'test'), act = at(inserted, 'ACT')
+  ok(test && test.s >= act.e - 1e-9 && test.e <= 2.95 + 1e-9 && test.e > test.s, 'an inserted word takes room beside its neighbours')
+  ok(same(at(inserted, 'prep,'), 2.95, 3.3), 'the word after an insertion does not move')
+  const dropped = T.retimeWords(old, 'Meet Crux Study SAT PSAT ACT prep', 0, 3.4)
+  ok(dropped.length === 7 && same(at(dropped, 'ACT'), 2.45, 2.9) && same(at(dropped, 'Study'), 0.7, 1.1), 'deleting a word leaves the others where they were spoken')
+  const split = T.retimeWords([{ s: 1, e: 2, t: 'VidHelm' }], 'Vid Helm', 0, 3)
+  ok(split.length === 2 && split[0].s === 1 && Math.abs(split[0].e - (1 + 3 / 7)) < 1e-3 && split[1].e === 2, 'a split divides the slot by letters')
+  const unchanged = T.retimeWords(old, old.map(w => w.t).join(' '), 0, 3.4)
+  ok(unchanged.every((w, i) => same(w, old[i].s, old[i].e)), 'an unchanged line keeps every time exactly')
+  const um = [{ s: 0, e: 0.3, t: 'So' }, { s: 0.4, e: 0.6, t: 'um' }, { s: 0.7, e: 1.2, t: 'today' }]
+  const noUm = T.retimeWords(um, 'So today', 0, 1.5)
+  ok(same(noUm[0], 0, 0.3) && same(noUm[1], 0.7, 1.2), 'removing an "um" keeps the words around it on the voice')
+  const rewrite = T.retimeWords(old, 'Something else entirely different was said here instead', 0, 3.4)
+  ok(rewrite.length === 8 && rewrite[0].s === 0 && Math.abs(rewrite[7].e - 3.3) < 1e-6, 'a whole rewrite is spread over the spoken stretch')
+  ok(rewrite.every((w, i) => w.e >= w.s && (i === 0 || w.s >= rewrite[i - 1].s)), 'and it runs forwards, never overlapping backwards')
+  ok(T.retimeWords(old, '   ', 0, 3.4).length === 0, 'no words, no timings')
+  const none = T.retimeWords([], 'two words', 0, 2)
+  ok(none.length === 2 && none[0].s === 0 && none[1].e === 2, 'no old timings: spread over the caption')
+  const head = T.retimeWords([{ s: 0, e: 0.5, t: 'world' }], 'hello world', 0, 1)
+  ok(head[0].s === 0 && head[0].e > 0 && head[0].e <= head[1].s + 1e-9 && head[1].e === 0.5, 'a word inserted at the start takes half of the first word')
+  const kept = T.retimeWords(old, 'Meet CruxStudy: SAT, PSAT and ACT prep,', 0, 3.4)
+  const cue = { start: 0, end: 3.4, text: 'Meet CruxStudy: SAT, PSAT and ACT prep,', words: kept }
+  ok(T.cueWords(cue).every((w, i) => w.s === kept[i].s), 'cueWords uses the kept timings (the word count matches the text)')
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

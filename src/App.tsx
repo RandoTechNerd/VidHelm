@@ -12,7 +12,7 @@ import { groupTakes, removalRanges, removedSeconds, chunksFromWords, wordsOf } f
 import { snapToGrid, describeSnap } from '../electron/grid'
 import { fitBpm } from '../electron/score'
 import { layoutReport, presetFor, fitFontSize } from '../electron/textlayout'
-import { THEMES, THEME_FONTS, CAPTION_Y as THEME_CAP_Y, chooseTheme, phrasesFromWords, captionFrame, captionCss, captionPx, fontFaceCss, type CaptionSpec, type CapWord, type ThemeFont, type CapCue } from '../electron/styletheme'
+import { THEMES, THEME_FONTS, CAPTION_Y as THEME_CAP_Y, chooseTheme, phrasesFromWords, cueWords, retimeWords, captionFrame, captionCss, captionPx, fontFaceCss, type CaptionSpec, type CapWord, type ThemeFont, type CapCue } from '../electron/styletheme'
 import { planProxy, isHdr } from '../electron/playable'
 import { spanForPhrase, sentenceSpans, type Word as SpeechWord, type Span } from '../electron/speech'
 import { planBroll, snapToWords, describePlan, type BrollAsset, type Placement } from '../electron/broll'
@@ -236,6 +236,15 @@ function captionClip(p: CapCue, spec: CaptionSpec, theme: string, outW: number, 
   return { id: rid(), text: p.text, start: p.start, duration: Math.max(0.3, p.end - p.start), x: 0.5, y: THEME_CAP_Y[spec.position],
     fontSize: Math.round(captionPx(spec, outW, outH) / outH * 1080), color: spec.color, fadeIn: 0, fadeOut: 0,
     caption: { spec, theme, words: (p.words || []).map(w => ({ s: +(w.s - p.start).toFixed(3), e: +(w.e - p.start).toFixed(3), t: w.t })) } }
+}
+/** A text item with an edit applied. When a themed caption's words change, the words still there
+ *  keep their spoken times (retimeWords); fixing "Crux Study" to "CruxStudy" or deleting an "um"
+ *  used to spread every word evenly and pull the highlight off the voice. */
+function patchTextClip(t: TextClip, patch: Partial<TextClip>): TextClip {
+  const next = { ...t, ...patch }
+  if (!t.caption || patch.text === undefined || patch.text === t.text || patch.caption) return next
+  const old = cueWords({ start: 0, end: t.duration, text: t.text, words: t.caption.words })
+  return { ...next, caption: { ...t.caption, words: retimeWords(old, patch.text, 0, next.duration) } }
 }
 /** A themed caption in the preview, drawn from the same per-frame description the export follows. */
 function CaptionLayer({ t, time, groupBase, outW, outH, stageH, selected, onSelect }: { t: TextClip; time: number; groupBase: number; outW: number; outH: number; stageH: number; selected: boolean; onSelect: () => void }) {
@@ -1424,7 +1433,7 @@ function Editor() {
         if (!texts.find(t => t.id === cmd.textId)) return { error: `text not found: ${cmd.textId}` }
         const patch: Partial<TextClip> = {}
         for (const k of ['text', 'start', 'duration', 'x', 'y', 'fontSize', 'color', 'fadeIn', 'fadeOut', 'box', 'boxOpacity', 'boxColor', 'font', 'outline', 'outlineColor'] as const) if (cmd[k] !== undefined) (patch as any)[k] = cmd[k]
-        setTexts(prev => prev.map(t => t.id === cmd.textId ? { ...t, ...patch } : t))
+        setTexts(prev => prev.map(t => t.id === cmd.textId ? patchTextClip(t, patch) : t))
         return { ok: true }
       }
       case 'add_tag': {
@@ -2111,7 +2120,7 @@ function Editor() {
     const el = editRef.current
     if (el && editingTextId) {
       const v = el.innerText.replace(/\n+$/, '')
-      setTexts(prev => prev.map(x => x.id === editingTextId ? { ...x, text: v } : x))
+      setTexts(prev => prev.map(x => x.id === editingTextId ? patchTextClip(x, { text: v }) : x))
     }
     setEditingTextId(null)
   }
@@ -3249,7 +3258,7 @@ function Editor() {
   const scrubHandlers = { onPointerDown: startScrub, onPointerMove: moveScrub, onPointerUp: endScrub, onPointerCancel: endScrub }
 
   const patchClip = (patch: Partial<TimelineClip>) => setClips(prev => prev.map(c => c.id === selectedId ? { ...c, ...patch } : c))
-  const patchText = (patch: Partial<TextClip>) => setTexts(prev => prev.map(t => t.id === selectedId ? { ...t, ...patch } : t))
+  const patchText = (patch: Partial<TextClip>) => setTexts(prev => prev.map(t => t.id === selectedId ? patchTextClip(t, patch) : t))
 
   /** One place that knows how to bring up each panel: Help, the tour and the help chat all use it. */
   const openPanel = (p: HelpPanel | HelpAction) => {
