@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, Component, type ReactNode } from 'react'
+import { useState, useRef, useEffect, useCallback, useMemo, Component, type ReactNode } from 'react'
 import './App.css'
 import { VidHelmMark, IcSave, IcOpen, IcCloud, IcRecipe, IcCube, IcSparkle, IcBot, IcSun, IcMoon, IcHelp, IcRefresh, IcFolder, IcPlus, IcBooth, IcVoice, IcCut, IcList, IcCheck, IcEye, IcChat, IcMissing } from './icons'
 import { Tour, tourSeen } from './tour'
@@ -18,6 +18,8 @@ import { spanForPhrase, sentenceSpans, type Word as SpeechWord, type Span } from
 import { planBroll, snapToWords, describePlan, type BrollAsset, type Placement } from '../electron/broll'
 import { looksLikeThumbPhoto } from '../electron/thumbpick'
 import { resolveProfile, describeProfile, type PerfProfile, type Tier, type TierPreference } from '../electron/capability'
+import { tickStepFor, contentWidth } from '../electron/timeline'
+import { TimeRuler } from './ruler'
 
 interface MediaFile {
   id: string
@@ -761,6 +763,7 @@ function Editor() {
   const [isRecording, setIsRecording] = useState(false)
 
   const timelineRef = useRef<HTMLDivElement>(null)
+  const [tlView, setTlView] = useState({ w: 1200, h: 300 })
   const stageRef = useRef<HTMLDivElement>(null)
   const [stageH, setStageH] = useState(400)
   const videoEls = useRef<Map<string, HTMLVideoElement>>(new Map())
@@ -838,6 +841,15 @@ function Editor() {
     if (!stageRef.current) return
     const ro = new ResizeObserver(entries => setStageH(entries[0].contentRect.height))
     ro.observe(stageRef.current)
+    return () => ro.disconnect()
+  }, [])
+  // The timeline's visible size: the lanes and the ruler are at least this wide, and the ruler's
+  // hover line reaches its bottom. Measured, because reading clientWidth during render is a frame late.
+  useEffect(() => {
+    const el = timelineRef.current
+    if (!el) return
+    const ro = new ResizeObserver(() => setTlView(v => (v.w === el.clientWidth && v.h === el.clientHeight ? v : { w: el.clientWidth, h: el.clientHeight })))
+    ro.observe(el)
     return () => ro.disconnect()
   }, [])
 
@@ -3263,6 +3275,10 @@ function Editor() {
   }
 
   const onTimelineClick = (e: React.MouseEvent) => {
+    // A press on a clip selects it on mousedown; the click that follows bubbles up to here, and used
+    // to clear that selection again straight away (so Split never lit up from a click). Clicks on a
+    // clip, a row label or a tag belong to them: only empty lane space seeks and deselects.
+    if ((e.target as HTMLElement).closest('.clip, .track-label, .marker-flag')) return
     if (draggingRef.current || scrubbing) return
     setCurrentTime(timeAtClientX(e.clientX))
     setSelectedId(null)
@@ -3294,6 +3310,16 @@ function Editor() {
     setScrubbing(false)
   }
   const scrubHandlers = { onPointerDown: startScrub, onPointerMove: moveScrub, onPointerUp: endScrub, onPointerCancel: endScrub }
+  // The same handlers with a fixed identity for the memoised ruler, which would otherwise redraw
+  // every tick on every playback frame. They call through to this render's versions.
+  const scrubLive = useRef(scrubHandlers)
+  scrubLive.current = scrubHandlers
+  const rulerHandlers = useMemo(() => ({
+    onPointerDown: (e: React.PointerEvent<HTMLDivElement>) => scrubLive.current.onPointerDown(e),
+    onPointerMove: (e: React.PointerEvent<HTMLDivElement>) => scrubLive.current.onPointerMove(e),
+    onPointerUp: (e: React.PointerEvent<HTMLDivElement>) => scrubLive.current.onPointerUp(e),
+    onPointerCancel: (e: React.PointerEvent<HTMLDivElement>) => scrubLive.current.onPointerCancel(e),
+  }), [])
 
   const patchClip = (patch: Partial<TimelineClip>) => setClips(prev => prev.map(c => c.id === selectedId ? { ...c, ...patch } : c))
   const patchText = (patch: Partial<TextClip>) => setTexts(prev => prev.map(t => t.id === selectedId ? { ...t, ...patch } : t))
@@ -3314,16 +3340,9 @@ function Editor() {
   }
 
   // ---- render ----
-  // Pick a tick spacing that leaves room for its own label, otherwise zooming out prints every
-  // five seconds on top of itself. Steps climb through the units people actually think in.
-  const TICK_STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600]
-  const tickStep = TICK_STEPS.find(step => step * pxPerSec >= 58) ?? TICK_STEPS[TICK_STEPS.length - 1]
-  // seconds while they fit, m:ss once a tick is a minute or more
-  const tickLabel = (s: number) => s < 60 ? `${s}s` : `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, '0')}`
-  const rulerTicks = []
-  for (let s = 0; s <= Math.ceil(totalDuration) + tickStep; s += tickStep) {
-    rulerTicks.push(<div key={s} className={`tick ${tickStep >= 60 && s % (tickStep * 2) === 0 ? 'major' : ''}`} style={{ left: s * pxPerSec }}><span>{tickLabel(s)}</span></div>)
-  }
+  // The ruler (src/ruler.tsx) picks a tick spacing that leaves room for its labels; the lanes span
+  // the same width it does, so backgrounds, drops and the scrub area reach past the last clip.
+  const tlWidth = contentWidth(totalDuration, pxPerSec, tlView.w, tickStepFor(pxPerSec))
 
   const renderClip = (c: TimelineClip) => {
     const media = mediaBin.find(m => m.id === c.mediaId)
@@ -3702,7 +3721,8 @@ function Editor() {
                 setPxPerSec(next)
                 requestAnimationFrame(() => { el.scrollLeft = Math.max(0, tAtCursor * next - (e.clientX - el.getBoundingClientRect().left)) })
               }}>
-              <div className="time-ruler" title="Drag to scrub" {...scrubHandlers}>{rulerTicks}</div>
+              <div className="tl-content" style={{ width: tlWidth }}>
+              <TimeRuler pxPerSec={pxPerSec} widthPx={tlWidth} viewW={tlView.w} viewH={tlView.h} fps={fps} mode="tenths" scroller={timelineRef} handlers={rulerHandlers} />
               {markers.map(m => (
                 <div key={m.id} className="marker-flag" style={{ left: m.t * pxPerSec, background: m.color }} title={m.label || 'tag point'}
                   onClick={e => { e.stopPropagation(); setCurrentTime(m.t) }}
@@ -3744,6 +3764,7 @@ function Editor() {
                 {!collapsed.audio && <div className="track a-track" data-track="a1" onDragOver={e => e.preventDefault()} onDrop={e => { e.stopPropagation(); void dropMedia(e, 'a1') }}>{clips.filter(c => c.trackId === 'a1').map(renderClip)}</div>}
                 <button className="track-label" onClick={() => setCollapsed(c => ({ ...c, sfx: !c.sfx }))}><IconChevron open={!collapsed.sfx} /> SFX</button>
                 {!collapsed.sfx && <div className="track a-track sfx-track" data-track="a2" onDragOver={e => e.preventDefault()} onDrop={e => { e.stopPropagation(); void dropMedia(e, 'a2') }}>{clips.filter(c => c.trackId === 'a2').map(renderClip)}</div>}
+              </div>
               </div>
             </div>
           </div>

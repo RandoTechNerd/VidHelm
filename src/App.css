@@ -1279,3 +1279,22 @@ textarea.duration-input { height: auto; padding: 7px 9px; resize: vertical; line
 .crash-screen .crash-detail { font-family: ui-monospace, Consolas, monospace; font-size: 12px; color: var(--text-dim); max-width: 100%; overflow-wrap: anywhere; }
 .crash-screen button { margin-top: 6px; height: 34px; padding: 0 18px; border: none; border-radius: var(--radius-sm); background: var(--accent-primary); color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; }
 .crash-screen button:hover { background: var(--accent-hover); }
+
+/* ============ Wave 1 timeline lane (W1-03, W1-04, W1-05, W1-07, W1-20) ============
+   Appended here, not edited in place above, so the other Wave 1 lanes can merge around it. */
+
+/* The scrollable content: ruler, tags, playhead and lanes all span the whole timeline, not the
+   first screen of it (its width is set inline from the timeline length) */
+.tl-content { position: relative; min-height: 100%; }
+.tick span { left: 5px; }
+.tick.minor { top: 17px; border-left-color: rgb(var(--ink) / 0.1); }
+/* the playhead head: a small downward pentagon that points at the frame instead of a blob over 0s */
+.scrubber::before { left: -4.5px; width: 11px; height: 14px; border-radius: 0; clip-path: polygon(0 0, 100% 0, 100% 62%, 50% 100%, 0 62%); }
+/* hovering the ruler: where a click would land, and what time that is */
+.ruler-ghost { position: absolute; top: 0; left: 0; width: 1px; background: rgb(var(--ink) / 0.3); pointer-events: none; z-index: 1; }
+.ruler-tip {
+  position: absolute; top: 3px; left: 5px; padding: 1px 5px; border-radius: 4px;
+  font-size: 10px; font-variant-numeric: tabular-nums; white-space: nowrap;
+  background: var(--bg-surface-elevated); color: var(--text-main);
+  border: 1px solid var(--border-strong); box-shadow: var(--shadow-sm);
+}
