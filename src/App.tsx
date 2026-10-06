@@ -21,6 +21,7 @@ import { resolveProfile, describeProfile, type PerfProfile, type Tier, type Tier
 import { PLATFORM_TARGETS, platformTarget, type Preset, type Role } from '../electron/audiochain'
 import { isPreset, isRole, mixTuning, resolveRole, type SoundFacts } from '../electron/audiomix'
 import { audioFadeFactor, gainAt, dbToGain, dbLabel, planPreviewMix, previewMasterDb, previewMixer, type PreviewClipPlan, type PreviewSoundClip } from './previewAudio'
+import { restoreSoundChoices, soundChoicesOf } from './soundChoices'
 import { NumField, DbSlider, PropGroup, PropRow, AnchorGrid, SoundControls, type SoundView } from './inspector'
 
 interface MediaFile {
@@ -843,10 +844,11 @@ function Editor() {
   // the current saveProject, for handlers registered once (keyboard, the close-window prompt)
   const saveRef = useRef<(as?: boolean) => Promise<boolean>>(async () => false)
 
-  // Undo/redo history over the editable document (clips + texts + tag points, since cuts move tags).
+  // Undo/redo history over the editable document (clips + texts + tag points, since cuts move tags,
+  // and each file's Sound role and Fix voice, which change how the export sounds).
   // Changes are coalesced: a snapshot is taken ~450ms after the last edit,
   // so a drag or a slider sweep collapses into a single undo step.
-  const history = useRef<{ clips: TimelineClip[]; texts: TextClip[]; markers: Marker[] }[]>([{ clips: [], texts: [], markers: [] }])
+  const history = useRef<{ clips: TimelineClip[]; texts: TextClip[]; markers: Marker[]; sound: string }[]>([{ clips: [], texts: [], markers: [], sound: '[]' }])
   const histIndex = useRef(0)
   const skipRecord = useRef(false)
   const [canUndo, setCanUndo] = useState(false)
@@ -1165,10 +1167,11 @@ function Editor() {
 
 
   // Record history snapshots (debounced/coalesced)
+  const soundChoices = useMemo(() => soundChoicesOf(mediaBin), [mediaBin])
   useEffect(() => {
     if (skipRecord.current) { skipRecord.current = false; return }
     const handle = setTimeout(() => {
-      const snap = { clips, texts, markers }
+      const snap = { clips, texts, markers, sound: soundChoices }
       const top = history.current[histIndex.current]
       if (JSON.stringify(top) === JSON.stringify(snap)) return
       history.current = history.current.slice(0, histIndex.current + 1)
@@ -1179,7 +1182,7 @@ function Editor() {
       setCanRedo(false)
     }, 450)
     return () => clearTimeout(handle)
-  }, [clips, texts, markers])
+  }, [clips, texts, markers, soundChoices])
 
   const applyHistory = (i: number) => {
     const snap = history.current[i]
@@ -1188,6 +1191,9 @@ function Editor() {
     setClips(snap.clips)
     setTexts(snap.texts)
     setMarkers(snap.markers || [])
+    // the files' sound choices as they were, put back on the bin as it is NOW (an updater, not this
+    // render's soundChoices: Ctrl+Z runs a handler registered renders ago, before the click it undoes)
+    setMediaBin(prev => restoreSoundChoices(prev, snap.sound))
     setSelectedId(null)
     histIndex.current = i
     setCanUndo(i > 0)
@@ -3141,7 +3147,7 @@ function Editor() {
     setSelectedId(null); setCurrentTime(0)
     // a fresh undo history: Ctrl+Z must never bring back clips from the project that was open before
     skipRecord.current = true
-    history.current = [{ clips: doc.clips, texts: doc.texts, markers: doc.markers }]
+    history.current = [{ clips: doc.clips, texts: doc.texts, markers: doc.markers, sound: soundChoicesOf(doc.mediaBin) }]
     histIndex.current = 0
     setCanUndo(false); setCanRedo(false)
     return doc
