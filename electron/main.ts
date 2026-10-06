@@ -26,7 +26,7 @@ import { bridgeRefusal, commandForEditor, replyAlias, replyKey, type PendingRepl
 import { isAppNavigation, externalLink } from './navguard'
 import { pathToFileURL } from 'node:url'
 import { PeakBucketer, peakDecodeArgs, PEAK_RATE, PEAK_VERSION } from './peaks'
-import { progressPct, partialPath, nextVersion, exportFileName, LandedPlans } from './exportjob'
+import { progressPct, partialPath, nextVersion, exportFileName, LandedPlans, ExportJob, isExportCancelled } from './exportjob'
 import { CHAIN_VERSION, decide, decideChannel, decisionsJson, summaryLine, speechSegments, analysisSummary, bedDb, sfxDb, type Preset, type Provenance } from './audiochain'
 import { analyzeMedia, bakeVoice, cachedBake, probeMedia, pruneVoiceCache, readFfmpegVersion, sweepVoiceTemp, voiceCacheKey, type BakeResult } from './voicebake'
 import { prepareExportAudio, scanTimelineLoudness, soundHead, storeSound, type ExportAudio, type MixEnv } from './mixrender'
@@ -2765,16 +2765,28 @@ ipcMain.handle('bake-voice', async (event, { filePath, preset = 'studio', pictur
 // ---------------- The export's sound: buses, ducking, the measured master ----------------
 // Planned in electron/audiomix.ts, run by electron/mixrender.ts. What is here: the folders that say
 // where a file came from, the bake runner, and the scan the loudness readout asks for.
-const mixEnv = async (o: { bakeMissing: boolean }): Promise<MixEnv> => ({
+/**
+ * `job`: the export this sound is for. Its processes are killed on Cancel, it is checked between
+ * steps, and it stops waiting for a voice bake at once (the bake itself runs on into the cache: the
+ * preview may be waiting for it too, and the next export will want it). `onStage` hears each step
+ * (and a bake's percent), for the Export button.
+ */
+const mixEnv = async (o: { bakeMissing: boolean; job?: ExportJob; onStage?: (line: string) => void }): Promise<MixEnv> => ({
   ffmpeg: paths.ffmpeg, ffprobe: paths.ffprobe, cacheDir: voiceDir(), ffmpegVersion: await ffmpegVersion(),
-  workDir: app.getPath('temp'), bakeMissing: o.bakeMissing, onChild: trackVoiceChild,
+  workDir: app.getPath('temp'), bakeMissing: o.bakeMissing,
+  onChild: o.job ? (p, done) => { trackVoiceChild(p, done); o.job!.child(p, done) } : trackVoiceChild,
+  check: o.job ? () => o.job!.check() : undefined,
   dirs: mixDirs(),
   bake: async ({ filePath, preset }) => {
-    const send = (pct: number, line: string) => { if (win && !win.webContents.isDestroyed()) win.webContents.send('voice-progress', { filePath, preset, pct, line }) }
+    const send = (pct: number, line: string) => {
+      if (win && !win.webContents.isDestroyed()) win.webContents.send('voice-progress', { filePath, preset, pct, line })
+      if (pct < 100 && !o.job?.cancelled) o.onStage?.(`Fixing the voice in ${path.basename(filePath)}, ${Math.round(pct)}%`)
+    }
     // a bake that fails sends no 100 of its own, and the Inspector would show it running for ever
-    try { return await runVoiceBake(filePath, preset, null, { urgent: true, send }) } finally { send(100, 'Done') }
+    const run = runVoiceBake(filePath, preset, null, { urgent: true, send }).finally(() => send(100, 'Done'))
+    return o.job ? await o.job.race(run) : await run
   },
-  onStage: (line) => console.log('[export sound]', line),
+  onStage: (line) => { console.log('[export sound]', line); o.onStage?.(line) },
 })
 /** The timeline's end, as the export computes it (clips and text). */
 const timelineEnd = (clips: { start?: unknown; duration?: unknown }[], texts: { start?: unknown; duration?: unknown }[] = []) => {
@@ -2932,11 +2944,12 @@ ipcMain.handle('voice-clone', async (_event, { command, scriptText, pronounce }:
 // Exports in flight, by output file: two renders writing one file produce garbage (an agent retrying
 // after a timeout while the first export still runs is exactly how that happens). Each one can be
 // cancelled from the Export button, which kills ffmpeg outright: a render has nothing worth saving.
-const exportsRunning = new Map<string, { cancelled: boolean; kill?: () => void }>()
+// Cancel reaches every stage (see ExportJob): the sound mix as well as the video pass.
+const exportsRunning = new Map<string, ExportJob>()
 
 ipcMain.handle('cancel-export', async () => {
   let n = 0
-  for (const job of exportsRunning.values()) { job.cancelled = true; try { job.kill?.() } catch { /* already gone */ } n++ }
+  for (const job of exportsRunning.values()) { job.cancel(); n++ }
   return { cancelled: n }
 })
 
@@ -2996,31 +3009,46 @@ ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outp
   // Things worth telling the user that do not stop the render.
   const warnings: string[] = []
   if (brand?.enabled && brand.logoPath && !fs.existsSync(brand.logoPath)) warnings.push(`the brand logo (${path.basename(String(brand.logoPath))}) was not found, so this export has no logo`)
-  const job: { cancelled: boolean; kill?: () => void } = { cancelled: false }
+  const job = new ExportJob()
   exportsRunning.set(outKey, job)
+  const setBar = (v: number) => { try { win?.setProgressBar(v) } catch { /* window closing */ } }
+  // What the sound stage is doing, for the Export button: it has no percent until the video pass,
+  // and a bar parked at 0% for half a minute reads as hung. The taskbar runs indeterminate meanwhile.
+  const stage = (line: string) => { if (win && !win.isDestroyed() && !job.cancelled) win.webContents.send('export-progress', { stage: line }) }
+  setBar(2)
   audio = audio || { optimize: settings?.normalizeAudio !== false }
+  // Text files, caption scripts and the graph for this export only, removed when it ends either way
+  // (they used to pile up in one shared temp folder).
+  let workDir = ''
+  let dropSound = () => {}
+  const finish = () => {
+    exportsRunning.delete(outKey)
+    if (exportsRunning.size === 0) setBar(-1)
+    dropSound()
+    if (workDir) { try { fs.rmSync(workDir, { recursive: true, force: true }) } catch { /* in use; the OS cleans temp */ } }
+    job.end()
+  }
   // The sound is made first, on its own: every audible clip on its bus (voices from their Fix voice
   // bake, made now if missing), the music ducked under the speech, the sum rendered once and
   // measured, and the master gain settled on that measurement. The video pass then reads that one
   // file as its sound. An analysis render takes the bakes that exist and does not wait for new ones.
   // (Each source's channel count is asked of the file actually read, by the mix itself, so a mono
-  // mic still lands on both sides at full level.) Cancel cannot stop this part; it is checked again
-  // before the video pass starts.
+  // mic still lands on both sides at full level.) Cancel stops it at once: the running step's
+  // process is killed, the next step never starts, and a voice bake is left to finish for the cache.
   let sound: ExportAudio
   try {
     sound = await prepareExportAudio(clips, {
       totalS: timelineEnd(clips, texts), optimize: audio.optimize !== false, target: audio.target, duck: audio.duck !== false,
       masterVolume: typeof settings?.masterVolume === 'number' ? settings.masterVolume : 1, ...mixTuning(audio),
-    }, await mixEnv({ bakeMissing: settings?.quality !== 'analysis' }))
+    }, await mixEnv({ bakeMissing: settings?.quality !== 'analysis', job, onStage: stage }))
   } catch (e) {
-    exportsRunning.delete(outKey)
+    finish()
+    if (job.cancelled || isExportCancelled(e)) return { cancelled: true }
     const msg = String((e as Error)?.message || e)
     throw exportError(`the sound could not be mixed (${friendlyExportError(msg)})`, stderrTail(msg))
   }
+  dropSound = sound.cleanup
   const soundPlan = exportPlanOf(sound)
-  // Text files, caption scripts and the graph for this export only, removed when it ends either way
-  // (they used to pile up in one shared temp folder).
-  let workDir = ''
   return new Promise((resolve, reject) => {
     workDir = fs.mkdtempSync(path.join(app.getPath('temp'), 'vidhelm-export-'))
 
@@ -3152,7 +3180,6 @@ ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outp
     const graphPath = path.join(workDir, 'graph.txt')
     fs.writeFileSync(graphPath, graph)
 
-    const setBar = (v: number) => { try { win?.setProgressBar(v) } catch { /* window closing */ } }
     // A finished export nobody is looking at: flash the taskbar button and say so, and a click on the
     // notice shows the file. Not for the throwaway analysis render an agent asks for.
     const announce = (file: string) => {
@@ -3169,8 +3196,11 @@ ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outp
     const removePartial = () => {
       try { fs.rmSync(partial, { force: true }) } catch { setTimeout(() => { try { fs.rmSync(partial, { force: true }) } catch { /* still locked */ } }, 1000) }
     }
-    if (job.cancelled) { resolve({ cancelled: true }); return }   // cancelled while the sound was being mixed
-    job.kill = () => command.kill('SIGKILL')
+    if (job.cancelled) { resolve({ cancelled: true }); return }   // cancelled as the sound finished
+    // Before ffmpeg has started (the first export of a session probes its formats and encoders
+    // first) this kill finds no process and only logs; 'start' checks again, and 'end' never turns
+    // a cancelled render into a success.
+    job.onCancel(() => command.kill('SIGKILL'))
     command
       .outputOptions(['-filter_complex_script', graphPath])
       .map(`[${currentVOut}]`)
@@ -3197,7 +3227,10 @@ ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outp
         '-t', totalDuration.toString(),
         '-stats_period', '0.25',   // a position four times a second, so the bar moves smoothly
       ])
-      .on('start', (cmd) => console.log('FFmpeg started:', cmd))
+      .on('start', (cmd) => {
+        console.log('FFmpeg started:', cmd)
+        if (job.cancelled) command.kill('SIGKILL')   // Cancel landed while it was being started
+      })
       // fluent-ffmpeg's own percent needs every input's length and the lavfi base has none, so it was
       // undefined for the whole render (the bar sat at 0%): measure from ffmpeg's position instead
       .on('progress', (progress) => {
@@ -3208,6 +3241,8 @@ ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outp
       })
       .on('end', () => {
         setBar(-1)
+        // a Cancel that came too late to stop ffmpeg is still a Cancel: the file is not kept or announced
+        if (job.cancelled) { removePartial(); resolve({ cancelled: true }); return }
         let final = outputPath
         try { fs.renameSync(partial, outputPath) } catch {
           // The last export is open in a player (or Explorer's preview pane holds it). Keep this
@@ -3236,9 +3271,5 @@ ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outp
         reject(exportError(friendlyExportError(raw, partial), stderrTail(stderr || String(err?.message || ''))))
       })
       .save(partial)
-  }).finally(() => {
-    exportsRunning.delete(outKey)
-    sound.cleanup()
-    if (workDir) { try { fs.rmSync(workDir, { recursive: true, force: true }) } catch { /* in use; the OS cleans temp */ } }
-  })
+  }).finally(finish)
 })

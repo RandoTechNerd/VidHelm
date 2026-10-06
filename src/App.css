@@ -985,7 +985,10 @@ textarea.duration-input { height: auto; padding: 7px 9px; resize: vertical; line
   transition: background var(--dur-1) var(--ease-out), transform var(--dur-1) var(--ease-out);
 }
 .action-btn svg { width: 15px; height: 15px; }
-.action-btn.export { background: var(--accent-primary); color: #fff; }
+.action-btn.export { background: var(--accent-primary); color: #fff; padding: 0 10px; min-width: 0; }
+/* the sound stage names its step ("Cancel (Fixing the voice in interview_take3.mp4, 42%)"): it ends in … rather than spilling out */
+.action-btn.export span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.action-btn.export svg { flex: none; }
 .action-btn.export:hover:not(:disabled) { background: var(--accent-hover); }
 .action-btn:disabled { cursor: not-allowed; }
 

@@ -286,6 +286,48 @@ try {
     void full
   }
 
+  console.log('\n-- Cancel stops the sound stage at the step it is on --')
+  {
+    // main.ts hands the export's ExportJob to the mix: its processes, a check between steps, and a
+    // bake it stops waiting for. Cancel used to do nothing until the whole mix (bakes, premaster, up
+    // to three master passes) had run.
+    const J = await load('exportjob.ts')
+    const clips = [
+      { start: 0, duration: 20, hasAudio: true, path: T('voice.wav'), trackId: 'a1', type: 'audio', volume: 1, role: 'voice', voiceFix: 'off' },
+      { start: 0, duration: 20, hasAudio: true, path: T('music.wav'), trackId: 'a1', type: 'audio', volume: 1, role: 'music' },
+    ]
+    const leftover = () => fs.readdirSync(env.workDir).filter((n) => /^vidhelm_(premaster|mixgraph)_/.test(n))
+    const run = async (list, s, at, extra = {}) => {
+      const job = new J.ExportJob(), stages = []
+      const jenv = { ...env, ...extra, onChild: (p, done) => job.child(p, done), check: () => job.check(), onStage: (l) => { stages.push(l); if (at && l.startsWith(at)) job.cancel() } }
+      if (extra.bake) jenv.bake = (o) => job.race(extra.bake(o))
+      const t0 = Date.now()
+      let err = null
+      try { const r = await R.prepareExportAudio(list, s, jenv); r.cleanup() } catch (e) { err = e }
+      return { err, ms: Date.now() - t0, stages, job }
+    }
+    const before = leftover().length
+    // clicked as the premaster starts: its ffmpeg, registered after the click, is killed at once
+    const a = await run(clips, { totalS: 20, optimize: true, duck: true, masterVolume: 1 }, 'Mixing the sound')
+    await new Promise((r) => setTimeout(r, 1300))   // a killed ffmpeg can hold its file a moment; the cleanup tries again at 1 s
+    ok(a.err && a.job.cancelled && !a.stages.includes('Setting the loudness') && leftover().length === before, `stopped in the premaster (${a.ms} ms, "${String(a.err?.message || a.err).split('\n')[0].slice(0, 60)}"), no premaster or graph file left`)
+    // clicked as the master is being settled (knocks make the ceiling work): no further pass runs
+    const knocky = [...clips, { start: 0, duration: 20, hasAudio: true, path: T('knocks.wav'), trackId: 'a2', type: 'audio', volume: 1, role: 'asis' }]
+    const b = await run(knocky, { totalS: 20, optimize: true, duck: true, masterVolume: 1 }, 'Setting the loudness')
+    await new Promise((r) => setTimeout(r, 1300))
+    ok(b.err && b.stages.at(-1) === 'Setting the loudness' && leftover().length === before, `stopped before the master passes (${b.ms} ms), the premaster removed`)
+    // clicked while a voice is being fixed: the export stops waiting at once (the bake itself carries
+    // on for the cache in the app; here it never finishes at all)
+    const fresh = { cacheDir: path.join(tmp, 'voice-cancel'), bakeMissing: true, bake: () => new Promise(() => {}) }
+    const c = await run([{ ...clips[0], voiceFix: 'studio' }], { totalS: 20, optimize: true, duck: true, masterVolume: 1 }, 'Fixing the voice', fresh)
+    ok(c.err && J.isExportCancelled(c.err) && c.ms < 5000, `a bake that is still running does not hold the Cancel (${c.ms} ms, ${c.err?.name})`)
+    // already cancelled: nothing starts
+    const job = new J.ExportJob(); job.cancel()
+    let spawned = 0, d = null
+    try { await R.prepareExportAudio(clips, { totalS: 20, optimize: true }, { ...env, check: () => job.check(), onChild: (p, done) => { if (!done) spawned++; job.child(p, done) } }) } catch (e) { d = e }
+    ok(J.isExportCancelled(d) && spawned === 0, 'cancelled before it began: no ffmpeg is started')
+  }
+
   console.log('\n-- the import measures a file once, and the export reads that measurement --')
   {
     // analyze-audio-media decodes through the head the mix uses and stores the result where measureSound looks

@@ -32,7 +32,7 @@ import { splitClip, removeRange, planPauseCuts, rescaleAutomation, slideVolume, 
 import { tickStepFor, contentWidth, collectSnapTargets, nearestTarget, snapMove, trimTo, clampToSource, maxDurationFrom, footageLength, moveReadout, trimReadout, stripTiles, stripFits, shiftWords, offSpeechNote, timecode, followScroll, type TimecodeMode } from '../electron/timeline'
 import { TimeRuler } from './ruler'
 import { ClipWave, type Peaks } from './clipwave'
-import { etaStep, type EtaState } from '../electron/exportjob'
+import { etaStep, etaText, exportLabel, type EtaState } from '../electron/exportjob'
 import { boxFill } from '../electron/exportgraph'
 import { resolveCaptionModel, modelLabel, MODEL_NAMES, type CaptionModelSetting } from '../electron/asrmodel'
 import { PLATFORM_TARGETS, platformTarget, type Preset, type Role } from '../electron/audiochain'
@@ -477,7 +477,7 @@ const fileUrl = (p?: string | null) => p
   : ''
 // m:ss.t, counted in whole tenths (electron/timeline.ts): (2.3 % 1) * 10 floors to 2 in floating point
 const fmt = (s: number) => timecode(s, 'tenths')
-const fmtEta = (s: number) => s >= 60 ? `${Math.floor(s / 60)}:${Math.floor(s % 60).toString().padStart(2, '0')}` : `${Math.ceil(s)}s`
+const fmtEta = etaText
 
 /** One bin entry from an ffprobe result. Every way media comes in goes through here, so none of
  *  them can forget the HDR flag again (without it the export skips the tone map: grey, flat). */
@@ -799,21 +799,25 @@ function Editor() {
   // the smoothed render rate behind `eta`; null at the start of every export (see etaStep)
   const etaRef = useRef<EtaState | null>(null)
   const exportClickAt = useRef(0)
+  // What the sound stage is doing (only the video pass has a percent), and Cancel clicked but not yet done
+  const [exportStage, setExportStage] = useState<string | null>(null)
+  const [exportStopping, setExportStopping] = useState(false)
   // One export at a time from this window, whoever asks (the human, or an agent through the bridge):
   // they share one bar, one Cancel and one "Done", and two at once drove them in turns (the ETA
   // restarting, a "Done" that could not be cancelled while the other still rendered).
   const exportBusy = useRef(false)
+  const exportCancelAsked = useRef(false)
   // Which export the bar belongs to: one export's 3 s "Done" must never clear the next one's bar
   const exportGen = useRef(0)
   const beginExport = () => {
-    exportBusy.current = true
-    setExportProgress(0); setEta(null); etaRef.current = null
+    exportBusy.current = true; exportCancelAsked.current = false
+    setExportProgress(0); setEta(null); etaRef.current = null; setExportStage(null); setExportStopping(false)
     return ++exportGen.current
   }
   const endExport = (gen: number, done: boolean) => {
     if (exportGen.current !== gen) return
     exportBusy.current = false
-    setEta(null)
+    setEta(null); setExportStage(null); setExportStopping(false)
     if (!done) { setExportProgress(null); return }
     setExportProgress(100)
     setTimeout(() => { if (exportGen.current === gen && !exportBusy.current) setExportProgress(null) }, 3000)
@@ -967,9 +971,11 @@ function Editor() {
   }, [])
 
   useEffect(() => {
-    // { pct, fps } from export-video (a bare number from older builds)
-    const handleProgress = (_e: unknown, p: { pct: number; fps?: number } | number) => {
+    // { pct, fps } from export-video's video pass, { stage } from its sound stage (a bare number from older builds)
+    const handleProgress = (_e: unknown, p: { pct?: number; fps?: number; stage?: string } | number) => {
+      if (typeof p === 'object' && p && typeof p.stage === 'string' && typeof p.pct !== 'number') { setExportStage(p.stage); return }
       const pct = Math.max(0, Math.min(100, (typeof p === 'number' ? p : p?.pct) || 0))
+      setExportStage(null)
       setExportProgress(pct)
       const { state, secondsLeft } = etaStep(etaRef.current, pct, Date.now())
       etaRef.current = state
@@ -2502,7 +2508,7 @@ function Editor() {
             texts: await exportTexts(1280, 720), brand: { ...settings.brand, enabled: false }, audio: settings.audio, outputPath: out,
             settings: { width: 1280, height: 720, fps: 30, quality: 'analysis', masterVolume },
           }
-          const done = await window.ipcRenderer.exportVideo(payloadA)
+          const done = exportCancelAsked.current ? { cancelled: true } : await window.ipcRenderer.exportVideo(payloadA)
           if (done?.cancelled) { endExport(genA, false); return { error: 'the analysis render was cancelled in VidHelm (the Cancel button)' } }
         } catch (e) {
           endExport(genA, false)
@@ -2545,7 +2551,7 @@ function Editor() {
             texts: await exportTexts(w, h), brand: settings.brand, audio, outputPath: cmd.outputPath,
             settings: { width: w, height: h, fps, quality: exportQuality, masterVolume },
           }
-          done = await window.ipcRenderer.exportVideo(payload)
+          done = exportCancelAsked.current ? { cancelled: true } : await window.ipcRenderer.exportVideo(payload)
         } catch (e) {
           endExport(gen, false); setLastExport(null)
           const f = exportFailure(e)
@@ -3199,7 +3205,12 @@ function Editor() {
   const handleExport = async () => {
     // While a render runs the same button cancels it, but not from the second click of a double-click
     // that started it: the button turns into Cancel under the pointer.
-    if (exporting) { if (Date.now() - exportClickAt.current > 800) void window.ipcRenderer.cancelExport(); return }
+    // The click is acknowledged at once ("Stopping…"); an export still in its checks, before the
+    // render has been handed to main, is stopped before it starts.
+    if (exporting) {
+      if (Date.now() - exportClickAt.current > 800) { exportCancelAsked.current = true; setExportStopping(true); void window.ipcRenderer.cancelExport() }
+      return
+    }
     if (clips.length === 0 && texts.length === 0) return
     if (exportBusy.current) return
     exportClickAt.current = Date.now()
@@ -3226,7 +3237,7 @@ function Editor() {
         settings: { width: w, height: h, fps, quality: exportQuality, masterVolume },
       }
       etaRef.current = null
-      const done = await window.ipcRenderer.exportVideo(payload)
+      const done = exportCancelAsked.current ? { cancelled: true } : await window.ipcRenderer.exportVideo(payload)
       if (done?.cancelled) { endExport(gen, false); notify('Export cancelled. Nothing was written, and any earlier export is untouched.', 6000); return }
       // where it really landed: a file open in a player is not replaced, the render gets the next _vN name
       const landed = done?.path || finalPath
@@ -4207,7 +4218,7 @@ function Editor() {
           <button className="hdr-btn icon" onClick={() => setShowSettings(true)} title="Brand kit & settings"><IcGear /></button>
           <button className={`hdr-export ${exporting ? 'cancel' : ''}`} onClick={handleExport} disabled={!exporting && ((clips.length === 0 && texts.length === 0) || exportProgress !== null)}
             title={exporting ? 'Stop the render. Nothing is written, and any earlier export stays as it was.' : 'Render the video with the settings in the Export panel (Ctrl+E)'}>
-            <IconExport /><span>{exporting ? `${Math.round(exportProgress ?? 0)}% · Cancel` : exportProgress !== null ? 'Done' : 'Export'}</span>
+            <IconExport /><span>{exportLabel({ pct: exportProgress, stage: exportStage, etaS: eta, stopping: exportStopping }, 'header')}</span>
           </button>
           {showHelpMenu && (
             <HelpMenu onClose={closeHelpMenu} version={appVersion}
@@ -4432,8 +4443,8 @@ function Editor() {
                 </div>
                 <div className={`progress-line ${exportProgress !== null ? 'show' : ''}`}><div className="fill" style={{ width: `${exportProgress || 0}%` }} /></div>
                 <button className={`action-btn export ${exporting ? 'cancel' : ''}`} onClick={handleExport} disabled={!exporting && ((clips.length === 0 && texts.length === 0) || exportProgress !== null)}
-                  title={exporting ? 'Stop the render. Nothing is written, and any earlier export stays as it was.' : undefined}>
-                  <IconExport /> <span>{exporting ? `Cancel (${Math.round(exportProgress ?? 0)}%${eta && eta > 0 ? `, ${fmtEta(eta)} left` : ''})` : exportProgress !== null ? 'Done' : 'Export Video'}</span>
+                  title={exporting ? `${exportStage ? `${exportStage}. ` : ''}Stop the render. Nothing is written, and any earlier export stays as it was.` : undefined}>
+                  <IconExport /> <span>{exportLabel({ pct: exportProgress, stage: exportStage, etaS: eta, stopping: exportStopping }, 'panel')}</span>
                 </button>
                 {lastExport && exportProgress === null && (
                   <div className="post-export">

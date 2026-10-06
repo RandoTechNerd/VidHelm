@@ -95,6 +95,103 @@ export class LandedPlans<P> {
   get(file: string): P | null { return this.byFile.get(this.key(file)) ?? null }
 }
 
+/** What a cancelled export throws from inside its own steps (the sound stage checks between them). */
+export class ExportCancelled extends Error {
+  constructor() { super('the export was cancelled'); this.name = 'ExportCancelled' }
+}
+export const isExportCancelled = (e: unknown): boolean =>
+  e instanceof ExportCancelled || (!!e && typeof e === 'object' && (e as { name?: unknown }).name === 'ExportCancelled')
+
+/** A process the job can stop (a ChildProcess; kept structural so this module needs no Node). */
+export interface Killable { kill(signal?: 'SIGKILL'): unknown }
+
+/**
+ * One export's Cancel, from its first step to its last. Cancel used to only set a flag and kill the
+ * video pass's ffmpeg, which did not exist yet for the whole sound stage (voice bakes, the premaster,
+ * up to three master passes: a minute or more on a long timeline) and nothing there looked at the
+ * flag, so the click did nothing until the mix had finished. Now:
+ *  - every child process the job registers is killed on cancel, and one registered after the cancel
+ *    is killed at once (a kill that lands before ffmpeg has started is not lost);
+ *  - `check()` between steps throws ExportCancelled;
+ *  - `race(p)` lets the export stop waiting for work it shares with others (a voice bake the preview
+ *    asked for too, worth finishing for the cache) the moment Cancel is clicked;
+ *  - `leftovers` names the files the export makes (the partial render, its work folder, the
+ *    premaster), so quitting mid-render can remove them;
+ *  - `over` settles when the export has ended, whichever way.
+ */
+export class ExportJob {
+  cancelled = false
+  readonly leftovers = new Set<string>()
+  readonly over: Promise<void>
+  private onCancels = new Set<() => void>()
+  private kids = new Map<Killable, () => void>()
+  private settle: () => void = () => {}
+  constructor() { this.over = new Promise<void>(r => { this.settle = r }) }
+  /** Stop: every registered kill runs now. False when it was already cancelled. */
+  cancel(): boolean {
+    if (this.cancelled) return false
+    this.cancelled = true
+    const all = [...this.onCancels]
+    this.onCancels.clear()
+    for (const f of all) { try { f() } catch { /* already gone */ } }
+    return true
+  }
+  /** Throws ExportCancelled once the export is cancelled: call it between steps. */
+  check(): void { if (this.cancelled) throw new ExportCancelled() }
+  /** `f` runs when the export is cancelled, or right away if it already was. Returns the undo. */
+  onCancel(f: () => void): () => void {
+    if (this.cancelled) { try { f() } catch { /* already gone */ } return () => {} }
+    this.onCancels.add(f)
+    return () => { this.onCancels.delete(f) }
+  }
+  /** The onChild hook of a process this export started (done = it has exited). */
+  child(p: Killable, done: boolean): void {
+    if (done) { this.kids.get(p)?.(); this.kids.delete(p); return }
+    if (this.kids.has(p)) return
+    this.kids.set(p, this.onCancel(() => { try { p.kill('SIGKILL') } catch { /* already gone */ } }))
+  }
+  /** `p`'s result, or ExportCancelled as soon as the export is cancelled (`p` itself carries on, unawaited). */
+  race<T>(p: Promise<T>): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const off = this.onCancel(() => reject(new ExportCancelled()))
+      p.then(v => { off(); resolve(v) }, e => { off(); reject(e) })
+    })
+  }
+  /** The export has ended (rendered, failed or cancelled). */
+  end(): void { this.settle() }
+}
+
+/** "1:05" from 65 s, "42s" under a minute. */
+export function etaText(s: number): string {
+  return s >= 60 ? `${Math.floor(s / 60)}:${Math.floor(s % 60).toString().padStart(2, '0')}` : `${Math.ceil(s)}s`
+}
+
+export interface ExportView {
+  /** null: no export; 0..99.5 running; 100: just finished */
+  pct: number | null
+  /** what the sound stage is doing, until the video pass reports a position */
+  stage?: string | null
+  etaS?: number | null
+  /** Cancel was clicked and the export has not ended yet */
+  stopping?: boolean
+}
+
+/**
+ * The Export buttons' words (the header's short one and the panel's). Through the sound stage the bar
+ * used to sit at "0% · Cancel" for half a minute or more with nothing else moving, which reads as
+ * hung; it now says what is being done. A Cancel click is acknowledged at once ("Stopping").
+ */
+export function exportLabel(v: ExportView, where: 'header' | 'panel'): string {
+  const panel = where === 'panel'
+  if (v.pct === null) return panel ? 'Export Video' : 'Export'
+  if (v.pct >= 100) return 'Done'
+  if (v.stopping) return 'Stopping…'
+  if (v.stage && !(v.pct > 0)) return panel ? `Cancel (${v.stage})` : 'Mixing sound · Cancel'
+  const pct = Math.round(v.pct)
+  if (!panel) return `${pct}% · Cancel`
+  return `Cancel (${pct}%${v.etaS && v.etaS > 0 ? `, ${etaText(v.etaS)} left` : ''})`
+}
+
 /** The default file name: the project's name and the frame shape, without characters Windows refuses in a file name. */
 export function exportFileName(project: string | null | undefined, orientation: string): string {
   const clean = (s: string) => Array.from(s, c => (c.charCodeAt(0) < 32 || '<>:"/\\|?*'.includes(c) ? ' ' : c)).join('')

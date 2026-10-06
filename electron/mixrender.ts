@@ -36,6 +36,12 @@ export interface MixEnv {
   onChild?: BakeOptions['onChild']
   /** a line of what is happening, for a log or a status bar */
   onStage?: (line: string) => void
+  /**
+   * Throws when the work is no longer wanted (the export was cancelled): called between every step,
+   * so Cancel stops the sound stage at the next one instead of after the whole mix. The step running
+   * at the time is stopped by killing its process (onChild).
+   */
+  check?: () => void
 }
 
 export interface MixSettings extends MixTuning {
@@ -139,8 +145,10 @@ export async function resolveMix(clips: ExportAudioClip[], env: MixEnv, tune?: M
   for (const c of audible) {
     const m = mediaOf(c)
     if (facts.has(m)) continue
+    env.check?.()
     env.onStage?.(`Measuring the sound of ${name(m)}`)
     try { facts.set(m, await measureSound(m, env)) } catch (e) {
+      env.check?.()   // a measurement killed by Cancel is not a file that cannot be measured
       facts.set(m, null)
       // marked as having sound but has none (a stale bin entry): asking for its audio would stop the whole mix
       if (/has no sound/.test(errText(e))) soundless.add(m)
@@ -165,9 +173,11 @@ export async function resolveMix(clips: ExportAudioClip[], env: MixEnv, tune?: M
     if (preset === 'off' || bakes.has(k)) continue
     let r: BakeResult | null = cachedBake({ cacheDir: env.cacheDir, filePath: m, preset, ffmpegVersion: env.ffmpegVersion, picture: null })
     if (!r && env.bakeMissing) {
+      env.check?.()
       env.onStage?.(`Fixing the voice in ${name(m)}`)
       r = env.bake ? await env.bake({ filePath: m, preset })
         : await bakeVoice({ ffmpeg: env.ffmpeg, ffprobe: env.ffprobe, cacheDir: env.cacheDir, filePath: m, preset, ffmpegVersion: env.ffmpegVersion, picture: null, onChild: env.onChild })
+      env.check?.()
       if (r?.error) notes.push(`Fix voice could not run on ${name(m)} (${r.error}), so it plays as recorded`)
     }
     if (!r || r.error) unbaked++
@@ -200,6 +210,7 @@ export async function resolveMix(clips: ExportAudioClip[], env: MixEnv, tune?: M
   // a proxy read in place of the original: ask it how many channels it has
   const unknown = [...new Set(out.filter((c) => !c.channels).map((c) => c.file))]
   for (const f of unknown) {
+    env.check?.()
     const p = await probeMedia(env.ffprobe, f)
     for (const c of out) if (c.file === f) c.channels = p?.audioChannels || 2
   }
@@ -260,10 +271,11 @@ export interface SettledMaster extends MasterPlan { passes: number; measuredI?: 
  * is exactly the plan, so nothing is rendered. When it may act (a hot Master volume, stacked SFX), the
  * master is measured and the loudness it cost folded back in, as the bake does (at most 3 passes).
  */
-export async function settleMaster(premaster: string, m: MasterPlan, env: Pick<MixEnv, 'ffmpeg' | 'onChild'>): Promise<SettledMaster> {
+export async function settleMaster(premaster: string, m: MasterPlan, env: Pick<MixEnv, 'ffmpeg' | 'onChild' | 'check'>): Promise<SettledMaster> {
   if (!m.limiterLikely || m.plannedLufs == null) return { ...m, passes: 0 }
   let cur = m, passes = 0, got: { I: number; TP: number | null } = { I: NaN, TP: null }
   while (passes < 3) {
+    env.check?.()
     got = await measureMaster(premaster, cur.filter, env)
     passes++
     // Optimize off has no target: what it measures is what it will be
@@ -307,8 +319,10 @@ export async function prepareExportAudio(clips: ExportAudioClip[], s: MixSetting
   const premaster = path.join(env.workDir, `vidhelm_premaster_${process.pid}_${Date.now()}.wav`)
   const cleanup = () => { try { fs.rmSync(premaster, { force: true }) } catch { /* in use: the temp folder's own cleanup */ } }
   try {
+    env.check?.()
     env.onStage?.('Mixing the sound')
     const pre = await renderPremaster(plan, env, premaster)
+    env.check?.()
     remember(hash, pre)
     const planned = planMaster({ I: pre.I, TP: pre.TP, optimize: s.optimize, target: s.target, masterVolume: s.masterVolume })
     if (planned.limiterLikely) env.onStage?.('Setting the loudness')

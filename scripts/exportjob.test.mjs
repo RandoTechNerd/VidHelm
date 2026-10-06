@@ -74,10 +74,80 @@ console.log('sound plans')
   ok(small.get('a') === 3 && small.get('b') === null && small.get('c') === 4, 'past the cap the oldest export is forgotten, never one just exported again')
   // and main files it only there: inside the render's 'end', after the rename has landed
   const main = fs.readFileSync(path.join(here, '..', 'electron', 'main.ts'), 'utf8')
-  const end = main.search(/\.on\('end', \(\) => \{\s*setBar\(-1\)\s*let final = outputPath/), error = main.indexOf(".on('error'", end)
+  const end = main.search(/\.on\('end', \(\) => \{\s*setBar\(-1\)[^]{0,300}?let final = outputPath/), error = main.indexOf(".on('error'", end)
   const lands = [...main.matchAll(/exportPlans\.land\(/g)].map((m) => m.index)
   ok(end > 0 && lands.length === 1 && lands[0] > main.indexOf('fs.renameSync(partial', end) && lands[0] < error,
     'export-video files the plan once, in its end handler after the rename (never before the render, never on cancel)')
+}
+
+console.log('cancel')
+{
+  // a stand-in child process: records the kill
+  const kid = () => ({ killed: null, kill(sig) { this.killed = sig || 'SIGTERM' } })
+  const job = new J.ExportJob()
+  const running = kid(), exited = kid()
+  job.child(running, false)
+  job.child(exited, false); job.child(exited, true)
+  let fired = 0
+  const off = job.onCancel(() => fired++)
+  ok(job.cancel() === true && running.killed === 'SIGKILL' && exited.killed === null && fired === 1, 'Cancel kills the process that is running, not one that has already exited')
+  ok(job.cancel() === false && fired === 1, 'a second click changes nothing')
+  void off
+  // the sound stage registers a new ffmpeg after the click (the premaster starting as Cancel lands)
+  const late = kid()
+  job.child(late, false)
+  let lateKill = 0
+  job.onCancel(() => lateKill++)
+  ok(late.killed === 'SIGKILL' && lateKill === 1, 'a process or kill registered after the Cancel is stopped at once (it used to run to the end)')
+  let threw = null
+  try { job.check() } catch (e) { threw = e }
+  ok(threw && J.isExportCancelled(threw) && threw.name === 'ExportCancelled' && !J.isExportCancelled(new Error('x')), 'check() between steps throws ExportCancelled once cancelled')
+  ok(J.isExportCancelled({ name: 'ExportCancelled' }), 'recognised by name too (a bundle of its own has its own class)')
+}
+{
+  // a voice bake the preview also waits on: the export stops waiting, the bake runs on
+  const job = new J.ExportJob()
+  let finishBake
+  const bake = new Promise((r) => { finishBake = r })
+  const raced = job.race(bake)
+  let outcome = null
+  raced.then((v) => { outcome = ['value', v] }, (e) => { outcome = ['error', e] })
+  job.cancel()
+  await new Promise((r) => setTimeout(r, 0))
+  ok(outcome && outcome[0] === 'error' && J.isExportCancelled(outcome[1]), 'race() gives up on a running bake the moment Cancel is clicked')
+  finishBake('baked')
+  ok((await bake) === 'baked', '...and the bake itself still finishes (for the cache)')
+  const quiet = new J.ExportJob()
+  ok((await quiet.race(Promise.resolve(7))) === 7, 'without a Cancel, race() is just the result')
+  let rejected = null
+  try { await quiet.race(Promise.reject(new Error('bake failed'))) } catch (e) { rejected = e }
+  ok(rejected && rejected.message === 'bake failed', '...or the error')
+  let over = false
+  void quiet.over.then(() => { over = true })
+  quiet.end()
+  await quiet.over
+  ok(over, '`over` settles when the export ends (quitting waits on it)')
+}
+
+console.log('the Export buttons')
+{
+  const L = J.exportLabel
+  ok(L({ pct: null }, 'header') === 'Export' && L({ pct: null }, 'panel') === 'Export Video', 'idle')
+  ok(L({ pct: 0, stage: 'Fixing the voice in talk.mp4, 42%' }, 'panel') === 'Cancel (Fixing the voice in talk.mp4, 42%)' && L({ pct: 0, stage: 'Mixing the sound' }, 'header') === 'Mixing sound · Cancel',
+    'the sound stage says what it is doing instead of "0% · Cancel"')
+  ok(L({ pct: 42.4, stage: null, etaS: 65 }, 'panel') === 'Cancel (42%, 1:05 left)' && L({ pct: 42.4, etaS: 65 }, 'header') === '42% · Cancel', 'the video pass shows its percent and time left')
+  ok(L({ pct: 0, stage: 'Mixing the sound', stopping: true }, 'header') === 'Stopping…' && L({ pct: 50, stopping: true }, 'panel') === 'Stopping…', 'a Cancel click is acknowledged at once')
+  ok(L({ pct: 100, stopping: true }, 'header') === 'Done' && L({ pct: 100 }, 'panel') === 'Done', 'finished')
+  ok(J.etaText(42.2) === '43s' && J.etaText(65) === '1:05' && J.etaText(600) === '10:00', 'time left reads 43s, 1:05, 10:00')
+}
+
+console.log('main wires the job through every stage')
+{
+  const main = fs.readFileSync(path.join(here, '..', 'electron', 'main.ts'), 'utf8')
+  const handler = main.slice(main.indexOf("ipcMain.handle('export-video'"))
+  ok(/mixEnv\(\{[^}]*\bjob\b[^}]*onStage: stage/.test(handler), 'the sound stage gets the job (kill, check, race) and reports its steps')
+  ok(/\.on\('start', \(cmd\) => \{[^]{0,200}?if \(job\.cancelled\) command\.kill\('SIGKILL'\)/.test(handler), "a Cancel that landed before ffmpeg started kills it in 'start'")
+  ok(/\.on\('end', \(\) => \{\s*setBar\(-1\)[^]{0,200}?if \(job\.cancelled\) \{ removePartial\(\); resolve\(\{ cancelled: true \}\)/.test(handler), "...and 'end' never turns a cancelled render into a success")
 }
 
 console.log(`\n${fail === 0 ? 'ALL CHECKS PASSED' : 'FAILURES'} - ${pass} passed, ${fail} failed\n`)
