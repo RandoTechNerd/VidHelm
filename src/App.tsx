@@ -2591,7 +2591,8 @@ function Editor() {
     let cursor = dropTime
     added.forEach(m => { placeOnTimeline(m, m.type === 'audio' ? dropTime : cursor, track); if (m.type !== 'audio') cursor += m.duration })
   }
-  const onTimelineDrop = (e: React.DragEvent) => { void dropMedia(e) }
+  // stopped here: the window-wide drop in the return below would import the same files again
+  const onTimelineDrop = (e: React.DragEvent) => { e.stopPropagation(); void dropMedia(e) }
   // Each track row takes its own drops (see the rows below), so a clip dropped on the B-roll row
   // lands on b-roll. They stop the event: the timeline's own handler would add a second copy on v1.
 
@@ -4067,11 +4068,12 @@ function Editor() {
     <div className="app-container" onDragOver={(e) => e.preventDefault()}
       onDragEnter={e => { if (dragHasFiles(e.dataTransfer.types)) { dragDepth.current++; setDragFiles(true) } }}
       onDragLeave={e => { if (dragHasFiles(e.dataTransfer.types) && --dragDepth.current <= 0) { dragDepth.current = 0; setDragFiles(false) } }}
-      // The Media Bin, the timeline and the 3D Studio take their own drops (and preventDefault);
-      // files dropped anywhere else are imported rather than opened in place of the editor, and
-      // text dropped on a field is let through so it lands there (see dropIntent).
+      // The Media Bin, the timeline and the 3D Studio take their own drops and stop them there, so
+      // what reaches this is a drop nobody claimed. Being cancelled says nothing: src/main.tsx
+      // cancels every file drop before any of this runs. Files dropped anywhere else are imported
+      // rather than opened in place of the editor, and text dropped on a field is let through so it
+      // lands there (see dropIntent).
       onDrop={e => {
-        if (e.defaultPrevented) return
         const intent = dropIntent(e.dataTransfer.types, isTextEntry(e.target as HTMLElement))
         if (intent === 'field') return
         e.preventDefault()
@@ -4181,7 +4183,7 @@ function Editor() {
                   onClick={() => currentProject && window.ipcRenderer.revealFolder(currentProject.dir)}><IcFolder /></button>
               </div>
             )}
-            {sidebarTab === 'media' && <div className="media-list" onDrop={e => { e.preventDefault(); if (dragHasFiles(e.dataTransfer.types)) void importAndStart(Array.from(e.dataTransfer.files)) }} onDragOver={(e) => e.preventDefault()}>
+            {sidebarTab === 'media' && <div className="media-list" onDrop={e => { e.preventDefault(); e.stopPropagation(); if (dragHasFiles(e.dataTransfer.types)) void importAndStart(Array.from(e.dataTransfer.files)) }} onDragOver={(e) => e.preventDefault()}>
               {mediaBin.length === 0 && <MediaEmpty onImport={() => importInputRef.current?.click()}>
                 <InfoNote label="What can I add?">
                   Double-click an item, or drop files straight onto the timeline, to use it.<br /><br />

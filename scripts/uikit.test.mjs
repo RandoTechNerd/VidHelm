@@ -70,6 +70,33 @@ ok(U.dropIntent([U.MEDIA_DRAG], true) === 'swallow' && U.dropIntent([U.MEDIA_DRA
 ok(U.dropIntent(['text/uri-list', 'text/html', 'Files', U.MEDIA_DRAG], false) === 'swallow', 'a bin still dropped on the stage is not re-imported')
 ok(U.dropIntent([], false) === 'swallow' && U.dropIntent(undefined, true) === 'field', 'an empty drag on a field is still the field\'s')
 
+console.log('holdsDrop (the window guard in src/main.tsx)')
+ok(U.holdsDrop(['Files'], false) && U.holdsDrop(['Files'], true), 'a file drag is always cancelled, so it can never open as a page')
+ok(U.holdsDrop(['text/uri-list', 'text/plain'], false), 'a link anywhere but a field is cancelled')
+ok(!U.holdsDrop(['text/uri-list', 'text/plain'], true), 'a link over a field is not, so its address is typed in')
+ok(U.holdsDrop(['text/uri-list', 'text/html', 'Files'], true), 'a picture dragged from a page is a file, even over a field')
+ok(!U.holdsDrop(['text/plain', 'text/html'], false) && !U.holdsDrop(undefined, false), 'plain text and an empty drag are left alone')
+
+// The guard cancels every file drop before React sees it, so "cancelled" cannot tell the editor's
+// window-wide drop that a panel already took the files: each panel that takes a drop has to stop
+// it instead. Once the bin, the timeline and the 3D Studio only cancelled theirs, the window-wide
+// drop imported every file a second time (or, while it trusted defaultPrevented, never at all).
+const dropSources = ['App.tsx', 'model3d.tsx', 'welcome.tsx', 'extras.tsx'].filter(f => fs.existsSync(path.join(srcDir, f)))
+const drops = dropSources.flatMap(f => {
+  const text = fs.readFileSync(path.join(srcDir, f), 'utf8')
+  return [...text.matchAll(/onDrop=\{/g)].map(m => {
+    const named = /^onDrop=\{(\w+)\}/.exec(text.slice(m.index))
+    const body = named ? text.slice(text.indexOf(`const ${named[1]} =`), text.indexOf(`const ${named[1]} =`) + 200) : text.slice(m.index, m.index + 400)
+    return { f, body }
+  })
+})
+const windowWide = drops.filter(d => d.body.includes('dropIntent('))
+ok(windowWide.length === 1 && !windowWide[0].body.includes('defaultPrevented'), 'the window-wide drop does not read "cancelled" as "taken"')
+const panels = drops.filter(d => !d.body.includes('dropIntent('))
+ok(panels.length >= 7, `the source scan finds the panel drops (${panels.length})`)
+for (const d of panels.filter(d => !d.body.includes('stopPropagation()'))) ok(false, `${d.f}: a drop target lets its drop reach the window-wide import: ${d.body.slice(0, 80)}`)
+ok(panels.every(d => d.body.includes('stopPropagation()')), 'every panel that takes a drop stops it there')
+
 console.log('firstVideoOf')
 const bin = [{ id: 'a', type: 'audio' }, { id: 'i', type: 'image' }, { id: 'v1', type: 'video' }, { id: 'v2', type: 'video' }]
 ok(U.firstVideoOf(bin)?.id === 'v1', 'the first video in drop order, past the song and the still')

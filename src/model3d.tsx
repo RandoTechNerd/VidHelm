@@ -416,7 +416,8 @@ export function Model3DModal({ open, onClose, initialPath, onRendered, apiRef, g
           <div className={`m3d-stage ${transparent ? 'alpha' : ''}`} ref={hostRef}
             onDragOver={e => e.preventDefault()}
             onDrop={e => {
-              e.preventDefault()
+              // stopped too: the editor's window-wide drop would also import the model into the bin
+              e.preventDefault(); e.stopPropagation()
               if (isWebPreview()) { setStatus(WEB_ONLY); return }
               const f = e.dataTransfer.files[0]
               if (f) loadModel(window.ipcRenderer.getPathForFile(f))

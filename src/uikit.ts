@@ -61,6 +61,15 @@ export const dropIntent = (types: ArrayLike<string> | null | undefined, onTextEn
     : dragHasFiles(types) ? 'import'
     : onTextEntry ? 'field' : 'swallow'
 
+/** Does the window-wide guard (src/main.tsx) cancel this drag before anything else sees it? Files
+ *  always: dropped where nothing takes them, Chromium opens the file as a page in place of the
+ *  editor. A link too, unless it is over a field: there Chromium types the address into the field
+ *  instead of navigating, which is what dragging a link at a prompt is for. */
+export const holdsDrop = (types: ArrayLike<string> | null | undefined, onTextEntry: boolean): boolean => {
+  const t = Array.from(types ?? [])
+  return t.includes('Files') || (t.includes('text/uri-list') && !onTextEntry)
+}
+
 /** The clip a first import starts the timeline with: the first video, in the order the files
  *  came. Stills, sound and 3D wait in the bin; a lone song is not the start of an edit. */
 export const firstVideoOf = <T extends { type: string }>(added: readonly T[]): T | null =>
