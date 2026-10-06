@@ -3978,7 +3978,7 @@ function Editor() {
         context={{ version: appVersion, clips: clips.length + texts.length, duration: totalDuration, format: ORIENTATIONS[orientation].label, aiKeys: !!(settings.aiGen?.falKey || settings.aiGen?.geminiKey) }} />
       {dragFiles && <DropOverlay startsTimeline={clips.length === 0 && texts.length === 0} />}
       <div className="toasts">{toasts.map(t => <div key={t.id} className="toast" onClick={() => setToasts(x => x.filter(y => y.id !== t.id))}>{t.text}</div>)}</div>
-      {drag && <div className="drag-hud" style={{ left: drag.hud.x, top: drag.hud.y - 14 }}>{drag.hud.text}</div>}
+      {drag && <div className="drag-hud" style={{ left: drag.hud.x, top: drag.hud.y }}>{drag.hud.text}</div>}
       {ask && (
         <div className="modal-backdrop ask-backdrop">
           <div className="modal ask-modal" role="alertdialog" aria-modal="true" aria-label={ask.title}>

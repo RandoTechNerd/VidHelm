@@ -1162,7 +1162,7 @@ textarea.duration-input { height: auto; padding: 7px 9px; resize: vertical; line
 .recipe-toggles { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
 .recipe-chip { background: rgb(var(--ink) / 0.05); border: 1px solid rgb(var(--ink) / 0.14); color: var(--text-secondary, #9aa3af); border-radius: 999px; padding: 5px 12px; font-size: 12.5px; cursor: pointer; }
 .recipe-chip.on { background: var(--accent-soft); border-color: var(--accent-primary); color: var(--text-main); }
-/* a recipe step's on/off is a drawn dot, not a ●/○ glyph that changes size from font to font */
+/* a recipe step's on/off is a drawn dot, not a â—/â—‹ glyph that changes size from font to font */
 .recipe-toggles .recipe-chip { display: inline-flex; align-items: center; gap: 7px; }
 .recipe-toggles .recipe-chip::before { content: ''; width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid currentColor; box-sizing: border-box; flex: none; }
 .recipe-toggles .recipe-chip.on::before { background: var(--accent-primary); border-color: var(--accent-primary); }
@@ -1586,34 +1586,10 @@ textarea.duration-input { height: auto; padding: 7px 9px; resize: vertical; line
   border: 1px solid var(--border-strong); box-shadow: var(--shadow-sm);
 }
 
-/* Trim handles you can see: a grip appears on hover, the selected clip shows both edges in the
-   accent, and an edge that hit the end of its footage flashes red (W1-04) */
-.trim-handle { width: 8px; }
-.trim-handle::after {
-  content: ''; position: absolute; top: 50%; width: 3px; height: 16px; max-height: calc(100% - 6px);
-  transform: translateY(-50%); border-radius: 2px; background: currentColor; opacity: 0; transition: opacity 0.12s;
-}
-.trim-handle.left::after { left: 2px; }
-.trim-handle.right::after { right: 2px; }
-.clip:hover .trim-handle::after { opacity: 0.7; }
-.clip.selected .trim-handle { background: var(--accent-primary); }
-.clip.selected .trim-handle::after { opacity: 0.9; width: 1px; box-shadow: 2px 0 0 currentColor; left: 2.5px; right: auto; }
-.trim-handle.at-limit, .clip.selected .trim-handle.at-limit { background: var(--accent-error); }
-.clip.dragging { cursor: grabbing; opacity: 0.94; z-index: 10; box-shadow: 0 0 0 2px var(--accent-primary), var(--shadow-lg); }
-/* where a dragged edge snapped */
-.snap-line { position: absolute; top: 0; bottom: 0; width: 1px; margin-left: -0.5px; background: var(--accent-warning); box-shadow: 0 0 4px var(--accent-warning); z-index: 15; pointer-events: none; }
-/* the time readout that rides above the pointer while dragging */
-.drag-hud {
-  position: fixed; z-index: 300; transform: translate(-50%, -100%); pointer-events: none;
-  padding: 3px 8px; border-radius: 999px; white-space: nowrap;
-  background: var(--bg-surface-elevated); color: var(--text-main); border: 1px solid var(--border-strong); box-shadow: var(--shadow-md);
-  font-family: 'JetBrains Mono', 'Cascadia Mono', Consolas, ui-monospace, monospace; font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums;
-}
-
-/* The grip on a selected (accent) handle reads in the accent's own foreground, on every clip
-   colour including the yellow text row, whose ink is dark (W1-05) */
-:root { --on-accent: #ffffff; }
-.clip.selected .trim-handle { color: var(--on-accent); }
+/* Trim handles, the dragging lift, the snap line and the drag readout are the shared clip states
+   in the primitives section above (W1-02); the timeline only adds the classes and elements. The
+   hover grip on a text clip takes the clip's own dark ink, since white vanishes on the yellow row. */
+.text-clip .trim-handle::after { background: currentColor; }
 
 /* Waveforms (W1-07): full height on the sound rows, the bottom 40% of a video clip with sound over a
    dark scrim so the bars read on any filmstrip. Bars take the canvas's colour (src/clipwave.tsx). */
