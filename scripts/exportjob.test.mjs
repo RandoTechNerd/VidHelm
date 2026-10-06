@@ -141,6 +141,25 @@ console.log('the Export buttons')
   ok(J.etaText(42.2) === '43s' && J.etaText(65) === '1:05' && J.etaText(600) === '10:00', 'time left reads 43s, 1:05, 10:00')
 }
 
+console.log('temp files an export left behind')
+{
+  const now = 10 * 3600_000, old = now - 3600_000, fresh = now - 60_000
+  const entries = [
+    { name: 'vidhelm-export-AbC123', mtimeMs: old },
+    { name: 'vidhelm-export-XyZ789', mtimeMs: fresh },
+    { name: 'vidhelm_premaster_4242_1700000000000.wav', mtimeMs: old },     // a quit that could not wait
+    { name: 'vidhelm_premaster_77_1700000000000.wav', mtimeMs: old },       // this process: in use
+    { name: 'vidhelm_premaster_5150_1700000000000.wav', mtimeMs: old },     // another VidHelm still running
+    { name: 'vidhelm_mixgraph_4242_1700000000000_ab12cd.txt', mtimeMs: old },
+    { name: 'vidhelm_premaster_4242_1700000000000.wav.bak', mtimeMs: old }, // not ours
+    { name: 'someone-elses-export-AbC123', mtimeMs: old },
+  ]
+  const gone = J.staleExportTemp(entries, { now, pid: 77, alive: (pid) => pid === 5150 })
+  ok(gone.join() === 'vidhelm-export-AbC123,vidhelm_premaster_4242_1700000000000.wav,vidhelm_mixgraph_4242_1700000000000_ab12cd.txt',
+    `only stale work folders, premasters and graphs whose process is gone (${gone.join(', ')})`)
+  ok(J.staleExportTemp(entries, { now, pid: 77 }).length === 4, 'with no way to ask whether a process runs, an old file of another process counts as left behind')
+}
+
 console.log('main wires the job through every stage')
 {
   const main = fs.readFileSync(path.join(here, '..', 'electron', 'main.ts'), 'utf8')
@@ -148,6 +167,8 @@ console.log('main wires the job through every stage')
   ok(/mixEnv\(\{[^}]*\bjob\b[^}]*onStage: stage/.test(handler), 'the sound stage gets the job (kill, check, race) and reports its steps')
   ok(/\.on\('start', \(cmd\) => \{[^]{0,200}?if \(job\.cancelled\) command\.kill\('SIGKILL'\)/.test(handler), "a Cancel that landed before ffmpeg started kills it in 'start'")
   ok(/\.on\('end', \(\) => \{\s*setBar\(-1\)[^]{0,200}?if \(job\.cancelled\) \{ removePartial\(\); resolve\(\{ cancelled: true \}\)/.test(handler), "...and 'end' never turns a cancelled render into a success")
+  ok(/app\.on\('before-quit', \(event\) => \{[^]{0,200}?exportsRunning/.test(main) && /job\.leftovers\.add\(partial\)/.test(handler) && /job\.leftovers\.add\(workDir\)/.test(handler) && /job\.leftovers\.add\(sound\.premaster\)/.test(handler),
+    'quitting mid-render cancels the exports and removes their partial, work folder and premaster')
 }
 
 console.log(`\n${fail === 0 ? 'ALL CHECKS PASSED' : 'FAILURES'} - ${pass} passed, ${fail} failed\n`)

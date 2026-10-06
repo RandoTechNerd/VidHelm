@@ -26,7 +26,7 @@ import { bridgeRefusal, commandForEditor, replyAlias, replyKey, type PendingRepl
 import { isAppNavigation, externalLink } from './navguard'
 import { pathToFileURL } from 'node:url'
 import { PeakBucketer, peakDecodeArgs, PEAK_RATE, PEAK_VERSION } from './peaks'
-import { progressPct, partialPath, nextVersion, exportFileName, LandedPlans, ExportJob, isExportCancelled } from './exportjob'
+import { progressPct, partialPath, nextVersion, exportFileName, LandedPlans, ExportJob, isExportCancelled, staleExportTemp } from './exportjob'
 import { CHAIN_VERSION, decide, decideChannel, decisionsJson, summaryLine, speechSegments, analysisSummary, bedDb, sfxDb, type Preset, type Provenance } from './audiochain'
 import { analyzeMedia, bakeVoice, cachedBake, probeMedia, pruneVoiceCache, readFfmpegVersion, sweepVoiceTemp, voiceCacheKey, type BakeResult } from './voicebake'
 import { prepareExportAudio, scanTimelineLoudness, soundHead, storeSound, type ExportAudio, type MixEnv } from './mixrender'
@@ -125,7 +125,25 @@ function createWindow() {
   // 'close' fires before the page's beforeunload, so it tells a real close (the X, Alt+F4, quitting)
   // from a reload: only a close can offer Save, because the renderer finishes it with window.close().
   let closing = false
-  win.on('close', () => { closing = true })
+  // Closing mid-render stops the render and keeps nothing of it, which is easy to do by accident: ask once
+  let exportCloseOk = false
+  win.on('close', (event) => {
+    if (exportsRunning.size && !exportCloseOk && !process.env.VH_SHOOT) {
+      const choice = dialog.showMessageBoxSync(win!, {
+        type: 'warning',
+        title: 'Export running',
+        message: 'An export is still running.',
+        detail: 'Close now and the export stops, and nothing of it is kept. Any earlier export is untouched.',
+        buttons: ['Stop it and close', 'Keep exporting'],
+        defaultId: 1,
+        cancelId: 1,
+        noLink: true,
+      })
+      if (choice !== 0) { event.preventDefault(); return }
+      exportCloseOk = true
+    }
+    closing = true
+  })
   win.webContents.on('will-prevent-unload', (event) => {
     const isClose = closing
     closing = false   // whatever is chosen here, the next close or reload asks again
@@ -2953,6 +2971,38 @@ ipcMain.handle('cancel-export', async () => {
   return { cancelled: n }
 })
 
+// Quitting (or closing the window) mid-render: ffmpeg dies with the app, so no export's own cleanup
+// ran and its partial render, work folder and premaster (230 MB for ten minutes of sound) stayed
+// for good. Quitting now waits a moment while each export cancels and cleans up, then removes
+// whatever is still there.
+let exportsLetGo = false
+app.on('before-quit', (event) => {
+  if (exportsLetGo || exportsRunning.size === 0) return
+  event.preventDefault()
+  exportsLetGo = true
+  const jobs = [...exportsRunning.values()]
+  for (const job of jobs) job.cancel()
+  const removeLeftovers = () => {
+    for (const job of jobs) for (const p of job.leftovers) { try { fs.rmSync(p, { recursive: true, force: true }) } catch { /* still held: the next start's sweep takes it */ } }
+  }
+  void Promise.race([Promise.allSettled(jobs.map(j => j.over)), sleep(4000)]).then(() => { removeLeftovers(); app.quit() })
+})
+
+// What earlier runs left in the temp folder (a crash, or a quit that could not wait): an export's
+// work folder, premaster and mix graph, once nothing can still be using them (staleExportTemp).
+async function sweepExportTemp() {
+  const dir = app.getPath('temp')
+  let names: string[] = []
+  try { names = (await fs.promises.readdir(dir)).filter(n => n.startsWith('vidhelm-export-') || n.startsWith('vidhelm_premaster_') || n.startsWith('vidhelm_mixgraph_')) } catch { return }
+  const entries: { name: string; mtimeMs: number }[] = []
+  for (const name of names) { try { entries.push({ name, mtimeMs: (await fs.promises.stat(path.join(dir, name))).mtimeMs }) } catch { /* gone */ } }
+  const alive = (pid: number) => { try { process.kill(pid, 0); return true } catch (e) { return (e as NodeJS.ErrnoException)?.code === 'EPERM' } }
+  for (const name of staleExportTemp(entries, { now: Date.now(), pid: process.pid, alive })) {
+    try { await fs.promises.rm(path.join(dir, name), { recursive: true, force: true }) } catch { /* in use */ }
+  }
+}
+app.whenReady().then(() => { setTimeout(() => { void sweepExportTemp() }, 15_000) })
+
 /**
  * What each export's sound was planned to be, by output file, so Watch & Verify can say "planned
  * -14.0, measured -14.0" and judge the loudness against the target that was asked for (a podcast
@@ -3025,7 +3075,7 @@ ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outp
     exportsRunning.delete(outKey)
     if (exportsRunning.size === 0) setBar(-1)
     dropSound()
-    if (workDir) { try { fs.rmSync(workDir, { recursive: true, force: true }) } catch { /* in use; the OS cleans temp */ } }
+    if (workDir) { try { fs.rmSync(workDir, { recursive: true, force: true }) } catch { /* in use; the next start's sweep */ } }
     job.end()
   }
   // The sound is made first, on its own: every audible clip on its bus (voices from their Fix voice
@@ -3048,9 +3098,11 @@ ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outp
     throw exportError(`the sound could not be mixed (${friendlyExportError(msg)})`, stderrTail(msg))
   }
   dropSound = sound.cleanup
+  if (sound.premaster) job.leftovers.add(sound.premaster)
   const soundPlan = exportPlanOf(sound)
   return new Promise((resolve, reject) => {
     workDir = fs.mkdtempSync(path.join(app.getPath('temp'), 'vidhelm-export-'))
+    job.leftovers.add(workDir)
 
     const W = Math.round(settings?.width) || 1920
     const H = Math.round(settings?.height) || 1080
@@ -3062,6 +3114,7 @@ ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outp
     // Rendered beside the target and renamed over it only once it has succeeded, so a failed or
     // cancelled export never touches the last good file (no moov-less half file left in its place).
     const partial = partialPath(outputPath)
+    job.leftovers.add(partial)
     let command = ffmpeg()
     // 0: black base video at target resolution/fps, 1: the mixed sound (48 kHz, exactly the timeline's
     // length), or silence when nothing on the timeline is heard

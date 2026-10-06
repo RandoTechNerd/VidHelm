@@ -192,6 +192,30 @@ export function exportLabel(v: ExportView, where: 'header' | 'panel'): string {
   return `Cancel (${pct}%${v.etaS && v.etaS > 0 ? `, ${etaText(v.etaS)} left` : ''})`
 }
 
+export interface TempEntry { name: string; mtimeMs: number }
+
+const EXPORT_TEMP = [
+  /^vidhelm-export-[A-Za-z0-9]{6}$/,                 // an export's work folder (graph, title text, caption scripts)
+  /^vidhelm_premaster_(\d+)_\d+\.wav$/,               // the mixed sound, about 230 MB for ten minutes
+  /^vidhelm_mixgraph_(\d+)_\d+_[a-z0-9]+\.txt$/,      // the sound's graph file
+]
+
+/**
+ * What exports left in the temp folder that nothing can still be using: a work folder, a premaster or
+ * a mix graph older than `olderThanMs` whose process (the pid in its name) is not this one and is not
+ * running. A window closed mid-render used to leave all three for ever (ffmpeg dies with the app, so
+ * no cleanup ran): 230 MB of premaster per ten-minute timeline.
+ */
+export function staleExportTemp(entries: TempEntry[], o: { now: number; pid: number; olderThanMs?: number; alive?: (pid: number) => boolean }): string[] {
+  const before = o.now - (o.olderThanMs ?? 30 * 60_000)
+  return entries.filter(e => {
+    const m = EXPORT_TEMP.map(re => re.exec(e.name)).find(Boolean)
+    if (!m || !(e.mtimeMs < before)) return false
+    const pid = m[1] ? Number(m[1]) : null
+    return pid === null || (pid !== o.pid && !(o.alive?.(pid) ?? false))
+  }).map(e => e.name)
+}
+
 /** The default file name: the project's name and the frame shape, without characters Windows refuses in a file name. */
 export function exportFileName(project: string | null | undefined, orientation: string): string {
   const clean = (s: string) => Array.from(s, c => (c.charCodeAt(0) < 32 || '<>:"/\\|?*'.includes(c) ? ' ' : c)).join('')

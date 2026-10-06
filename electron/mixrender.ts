@@ -317,7 +317,10 @@ export async function prepareExportAudio(clips: ExportAudioClip[], s: MixSetting
   const plan = planMix(mixClips, { totalS: s.totalS, duck: s.duck, tune: s })
   const hash = mixHash(plan)
   const premaster = path.join(env.workDir, `vidhelm_premaster_${process.pid}_${Date.now()}.wav`)
-  const cleanup = () => { try { fs.rmSync(premaster, { force: true }) } catch { /* in use: the temp folder's own cleanup */ } }
+  // A premaster whose ffmpeg was just killed (Cancel) can still be held for a moment: try again shortly,
+  // and failing that the app's start-up sweep takes it
+  const rm = () => { fs.rmSync(premaster, { force: true }) }
+  const cleanup = () => { try { rm() } catch { setTimeout(() => { try { rm() } catch { /* still held */ } }, 1000).unref?.() } }
   try {
     env.check?.()
     env.onStage?.('Mixing the sound')
