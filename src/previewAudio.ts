@@ -23,6 +23,12 @@ import { audibleClips, busOf, duckPlan, isPreset, planMaster, resolveRole, roleL
 
 const clamp = (x: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, x))
 export const dbToGain = (db: number) => (db <= -120 ? 0 : 10 ** (db / 20))
+/** A gain as people read it: "−6.0 dB", "0.0 dB", "−inf dB" for silence (the stored value stays linear). */
+export const dbLabel = (v: number) => {
+  if (!(v > 0.001)) return '−inf dB'
+  const d = Math.round(20 * Math.log10(v) * 10) / 10
+  return `${d < 0 ? '−' : ''}${Math.abs(d).toFixed(1)} dB`
+}
 
 // ------------------------------------------------------------------ the clip's own gain
 

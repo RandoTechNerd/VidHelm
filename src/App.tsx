@@ -12,7 +12,7 @@ import { groupTakes, removalRanges, removedSeconds, chunksFromWords, wordsOf } f
 import { snapToGrid, describeSnap } from '../electron/grid'
 import { fitBpm } from '../electron/score'
 import { layoutReport, presetFor, fitFontSize } from '../electron/textlayout'
-import { THEMES, THEME_FONTS, CAPTION_Y as THEME_CAP_Y, chooseTheme, phrasesFromWords, captionFrame, captionCss, captionPx, fontFaceCss, type CaptionSpec, type CapWord, type ThemeFont, type CapCue } from '../electron/styletheme'
+import { THEMES, THEME_FONTS, THEME_FONT_IDS, CAPTION_Y as THEME_CAP_Y, chooseTheme, phrasesFromWords, captionFrame, captionCss, captionPx, fontFaceCss, type CaptionSpec, type CapWord, type ThemeFont, type CapCue } from '../electron/styletheme'
 import { planProxy, isHdr } from '../electron/playable'
 import { spanForPhrase, sentenceSpans, type Word as SpeechWord, type Span } from '../electron/speech'
 import { planBroll, snapToWords, describePlan, type BrollAsset, type Placement } from '../electron/broll'
@@ -20,7 +20,8 @@ import { looksLikeThumbPhoto } from '../electron/thumbpick'
 import { resolveProfile, describeProfile, type PerfProfile, type Tier, type TierPreference } from '../electron/capability'
 import { PLATFORM_TARGETS, platformTarget, type Preset, type Role } from '../electron/audiochain'
 import { isPreset, isRole, mixTuning, resolveRole, type SoundFacts } from '../electron/audiomix'
-import { audioFadeFactor, gainAt, dbToGain, planPreviewMix, previewMasterDb, previewMixer, type PreviewSoundClip } from './previewAudio'
+import { audioFadeFactor, gainAt, dbToGain, dbLabel, planPreviewMix, previewMasterDb, previewMixer, type PreviewClipPlan, type PreviewSoundClip } from './previewAudio'
+import { NumField, DbSlider, PropGroup, PropRow, AnchorGrid, SoundControls, type SoundView } from './inspector'
 
 interface MediaFile {
   id: string
@@ -320,7 +321,7 @@ function captionClip(p: CapCue, spec: CaptionSpec, theme: string, outW: number, 
     caption: { spec, theme, words: (p.words || []).map(w => ({ s: +(w.s - p.start).toFixed(3), e: +(w.e - p.start).toFixed(3), t: w.t })) } }
 }
 /** A themed caption in the preview, drawn from the same per-frame description the export follows. */
-function CaptionLayer({ t, time, groupBase, outW, outH, stageH, selected, onSelect }: { t: TextClip; time: number; groupBase: number; outW: number; outH: number; stageH: number; selected: boolean; onSelect: () => void }) {
+function CaptionLayer({ t, time, groupBase, outW, outH, stageH, selected, onSelect, onEdit }: { t: TextClip; time: number; groupBase: number; outW: number; outH: number; stageH: number; selected: boolean; onSelect: () => void; onEdit?: () => void }) {
   const spec = t.caption!.spec
   const cue = { start: t.start, end: t.start + t.duration, text: t.text, words: t.caption!.words?.map(w => ({ s: t.start + w.s, e: t.start + w.e, t: w.t })) }
   const fr = captionFrame(cue, spec, time, groupBase)
@@ -330,7 +331,7 @@ function CaptionLayer({ t, time, groupBase, outW, outH, stageH, selected, onSele
   if (spec.motion === 'glitch') css.textShadow = `${(-fr.glitch * px).toFixed(1)}px 0 0 ${spec.shadowColor}`
   const place: React.CSSProperties = spec.position === 'top' ? { top: '7%' } : spec.position === 'center' ? { top: '50%', transform: 'translateY(-50%)' } : { bottom: spec.position === 'lower' ? '20%' : '7%' }
   return (
-    <div className={`cap-layer ${selected ? 'editing' : ''}`} style={place} onMouseDown={e => { e.stopPropagation(); onSelect() }} title="Themed caption: edit the words in the timeline">
+    <div className={`cap-layer ${selected ? 'editing' : ''}`} style={place} onMouseDown={e => { e.stopPropagation(); onSelect() }} onDoubleClick={e => { e.stopPropagation(); onEdit?.() }} title="Themed caption: double-click to edit its words in the Inspector">
       <span className="cap-text" style={{ ...css, opacity: fr.opacity, transform: `scale(${fr.scale}) rotate(${-fr.tilt}deg)` }}>
         {fr.pieces.map((p, i) => <span key={i} style={{ color: p.color, visibility: p.hidden ? 'hidden' : 'visible' }}>{p.t}{i < fr.pieces.length - 1 ? ' ' : ''}</span>)}
       </span>
@@ -792,6 +793,10 @@ function Editor() {
   // was a box far down the right sidebar, which nobody finds.
   const [editingTextId, setEditingTextId] = useState<string | null>(null)
   const editRef = useRef<HTMLDivElement | null>(null)
+  // the Inspector: which groups are open (kept across selections), and its Content box
+  const [groups, setGroups] = useState<Record<string, boolean>>({ sound: true, timing: true, style: true, position: false })
+  const toggleGroup = (k: string) => setGroups(g => ({ ...g, [k]: !g[k] }))
+  const contentRef = useRef<HTMLTextAreaElement | null>(null)
   const editTextRef = useRef<string>('')   // what to seed the editable div with
   const [showTakes, setShowTakes] = useState(false)
   const [takes, setTakes] = useState<TakeAnalysis | null>(null)
@@ -2364,6 +2369,7 @@ function Editor() {
 
   // Put the caret in the text on the picture, with the placeholder selected so typing replaces it
   const startTextEdit = (id: string, seed?: string) => {
+    if (texts.find(x => x.id === id)?.caption) { editCaptionInInspector(id); return }
     editTextRef.current = seed ?? texts.find(x => x.id === id)?.text ?? ''
     setSelectedId(id)
     setIsPlaying(false)
@@ -3529,6 +3535,37 @@ function Editor() {
 
   const patchClip = (patch: Partial<TimelineClip>) => setClips(prev => prev.map(c => c.id === selectedId ? { ...c, ...patch } : c))
   const patchText = (patch: Partial<TextClip>) => setTexts(prev => prev.map(t => t.id === selectedId ? { ...t, ...patch } : t))
+  /** A file's sound choices: every clip cut from it follows (the bake and the guess are per file). */
+  const setMediaAudio = (mediaId: string, patch: { role?: Role; fix?: Preset }) =>
+    setMediaBin(prev => prev.map(m => m.id !== mediaId ? m : { ...m, audio: { ...m.audio, ...patch } }))
+  /** What the Sound section shows for a clip: its role (and whether it was guessed), the level the role sets, and the Fix voice line. */
+  const soundView = (c: TimelineClip, m: MediaFile, p: PreviewClipPlan): SoundView => {
+    const a = m.audio, fix = fixOf(m), b = bakeFor(m)
+    const baking = a?.baking && a.baking.want.split('|')[0] === fix ? a.baking : null
+    const failed = a?.bakeError && a.bakeError.want.split('|')[0] === fix ? a.bakeError : null
+    const status: SoundView['status'] =
+      !a || (a.facts === undefined && !a.error) ? { text: 'Measuring the recording…', tone: 'busy' }
+      : a.error ? { text: `It could not be measured (${a.error}), so it plays as recorded.`, tone: 'warn' }
+      : fix === 'off' ? { text: 'Fix voice is off: it plays as recorded.' }
+      : baking ? { text: `Fixing the voice: ${baking.line.toLowerCase()} (${baking.pct}%)`, pct: baking.pct, tone: 'busy' }
+      : failed ? { text: `Fix voice could not run (${failed.error}), so it plays as recorded.`, tone: 'warn' }
+      : b ? { text: b.summary || 'Fixed.' }
+      : { text: a.measured?.plan ? `Planned: ${a.measured.plan.charAt(0).toLowerCase()}${a.measured.plan.slice(1)}. Fixing it shortly.` : 'Waiting to be fixed…', tone: 'busy' }
+    return {
+      role: p.role, guessed: p.guessed, why: p.why, levelDb: p.levelDb, fix, status,
+      siblings: clips.filter(x => x.mediaId === m.id && x.id !== c.id).length,
+      duckDb: tune.duckDb, sfxDuckDb: tune.sfxDuckDb, bedLu: tune.bedLu, duck: settings.audio.duck,
+    }
+  }
+  /** Themed captions are edited in the Inspector (their look is the theme's): select, open it, and put the cursor in Content. */
+  const editCaptionInInspector = (id: string) => {
+    setSelectedId(id); setIsPlaying(false); setEditingTextId(null); setRightTab('inspect')
+    setTimeout(() => { const el = contentRef.current; if (el) { el.focus(); el.select() } }, 40)
+  }
+  const openCaptionStyle = () => {
+    setShowSettings(true)
+    setTimeout(() => document.getElementById('settings-caption-style')?.scrollIntoView({ block: 'start', behavior: 'smooth' }), 60)
+  }
 
   /** One place that knows how to bring up each panel: Help, the tour and the help chat all use it. */
   const openPanel = (p: HelpPanel | HelpAction) => {
@@ -3732,7 +3769,7 @@ function Editor() {
                       style={{ opacity: op, filter: media.chromaKey ? `url(#${keyFilterFor(media.chromaKey)})` : undefined }} src={fileUrl(previewSrc(c, media))} />
               })}
               {activeTexts.map(t => t.caption ? (
-                <CaptionLayer key={t.id} t={t} time={currentTime} groupBase={texts.indexOf(t)} outW={w} outH={h} stageH={stageH} selected={selectedId === t.id && !isPlaying} onSelect={() => { if (!isPlaying) setSelectedId(t.id) }} />
+                <CaptionLayer key={t.id} t={t} time={currentTime} groupBase={texts.indexOf(t)} outW={w} outH={h} stageH={stageH} selected={selectedId === t.id && !isPlaying} onSelect={() => { if (!isPlaying) setSelectedId(t.id) }} onEdit={() => editCaptionInInspector(t.id)} />
               ) : (
                 <div key={t.id} className={`text-layer ${selectedId === t.id && !isPlaying ? 'editing' : ''} ${editingTextId === t.id ? 'typing' : ''}`}
                   style={{ left: `${t.x * 100}%`, top: `${t.y * 100}%`, fontSize: `${t.fontSize / 1080 * stageH}px`, color: t.color, opacity: fadeFactor(t, currentTime), background: t.box ? (t.boxColor ? `${t.boxColor}${Math.round((t.boxOpacity ?? 0.5) * 255).toString(16).padStart(2, '0')}` : `rgba(0,0,0,${t.boxOpacity ?? 0.5})`) : 'transparent', padding: t.box ? '0.15em 0.4em' : 0, borderRadius: t.box ? '4px' : 0,
@@ -3799,8 +3836,8 @@ function Editor() {
                 <div className="field"><label>Encoding Quality</label>
                   <select value={exportQuality} onChange={e => setExportQuality(e.target.value as any)}><option value="medium">Standard (faster)</option><option value="high">High (larger file)</option></select>
                 </div>
-                <div className="field"><label><IconVolume /> Master Volume - {Math.round(masterVolume * 100)}%</label>
-                  <input type="range" min="0" max="1.5" step="0.05" value={masterVolume} onChange={e => setMasterVolume(parseFloat(e.target.value))} style={{ width: '100%', accentColor: 'var(--accent-primary)' }} />
+                <div className="field"><label htmlFor="master-vol"><IconVolume /> Master volume <span className="prop-val">{dbLabel(masterVolume)}</span></label>
+                  <DbSlider id="master-vol" value={masterVolume} onChange={setMasterVolume} title="Moves the whole export up or down from the target. Double-click for 0 dB" />
                   <p className="hint">{masterVolumeHint(settings.audio, masterVolume)}</p>
                 </div>
                 {/* the label toggles the box through htmlFor; a click handler on the row as well toggled it twice */}
@@ -3852,55 +3889,123 @@ function Editor() {
                   <MarkerPanel markers={markers} currentTime={currentTime} onChange={setMarkers} onSeek={t => setCurrentTime(t)} />
                 </div>
               )}
-              {rightTab === 'inspect' && selClip && (
-                <div className="panel-section">
-                  <h3 className="group-title">Clip</h3>
-                  <div className="field"><label>Track</label>
-                    <select value={selClip.trackId} onChange={e => patchClip({ trackId: e.target.value as TimelineClip['trackId'] })}>
-                      {selClip.type === 'audio'
-                        ? <><option value="a1">Voice / music</option><option value="a2">Sound effects</option></>
-                        : <><option value="v1">Video</option><option value="v2">B-roll (picture only, over the video)</option></>}
-                    </select>
-                    {selClip.trackId === 'v2' && <p className="hint">B-roll covers the video underneath while its sound keeps playing; this clip's own sound is not used.</p>}
-                  </div>
-                  <div className="field"><label>Volume - {Math.round(selClip.volume * 100)}%</label>
-                    <input type="range" min="0" max="2" step="0.05" value={selClip.volume} onChange={e => patchClip({ volume: parseFloat(e.target.value), volumePoints: [] })} style={{ width: '100%', accentColor: 'var(--accent-primary)' }} />
-                  </div>
-                  <div className="field">
-                    <label>Volume Automation {selClip.volumePoints?.length ? `(${selClip.volumePoints.length} pts)` : ''}</label>
-                    <VolumeGraph points={selClip.volumePoints || []} duration={selClip.duration} base={selClip.volume} onChange={pts => patchClip({ volumePoints: pts })} />
-                    <div className="vg-actions">
-                      <button onClick={() => { const rel = clamp(currentTime - selClip.start, 0, selClip.duration); patchClip({ volumePoints: [...(selClip.volumePoints || []), { t: rel, v: selClip.volume }].sort((a, b) => a.t - b.t) }) }}>+ Point at playhead</button>
-                      <button onClick={() => patchClip({ volumePoints: [] })} disabled={!selClip.volumePoints?.length}>Clear</button>
+              {rightTab === 'inspect' && selClip && (() => {
+                const m = mediaBin.find(x => x.id === selClip.mediaId)
+                const plan = previewMix.clips.get(selClip.id)
+                const audible = selClip.trackId !== 'v2' && !!m?.hasAudio
+                // a trim cannot run past the footage (the export would show black, the preview a frozen frame)
+                const maxDur = m && m.type !== 'image' ? Math.max(0.1, m.duration - selClip.sourceStart) : 24 * 3600
+                return (
+                  <div className="panel-section inspector">
+                    <div className="sel-head">
+                      {m?.type === 'video' ? <video className="sel-thumb" src={`${fileUrl(m.proxyPath || m.path)}#t=${(selClip.sourceStart + 0.1).toFixed(2)}`} muted preload="metadata" />
+                        : m?.type === 'image' ? <img className="sel-thumb" src={fileUrl(m.path)} alt="" />
+                        : <span className="sel-thumb icon"><IconAudio /></span>}
+                      <div className="sel-meta">
+                        <b title={m?.path}>{m?.name || 'Missing media'}</b>
+                        <span className="mono">{selClip.trackId.toUpperCase()} · {fmt(selClip.start)} to {fmt(selClip.start + selClip.duration)}</span>
+                      </div>
                     </div>
-                    <p className="hint">Click the graph to add points, drag to shape the line, double-click a point to remove. Drag down to silence pops. Unity gain = the middle line.</p>
+                    {audible && m && (
+                      <PropGroup title="Sound" open={groups.sound} onToggle={() => toggleGroup('sound')}>
+                        {plan
+                          ? <SoundControls v={soundView(selClip, m, plan)} onRole={r => setMediaAudio(m.id, { role: r })} onFix={f => setMediaAudio(m.id, { fix: f })} />
+                          : <p className="hint">Silent in the mix while its volume is at zero.</p>}
+                        <PropRow label="Volume" htmlFor="clip-vol" end={<span className="prop-val">{dbLabel(selClip.volume)}</span>}>
+                          <DbSlider id="clip-vol" value={selClip.volume} onChange={v => patchClip({ volume: v, volumePoints: [] })} title="A trim on top of the level the role sets. Double-click for 0 dB" />
+                        </PropRow>
+                        <div className="field">
+                          <label>Volume automation {selClip.volumePoints?.length ? `(${selClip.volumePoints.length} points)` : ''}</label>
+                          <VolumeGraph points={selClip.volumePoints || []} duration={selClip.duration} base={selClip.volume} onChange={pts => patchClip({ volumePoints: pts })} />
+                          <div className="vg-actions">
+                            <button onClick={() => { const rel = clamp(currentTime - selClip.start, 0, selClip.duration); patchClip({ volumePoints: [...(selClip.volumePoints || []), { t: rel, v: selClip.volume }].sort((a, b) => a.t - b.t) }) }}>+ Point at playhead</button>
+                            <button onClick={() => patchClip({ volumePoints: [] })} disabled={!selClip.volumePoints?.length}>Clear</button>
+                          </div>
+                          <p className="hint">Click the graph to add points, drag to shape the line, double-click a point to remove it. The middle line is 0 dB.</p>
+                        </div>
+                      </PropGroup>
+                    )}
+                    <PropGroup title="Timing" open={groups.timing} onToggle={() => toggleGroup('timing')}>
+                      <PropRow label="Track" htmlFor="clip-track">
+                        <select id="clip-track" className="duration-input" value={selClip.trackId} onChange={e => patchClip({ trackId: e.target.value as TimelineClip['trackId'] })}>
+                          {selClip.type === 'audio'
+                            ? <><option value="a1">Voice / music</option><option value="a2">Sound effects</option></>
+                            : <><option value="v1">Video</option><option value="v2">B-roll (picture only)</option></>}
+                        </select>
+                      </PropRow>
+                      {selClip.trackId === 'v2' && <p className="hint">B-roll covers the video underneath while its sound keeps playing; this clip's own sound is not used.</p>}
+                      <PropRow label="Start" htmlFor="clip-start" end="s"><NumField id="clip-start" value={selClip.start} min={0} onCommit={v => patchClip({ start: v })} /></PropRow>
+                      <PropRow label="Duration" htmlFor="clip-dur" end="s">
+                        <NumField id="clip-dur" value={selClip.duration} min={0.1} max={maxDur} title={m && m.type !== 'image' ? `Up to ${maxDur.toFixed(2)} s: the rest of the footage from this clip's in-point` : undefined}
+                          onCommit={v => patchClip({ duration: v, fadeIn: Math.min(selClip.fadeIn, v), fadeOut: Math.min(selClip.fadeOut, v) })} />
+                      </PropRow>
+                      <PropRow label="Fade in" htmlFor="clip-fin" end="s"><NumField id="clip-fin" value={selClip.fadeIn} min={0} max={selClip.duration} onCommit={v => patchClip({ fadeIn: v })} /></PropRow>
+                      <PropRow label="Fade out" htmlFor="clip-fout" end="s"><NumField id="clip-fout" value={selClip.fadeOut} min={0} max={selClip.duration} onCommit={v => patchClip({ fadeOut: v })} /></PropRow>
+                      <p className="hint">Overlap two video clips and give them fades for a transparent crossfade.</p>
+                    </PropGroup>
                   </div>
-                  <div className="field row">
-                    <div><label>Fade In (s)</label><input type="number" step="0.1" min="0" className="duration-input" value={selClip.fadeIn} onChange={e => patchClip({ fadeIn: clamp(parseFloat(e.target.value) || 0, 0, selClip.duration) })} /></div>
-                    <div><label>Fade Out (s)</label><input type="number" step="0.1" min="0" className="duration-input" value={selClip.fadeOut} onChange={e => patchClip({ fadeOut: clamp(parseFloat(e.target.value) || 0, 0, selClip.duration) })} /></div>
-                  </div>
-                  <div className="field"><label>Duration (s)</label><input type="number" step="0.1" min="0.1" className="duration-input" value={selClip.duration.toFixed(2)} onChange={e => patchClip({ duration: parseFloat(e.target.value) || 0.1 })} /></div>
-                  <p className="hint">Overlap two video clips and give them fades for a transparent crossfade.</p>
-                </div>
-              )}
+                )
+              })()}
               {rightTab === 'inspect' && selText && (
-                <div className="panel-section">
-                  <h3 className="group-title">Text</h3>
-                  <div className="field"><label>Content</label><textarea className="duration-input" rows={2} value={selText.text} onChange={e => patchText({ text: e.target.value })} /></div>
-                  <div className="field row">
-                    <div><label>Size</label><input type="number" min="8" step="2" className="duration-input" value={selText.fontSize} onChange={e => patchText({ fontSize: parseFloat(e.target.value) || 12 })} /></div>
-                    <div><label>Color</label><input type="color" className="color-input" value={selText.color} onChange={e => patchText({ color: e.target.value })} /></div>
+                <div className="panel-section inspector">
+                  <div className="sel-head">
+                    <span className="sel-thumb icon text">{selText.caption ? <IconCaptions /> : <IconText />}</span>
+                    <div className="sel-meta">
+                      <b title={selText.text}>{selText.text || (selText.caption ? 'Caption' : 'Text')}</b>
+                      <span className="mono">{selText.caption ? 'CAPTION' : 'TEXT'} · {fmt(selText.start)} to {fmt(selText.start + selText.duration)}</span>
+                    </div>
                   </div>
-                  <div className="field row">
-                    <div><label>Start (s)</label><input type="number" step="0.1" min="0" className="duration-input" value={selText.start.toFixed(2)} onChange={e => patchText({ start: parseFloat(e.target.value) || 0 })} /></div>
-                    <div><label>Duration (s)</label><input type="number" step="0.1" min="0.2" className="duration-input" value={selText.duration.toFixed(2)} onChange={e => patchText({ duration: parseFloat(e.target.value) || 0.2 })} /></div>
-                  </div>
-                  <div className="field row">
-                    <div><label>Fade In (s)</label><input type="number" step="0.1" min="0" className="duration-input" value={selText.fadeIn} onChange={e => patchText({ fadeIn: parseFloat(e.target.value) || 0 })} /></div>
-                    <div><label>Fade Out (s)</label><input type="number" step="0.1" min="0" className="duration-input" value={selText.fadeOut} onChange={e => patchText({ fadeOut: parseFloat(e.target.value) || 0 })} /></div>
-                  </div>
-                  <div className="field chk" onClick={() => patchText({ box: !selText.box })}><input type="checkbox" checked={!!selText.box} readOnly id="tbox" /><label htmlFor="tbox" style={{ cursor: 'pointer', marginBottom: 0 }}>Background bar</label></div>
-                  <p className="hint">Drag the text on the preview to position it.</p>
+                  <div className="field"><label htmlFor="text-content">Content</label><textarea id="text-content" ref={contentRef} className="duration-input" rows={selText.caption ? 3 : 2} value={selText.text} onChange={e => patchText({ text: e.target.value })} /></div>
+                  {selText.caption ? (
+                    <>
+                      {/* only what a caption owns: its words and when; everything about its look is the theme's */}
+                      <PropGroup title="Timing" open={groups.timing} onToggle={() => toggleGroup('timing')}>
+                        <PropRow label="Start" htmlFor="text-start" end="s"><NumField id="text-start" value={selText.start} min={0} onCommit={v => patchText({ start: v })} /></PropRow>
+                        <PropRow label="Duration" htmlFor="text-dur" end="s"><NumField id="text-dur" value={selText.duration} min={0.2} onCommit={v => patchText({ duration: v })} /></PropRow>
+                      </PropGroup>
+                      <p className="hint">The look (font, colours, size, place, motion) comes from the caption theme, so every caption matches. <button className="link-btn" onClick={openCaptionStyle}>Caption style</button></p>
+                    </>
+                  ) : (
+                    <>
+                      <PropGroup title="Text style" open={groups.style} onToggle={() => toggleGroup('style')}>
+                        <PropRow label="Font" htmlFor="text-font">
+                          <select id="text-font" className="duration-input" value={selText.font || ''} onChange={e => patchText({ font: (e.target.value || undefined) as ThemeFont | undefined })}>
+                            <option value="">Default</option>
+                            {THEME_FONT_IDS.map(f => <option key={f} value={f}>{THEME_FONTS[f].label}</option>)}
+                          </select>
+                        </PropRow>
+                        <PropRow label="Size" htmlFor="text-size" end="px"><NumField id="text-size" value={selText.fontSize} min={8} max={400} step={2} digits={0} onCommit={v => patchText({ fontSize: v })} /></PropRow>
+                        <PropRow label="Colour" htmlFor="text-color"><input id="text-color" type="color" className="color-input" value={selText.color} onChange={e => patchText({ color: e.target.value })} /></PropRow>
+                        <PropRow label="Background" htmlFor="text-box"
+                          end={<input type="color" className="color-swatch" aria-label="Background colour" value={selText.boxColor || '#000000'} disabled={!selText.box} onChange={e => patchText({ boxColor: e.target.value })} />}>
+                          <label className="inline-chk"><input id="text-box" type="checkbox" checked={!!selText.box} onChange={e => patchText({ box: e.target.checked })} /> Bar behind the text</label>
+                        </PropRow>
+                        {selText.box && (
+                          <PropRow label="Bar opacity" htmlFor="text-boxop" end={<span className="prop-val">{Math.round((selText.boxOpacity ?? 0.5) * 100)}%</span>}>
+                            <input id="text-boxop" type="range" min="0" max="1" step="0.05" value={selText.boxOpacity ?? 0.5} onChange={e => patchText({ boxOpacity: parseFloat(e.target.value) })} style={{ width: '100%', accentColor: 'var(--accent-primary)' }} />
+                          </PropRow>
+                        )}
+                        {/* the export draws an outline only when there is no bar, and so does the preview */}
+                        <PropRow label="Outline" htmlFor="text-outline"
+                          end={<input type="color" className="color-swatch" aria-label="Outline colour" value={selText.outlineColor || '#000000'} disabled={!!selText.box || !selText.outline} onChange={e => patchText({ outlineColor: e.target.value })} />}>
+                          <input id="text-outline" type="range" min="0" max="0.2" step="0.01" value={selText.outline || 0} disabled={!!selText.box} title={selText.box ? 'An outline is drawn when there is no bar' : 'Outline width, as a share of the font size'}
+                            onChange={e => { const v = parseFloat(e.target.value); patchText({ outline: v > 0 ? v : undefined }) }} style={{ width: '100%', accentColor: 'var(--accent-primary)' }} />
+                        </PropRow>
+                      </PropGroup>
+                      <PropGroup title="Position" open={groups.position} onToggle={() => toggleGroup('position')}>
+                        <PropRow label="Across" htmlFor="text-x" end="%"><NumField id="text-x" value={selText.x * 100} min={0} max={100} step={1} digits={1} onCommit={v => patchText({ x: v / 100 })} /></PropRow>
+                        <PropRow label="Down" htmlFor="text-y" end="%"><NumField id="text-y" value={selText.y * 100} min={0} max={100} step={1} digits={1} onCommit={v => patchText({ y: v / 100 })} /></PropRow>
+                        <div className="prop-row"><span className="prop-label">Place</span><div className="prop-ctl"><AnchorGrid x={selText.x} y={selText.y} onPick={(x, y) => patchText({ x, y })} /></div><span /></div>
+                        <p className="hint">The numbers are the centre of the text. Or drag it on the preview.</p>
+                      </PropGroup>
+                      <PropGroup title="Timing" open={groups.timing} onToggle={() => toggleGroup('timing')}>
+                        <PropRow label="Start" htmlFor="text-start" end="s"><NumField id="text-start" value={selText.start} min={0} onCommit={v => patchText({ start: v })} /></PropRow>
+                        <PropRow label="Duration" htmlFor="text-dur" end="s"><NumField id="text-dur" value={selText.duration} min={0.2} onCommit={v => patchText({ duration: v })} /></PropRow>
+                        <PropRow label="Fade in" htmlFor="text-fin" end="s"><NumField id="text-fin" value={selText.fadeIn} min={0} max={selText.duration} onCommit={v => patchText({ fadeIn: v })} /></PropRow>
+                        <PropRow label="Fade out" htmlFor="text-fout" end="s"><NumField id="text-fout" value={selText.fadeOut} min={0} max={selText.duration} onCommit={v => patchText({ fadeOut: v })} /></PropRow>
+                      </PropGroup>
+                    </>
+                  )}
                 </div>
               )}
               {rightTab === 'inspect' && !selClip && !selText && (
@@ -3991,7 +4096,7 @@ function Editor() {
                     {texts.map(t => (
                       <div key={t.id} onMouseDown={(e) => { e.stopPropagation(); setSelectedId(t.id) }}
                         onDoubleClick={(e) => { e.stopPropagation(); setCurrentTime(t.start + Math.min(0.2, t.duration / 2)); startTextEdit(t.id) }}
-                        className={`clip text-clip ${selectedId === t.id ? 'selected' : ''}`} style={{ left: t.start * pxPerSec, width: t.duration * pxPerSec }} title={`${t.text}  (double-click to type)`}>
+                        className={`clip text-clip ${selectedId === t.id ? 'selected' : ''}`} style={{ left: t.start * pxPerSec, width: t.duration * pxPerSec }} title={t.caption ? `${t.text} (double-click to edit its words in the Inspector)` : `${t.text} (double-click to type)`}>
                         <span className="clip-label"><IconText /> {t.text}</span>
                       </div>
                     ))}
@@ -4233,7 +4338,7 @@ function Editor() {
               </section>
 
               <section>
-                <h3>Caption Style</h3>
+                <h3 id="settings-caption-style">Caption Style</h3>
                 {(() => {
                   const cs = settings.caption
                   const classic = cs.theme === 'classic'

@@ -175,6 +175,13 @@ console.log('master')
   ok(Math.abs(o.gainDb - 20 * Math.log10(1.5)) < 1e-9, 'Optimize off: the Master volume alone')
 }
 
+console.log('labels')
+{
+  ok(P.dbLabel(1) === '0.0 dB' && P.dbLabel(0.5) === '−6.0 dB' && P.dbLabel(2) === '6.0 dB', `0 dB, half, double: ${P.dbLabel(1)} / ${P.dbLabel(0.5)} / ${P.dbLabel(2)}`)
+  ok(P.dbLabel(0) === '−inf dB' && P.dbLabel(0.0005) === '−inf dB', 'silence reads -inf dB')
+  ok(P.dbLabel(0.9999) === '0.0 dB', 'a hair under unity is not "-0.0 dB"')
+}
+
 console.log('meter')
 {
   const n = 19200, l = new Float32Array(32768).fill(0.1), r = new Float32Array(32768).fill(0.1)
