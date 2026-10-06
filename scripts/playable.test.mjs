@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 const here = path.dirname(fileURLToPath(import.meta.url))
 const out = await build({ entryPoints: [path.join(here, '..', 'electron', 'playable.ts')], bundle: false, write: false, format: 'esm', target: 'node18' })
 const mod = await import('data:text/javascript;base64,' + Buffer.from(out.outputFiles[0].text).toString('base64'))
-const { isHdr, isHighBitDepth, planProxy, proxyFilter, proxyKey, HDR_TO_SDR, canHwDecode, proxyAttempts, proxyArgs, isCurrentProxy, PROXY_GEN, isRealVideo, isStillFormat, probeDuration, lastStatsTime } = mod
+const { isHdr, isHighBitDepth, planProxy, proxyFilter, proxyKey, HDR_TO_SDR, canHwDecode, proxyAttempts, proxyArgs, isCurrentProxy, needsReprobe, PROXY_GEN, isRealVideo, isStillFormat, probeDuration, lastStatsTime } = mod
 
 let pass = 0, fail = 0
 const ok = (c, l) => { if (c) { pass++; console.log('  PASS ', l) } else { fail++; console.log('  FAIL ', l) } }
@@ -152,6 +152,27 @@ eq(at(copy, '-c:a'), 'aac', 'and turns the sound into AAC, which every MP4 takes
 console.log('\n-- HDR is only HLG and PQ --')
 ok(!isHdr({ colorTransfer: 'bt2020-10' }) && !isHdr({ colorTransfer: 'bt2020-12' }), '10/12-bit BT.2020 SDR is not tone-mapped (it came out darker and flat)')
 ok(!isHdr({ colorTransfer: 'smpte428' }), 'nor cinema XYZ')
+
+console.log('\n-- what an opened project probes again --')
+{
+  const proxy = PROXY_GEN + 'clip-abc.mp4'
+  const full = { type: 'video', hasAudio: true, hdr: false, fps: 30, width: 1080, height: 1920, audioChannels: 2 }
+  ok(!needsReprobe(full), 'footage the save knows everything about is not probed on every open')
+  ok(!needsReprobe({ ...full, proxyPath: proxy, proxyWidth: 1080, proxyHeight: 1920, proxyFps: 30 }), '...nor with a measured, current preview copy')
+  ok(needsReprobe({ ...full, width: undefined, height: undefined }), 'a clip saved before frame sizes were kept is (the portrait offer reads it)')
+  ok(needsReprobe({ ...full, audioChannels: undefined }), 'so is one without its channel count')
+  ok(!needsReprobe({ ...full, hasAudio: false, audioChannels: undefined }), '...unless it has no sound to count')
+  const wav = { type: 'audio', hasAudio: true }
+  ok(needsReprobe(wav), 'a lav mic WAV saved without its channel count is probed (the export level rule reads it)')
+  ok(!needsReprobe({ ...wav, audioChannels: 1 }), '...once, then never again')
+  ok(!needsReprobe({ ...wav, audioChannels: 2, hdr: undefined, fps: undefined }), 'sound has no HDR flag or frame rate to miss')
+  ok(!needsReprobe({ type: 'image', hasAudio: false }), 'a still has nothing to probe')
+  ok(!needsReprobe({ ...wav, offline: true }), 'a missing file is not probed')
+  ok(needsReprobe({ ...full, hdr: undefined }) && needsReprobe({ ...full, fps: undefined }), 'the HDR flag and frame rate are still backfilled')
+  ok(needsReprobe({ ...full, proxyPath: 'clip-abc.mp4', proxyWidth: 1, proxyHeight: 1, proxyFps: 1 }), 'an older generation\'s copy is rebuilt')
+  ok(needsReprobe({ ...full, proxyPath: proxy }), 'a copy with no measured size is measured')
+  ok(needsReprobe({ ...full, proxyNote: 'HEVC' }), 'a copy that was needed and is gone is rebuilt')
+}
 
 console.log(`\n${fail === 0 ? '✓ ALL CHECKS PASSED' : '✗ FAILURES'} - ${pass} passed, ${fail} failed\n`)
 process.exit(fail === 0 ? 0 : 1)

@@ -13,7 +13,7 @@ import { snapToGrid, describeSnap } from '../electron/grid'
 import { fitBpm } from '../electron/score'
 import { layoutReport, presetFor, fitFontSize } from '../electron/textlayout'
 import { THEMES, THEME_FONTS, CAPTION_Y as THEME_CAP_Y, chooseTheme, phrasesFromWords, captionFrame, captionCss, captionPx, fontFaceCss, type CaptionSpec, type CapWord, type ThemeFont, type CapCue } from '../electron/styletheme'
-import { planProxy, isHdr, isCurrentProxy } from '../electron/playable'
+import { planProxy, isHdr, isCurrentProxy, needsReprobe } from '../electron/playable'
 import { spanForPhrase, sentenceSpans, type Word as SpeechWord, type Span } from '../electron/speech'
 import { planBroll, snapToWords, describePlan, type BrollAsset, type Placement } from '../electron/broll'
 import { looksLikeThumbPhoto } from '../electron/thumbpick'
@@ -2881,28 +2881,28 @@ function Editor() {
     return added
   }
 
-  /** Restored footage: re-probe only what is missing something (the HDR flag or frame rate an older
-   *  save lacks, a preview copy with no size, or a copy that was needed and is gone) and hand it to
-   *  ensureProxies, which re-finds a cached copy with its real size or rebuilds a lost one. Ordinary
-   *  footage that never needed a copy is not probed again on every open. `recheck` names entries
-   *  that now point at a different file (relinked), which are always looked at afresh. */
+  /** Restored media: re-probe only what is missing something (needsReprobe: a fact an older save
+   *  lacks, such as the HDR flag, frame size or a sound file's channel count, a preview copy with no
+   *  size, or a copy that was needed and is gone) and hand the footage to ensureProxies, which
+   *  re-finds a cached copy with its real size or rebuilds a lost one. Ordinary media that has
+   *  everything is not probed again on every open. `recheck` names entries that now point at a
+   *  different file (relinked), which are always looked at afresh. */
   const backfillMedia = async (items: MediaFile[], recheck: Set<string> | 'all' = new Set()) => {
-    const needs = (m: MediaFile) => recheck === 'all' || recheck.has(m.id) || m.hdr === undefined || m.fps === undefined
-      || (m.proxyPath ? !(m.proxyWidth && m.proxyHeight && m.proxyFps) : !!m.proxyNote)   // proxyNote without a copy: it was needed (lost, or the build failed)
-      || (!!m.proxyPath && !isCurrentProxy(m.proxyPath))   // an older generation's copy (slow to scrub): built again, the old one plays meanwhile
-    const vids = items.filter(m => m.type === 'video' && !m.offline && needs(m))
-    if (!vids.length) return
+    const todo = items.filter(m => m.type !== 'image' && !m.offline && (recheck === 'all' || recheck.has(m.id) || needsReprobe(m)))
+    if (!todo.length) return
     const probes = new Map<string, Probe>()
     const fill: Record<string, Partial<MediaFile>> = {}
-    for (const m of vids) {
+    for (const m of todo) {
       const meta = await window.ipcRenderer.getMetadata(m.path).catch(() => null)
       if (!meta || meta.ok === false) continue
       probes.set(m.id, meta as Probe)
-      fill[m.id] = { hdr: isHdr({ colorTransfer: meta.colorTransfer }), ...(meta.fps ? { fps: meta.fps } : {}),
-        ...(meta.width && meta.height ? { width: meta.width, height: meta.height } : {}), ...(meta.audioChannels ? { audioChannels: meta.audioChannels } : {}) }
+      const channels = meta.audioChannels ? { audioChannels: meta.audioChannels } : {}
+      // a sound file has only its channel count to add; the rest is about pictures
+      fill[m.id] = m.type !== 'video' ? channels : { hdr: isHdr({ colorTransfer: meta.colorTransfer }), ...(meta.fps ? { fps: meta.fps } : {}),
+        ...(meta.width && meta.height ? { width: meta.width, height: meta.height } : {}), ...channels }
     }
     if (Object.keys(fill).length) setMediaBin(prev => prev.map(x => fill[x.id] ? { ...x, ...fill[x.id] } : x))
-    await ensureProxies(vids.filter(m => probes.has(m.id)), probes)
+    await ensureProxies(todo.filter(m => m.type === 'video' && probes.has(m.id)), probes)
   }
 
   const refreshProjects = async (root: string | null) => {

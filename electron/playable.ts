@@ -254,6 +254,38 @@ export const proxyKey = (path: string, size: number, mtimeMs: number): string =>
 /** Was this copy made by the current generation? An older one is rebuilt when its project opens. */
 export const isCurrentProxy = (p?: string): boolean => !!p && (p.split(/[\\/]/).pop() || '').startsWith(PROXY_GEN)
 
+/** What a media bin entry restored from a save already knows about its file. */
+export interface SavedMedia {
+  type: string
+  hasAudio?: boolean
+  offline?: boolean
+  hdr?: boolean
+  fps?: number
+  width?: number
+  audioChannels?: number
+  proxyPath?: string
+  proxyWidth?: number
+  proxyHeight?: number
+  proxyFps?: number
+  proxyNote?: string
+}
+
+/**
+ * Should restored media be probed again when its project opens? Only when the save lacks a fact
+ * something reads (it was written before that fact was recorded), or its preview copy is
+ * unmeasured, lost or from an older generation, so ordinary footage is not probed on every open.
+ * Audio counts as well as video: a mono lav WAV needs its channel count for the export level, and
+ * a portrait clip needs its size for the offer to turn the frame.
+ */
+export function needsReprobe(m: SavedMedia): boolean {
+  if (m.offline) return false
+  if (m.hasAudio && m.audioChannels === undefined) return true
+  if (m.type !== 'video') return false
+  return m.hdr === undefined || m.fps === undefined || m.width === undefined
+    || (m.proxyPath ? !(m.proxyWidth && m.proxyHeight && m.proxyFps) : !!m.proxyNote)   // proxyNote without a copy: it was needed (lost, or the build failed)
+    || (!!m.proxyPath && !isCurrentProxy(m.proxyPath))   // an older generation's copy (slow to scrub): built again, the old one plays meanwhile
+}
+
 /**
  * A real picture track. ffprobe lists a song's album art as a video stream (disposition
  * attached_pic), which imported an MP3 or M4A as a "video" of one frozen picture.
