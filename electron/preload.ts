@@ -47,6 +47,8 @@ contextBridge.exposeInMainWorld('ipcRenderer', {
   detectSilence: (data: { filePath: string; thresholdDb: number; minPause: number }) => ipcRenderer.invoke('detect-silence', data),
   detectFreeze: (data: { filePath: string; sourceStart: number; duration: number; freezeDb: number; minDur: number }) => ipcRenderer.invoke('detect-freeze', data),
   exportVideo: (data: { clips: any[], texts: any[], brand: any, audio: any, outputPath: string, settings: any }) => ipcRenderer.invoke('export-video', data),
+  cancelExport: () => ipcRenderer.invoke('cancel-export'),
+  exportTarget: (data: { projectDir?: string | null; name?: string | null; orientation: string; custom?: string | null; create?: boolean }) => ipcRenderer.invoke('export-target', data),
   sfxLibrary: () => ipcRenderer.invoke('sfx-library'),
   pickAudio: () => ipcRenderer.invoke('pick-audio'),
   openExternal: (url: string) => ipcRenderer.invoke('open-external', url),

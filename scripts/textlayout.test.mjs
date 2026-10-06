@@ -61,5 +61,29 @@ console.log('presets')
   ok(Object.keys(T.presetFor('nope', 'x')).length === 0, 'unknown preset yields no defaults')
 }
 
+console.log('checked fields')
+{
+  ok(T.hexColor('#FF6A00', '#fff') === '#FF6A00' && T.hexColor('ff6a00', '#fff') === '#ff6a00' && T.hexColor('#ff6a0080', '#fff') === '#ff6a0080', 'hex colours pass, with or without #, with alpha')
+  ok(T.hexColor('#f00', '#fff') === '#ff0000' && T.hexColor('White', '#000') === '#ffffff', 'short hex and plain names become full hex')
+  ok(T.hexColor("white:textfile='C\\:/secret.txt'", '#ffffff') === '#ffffff' && T.hexColor('#ffffff:x=0', '#000000') === '#000000' && T.hexColor(undefined, '#123456') === '#123456', 'anything else is the fallback, never passed through')
+  const c = T.cleanText({ id: 'a', text: 42, start: "0,1)':textfile=x", duration: '2.5', x: 'NaN', y: Infinity, fontSize: '1e9', color: 'nope', fadeIn: -1, fadeOut: '0.3', box: 'true', boxOpacity: 7, boxColor: 'red', outline: 0.07, outlineColor: '#000', font: 'heavy' })
+  ok(c.text === '42' && c.start === 0 && c.duration === 2.5 && c.x === 0.5 && c.y === 0.5, 'numbers are numbers: junk falls back, numeric strings are read')
+  ok(c.fontSize === 1000 && c.fadeIn === 0 && c.fadeOut === 0.3 && c.boxOpacity === 1, 'and clamped to sane ranges')
+  ok(c.color === '#ffffff' && c.boxColor === '#ff0000' && c.outlineColor === '#000000' && c.box === true, 'colours are hex, box is a boolean')
+  ok(c.id === 'a' && c.font === 'heavy' && c.outline === 0.07, 'everything else passes through')
+  const bare = T.cleanText({ text: 'x', start: 1, duration: 2, x: 0.5, y: 0.5, fontSize: 60, color: '#fff', fadeIn: 0, fadeOut: 0 })
+  ok(!('boxColor' in bare) && !('outline' in bare) && !('box' in bare), 'fields a text does not have stay absent')
+  ok(T.TITLE_FONT.file.endsWith('.ttf') && T.TITLE_FONT.family.length > 0, 'one title font for the preview and the export')
+}
+
+console.log('wrapText')
+{
+  const m = (s) => s.length * 10   // 10 px a character
+  ok(T.wrapText('one two three four', 105, m) === 'one two\nthree four', 'wraps at spaces where the line would pass the width')
+  ok(T.wrapText('short', 105, m) === 'short', 'short text is untouched')
+  ok(T.wrapText('kept\nbreak here please', 105, m) === 'kept\nbreak here\nplease', "the author's own line breaks stay")
+  ok(T.wrapText('supercalifragilistic word', 105, m) === 'supercalifragilistic\nword', 'a word longer than the line stays whole, as CSS leaves it')
+}
+
 console.log(`\n${fail === 0 ? '✓ ALL CHECKS PASSED' : '✗ FAILURES'} - ${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

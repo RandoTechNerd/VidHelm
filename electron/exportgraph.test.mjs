@@ -10,11 +10,12 @@ import { fileURLToPath } from 'node:url'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const load = async f => {
-  const out = await build({ entryPoints: [path.join(here, f)], bundle: false, write: false, format: 'esm', target: 'node18' })
+  const out = await build({ entryPoints: [path.join(here, f)], bundle: true, write: false, format: 'esm', platform: 'node', target: 'node18' })
   return import('data:text/javascript;base64,' + Buffer.from(out.outputFiles[0].text).toString('base64'))
 }
-const { stillInput, clipAudioChain, masterChain, friendlyExportError, stderrTail, DEPOP_S, UNREADABLE_STILL } = await load('exportgraph.ts')
-const { planProxy, proxyFilter, proxyFits } = await load('playable.ts')
+const { stillInput, clipAudioChain, clipVideoChain, logoChain, titleDrawtext, masterChain, friendlyExportError, stderrTail, DEPOP_S, UNREADABLE_STILL } = await load('exportgraph.ts')
+const { planProxy, proxyFilter, proxyFits, HDR_TO_SDR } = await load('playable.ts')
+const { cleanText, TITLE_FONT } = await load('textlayout.ts')
 
 const FF = path.join(here, '..', 'node_modules', 'ffmpeg-static', 'ffmpeg.exe')
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vh-exportgraph-'))
@@ -57,6 +58,59 @@ try {
   ok(chainA.includes('afade=t=out') && !chainA.includes('afade=t=in'), 'a clip from the top of its file keeps its attack, its splice end is ramped')
   ok(chainB.includes(`afade=t=in:st=1:d=${DEPOP_S}`), 'a clip starting mid-file (a split, a trim) is ramped in so the join cannot click')
   ok(clipAudioChain('2:a', { start: 0, duration: 2, fadeIn: 0.5, fadeOut: 0.5, aFadeIn: 0.02 }, 'if(lt(t\\,1)\\,1\\,0.5)', 'z').includes("volume='if(lt(t\\,1)\\,1\\,0.5)':eval=frame"), 'volume automation passes through as an expression')
+
+  console.log('\n-- a mono mic exports at the level the preview plays --')
+  ff(['-f', 'lavfi', '-i', 'sine=f=440:r=48000:d=3', '-ac', '1', T('mono.wav')])
+  r = mix([{ file: T('mono.wav'), start: 0, duration: 1.5, audioChannels: 1 }], T('mono-out.wav'))
+  const stereoRef = mix([{ file: T('sine.wav'), start: 0, duration: 1.5, audioChannels: 2 }], T('stereo-out.wav'))
+  // each side on its own: the mono source must be on BOTH at the stereo source's level
+  const sideDb = (file, ch) => {
+    const s = spawnSync(FF, ['-hide_banner', '-i', file, '-af', `pan=mono|c0=c${ch},atrim=start=0.3:end=1.2,volumedetect`, '-f', 'null', '-'], { encoding: 'utf8' }).stderr
+    const m = /mean_volume:\s*(-?[\d.]+) dB/.exec(s); return m ? parseFloat(m[1]) : NaN
+  }
+  const [src, ml, mr] = [sideDb(T('mono.wav'), 0), sideDb(T('mono-out.wav'), 0), sideDb(T('mono-out.wav'), 1)]
+  ok(r.status === 0 && Math.abs(ml - src) < 0.1 && Math.abs(mr - src) < 0.1, `mono lands on both sides at full level (L ${ml} dB, R ${mr} dB, source ${src} dB; was 3 dB down)`)
+  const [stIn, stOut] = [sideDb(T('sine.wav'), 0), sideDb(T('stereo-out.wav'), 0)]
+  ok(stereoRef.status === 0 && Math.abs(stOut - stIn) < 0.1, `a stereo source keeps its level (${stOut} dB vs ${stIn} dB)`)
+  ok(!clipAudioChain('2:a', { start: 0, duration: 1, audioChannels: 2 }, 1, 'x').includes('pan=') && !clipAudioChain('2:a', { start: 0, duration: 1 }, 1, 'x').includes('pan='), 'stereo and unknown sources are not folded to one side')
+
+  console.log('\n-- sound and picture stay together --')
+  // each fixture has a white flash and a 1 kHz beep at the SAME moment of the file
+  // late audio: the sound stream starts 0.5 s into the file (cameras, screen recorders); flash + beep at 2.0 s
+  ff(['-f', 'lavfi', '-i', "color=c=black:s=320x180:r=30:d=4,drawbox=c=white:t=fill:enable='between(t,2,2.1)'",
+    '-itsoffset', '0.5', '-f', 'lavfi', '-i', "aevalsrc=exprs='if(between(t,1.5,1.6),0.8*sin(2*PI*1000*t),0)':s=48000:d=3.5",
+    '-map', '0:v', '-map', '1:a', '-c:v', 'libx264', '-preset', 'veryfast', '-g', '30', '-pix_fmt', 'yuv420p', '-c:a', 'aac', T('late.mp4')])
+  // variable frame rate with a hole: frames from 2 to 3 s were never recorded; flash + beep at 4.0 s
+  ff(['-f', 'lavfi', '-i', "color=c=black:s=320x180:r=30:d=6,drawbox=c=white:t=fill:enable='between(t,4,4.1)'",
+    '-f', 'lavfi', '-i', "aevalsrc=exprs='if(between(t,4,4.1),0.8*sin(2*PI*1000*t),0)':s=48000:d=6",
+    '-vf', "select='not(between(t,2,3))'", '-fps_mode', 'vfr', '-c:v', 'libx264', '-preset', 'veryfast', '-g', '30', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-shortest', T('vfr.mp4')])
+  /** one clip through the real picture and sound chains, as export-video lays them; when the flash and the beep happen */
+  const flashAndBeep = (file, clip) => {
+    const total = clip.start + clip.duration
+    const args = ['-f', 'lavfi', '-i', `color=c=black:s=320x180:r=30:d=${total}`, '-f', 'lavfi', '-i', `anullsrc=channel_layout=stereo:sample_rate=48000:d=${total}`]
+    if (clip.sourceStart) args.push('-ss', clip.sourceStart.toFixed(3))
+    args.push('-t', (clip.duration + 0.2).toFixed(3), '-i', file)
+    const g = [clipVideoChain('2:v', clip, { W: 320, H: 180, fps: 30 }, 'vs'),
+      `[0:v][vs]overlay=enable='between(t,${clip.start},${total})':eof_action=pass,format=gray[v]`,
+      clipAudioChain('2:a', clip, 1, 'ad'),
+      '[1:a][ad]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[a]'].join(';')
+    const run = ff([...args, '-filter_complex', g, '-map', '[v]', '-r', '30', '-t', String(total), '-f', 'rawvideo', T('fb.gray'), '-map', '[a]', '-t', String(total), '-ac', '1', '-f', 'f32le', T('fb.f32')])
+    if (run.status !== 0) return { error: run.stderr }
+    const px = fs.readFileSync(T('fb.gray')), fr = 320 * 180
+    let flash = NaN
+    for (let i = 0; i * fr < px.length; i++) { let s = 0; for (let k = i * fr; k < (i + 1) * fr; k += 97) s += px[k]; if (s / (fr / 97) > 128) { flash = i / 30; break } }
+    const au = fs.readFileSync(T('fb.f32')), n = au.length / 4
+    let beep = NaN
+    for (let i = 0; i < n; i++) if (Math.abs(au.readFloatLE(i * 4)) > 0.2) { beep = i / 48000; break }
+    return { flash, beep }
+  }
+  const synced = (label, got, want) => ok(!got.error && Math.abs(got.flash - want) < 0.05 && Math.abs(got.beep - want) < 0.03,
+    `${label}: flash at ${got.flash?.toFixed?.(3)} s, beep at ${got.beep?.toFixed?.(3)} s (want both at ${want} s)${got.error ? ' ' + got.error.slice(-300) : ''}`)
+  synced('audio that starts 0.5 s into the file', flashAndBeep(T('late.mp4'), { start: 0, duration: 3.5 }), 2.0)
+  synced('...trimmed in by 0.2 s', flashAndBeep(T('late.mp4'), { start: 0, duration: 3, sourceStart: 0.2 }), 1.8)
+  synced('...placed at 1 s on the timeline', flashAndBeep(T('late.mp4'), { start: 1, duration: 3 }), 3.0)
+  synced('VFR clip whose in-point falls inside a hole in the frames', flashAndBeep(T('vfr.mp4'), { start: 0, duration: 3, sourceStart: 2.5 }), 1.5)
+  synced('VFR clip trimmed past the hole', flashAndBeep(T('vfr.mp4'), { start: 0, duration: 2, sourceStart: 3.5 }), 0.5)
 
   console.log('\n-- the loud master keeps the sound continuous to the end --')
   // loudnorm flushes its last ~3 s on its own 100 ms grid: a mix that was not a whole number of tenths
@@ -113,6 +167,47 @@ try {
   ok(stillInput('a.PNG', 2).opts[0] === '-loop' && stillInput('a.gif', 2).opts[0] === '-stream_loop' && stillInput('a.avif', 2).vf.startsWith('loop='), 'stills are routed by their demuxer, case-insensitively')
   ok(UNREADABLE_STILL.test('IMG_1234.HEIC') && !UNREADABLE_STILL.test('x.png'), 'HEIC/HEIF are named up front instead of failing inside ffmpeg')
 
+  console.log('\n-- stills and the logo keep their colour in a BT.709 file --')
+  // brand orange, decoded the way a player decodes the export (BT.709, limited range)
+  const FW = 64, FH = 36
+  const decode709 = (buf) => {
+    const Y = buf[(FH / 2) * FW + FW / 2], U = buf[FW * FH + (FH / 4) * (FW / 2) + FW / 4], V = buf[FW * FH * 5 / 4 + (FH / 4) * (FW / 2) + FW / 4]
+    return [1.164 * (Y - 16) + 1.793 * (V - 128), 1.164 * (Y - 16) - 0.213 * (U - 128) - 0.533 * (V - 128), 1.164 * (Y - 16) + 2.112 * (U - 128)].map(Math.round)
+  }
+  const orange = [255, 106, 0]
+  const near = (rgb) => rgb.every((v, i) => Math.abs(Math.min(255, Math.max(0, v)) - orange[i]) <= 3)
+  const onBase = (file, branch) => {
+    const run = ffBuf(['-f', 'lavfi', '-i', `color=c=black:s=${FW}x${FH}:r=30:d=1`, '-loop', '1', '-t', '1', '-i', file,
+      '-filter_complex', `${branch};[0:v][s]overlay=(main_w-overlay_w)/2:(main_h-overlay_h)/2,format=yuv420p[v]`, '-map', '[v]', '-frames:v', '1', '-f', 'rawvideo', '-'])
+    return run.status === 0 ? decode709(run.stdout) : String(run.stderr)
+  }
+  for (const ext of ['png', 'jpg']) {
+    ff(['-f', 'lavfi', '-i', 'color=c=0xFF6A00:s=160x90:d=1', '-frames:v', '1', ...(ext === 'jpg' ? ['-q:v', '1'] : ['-pix_fmt', 'rgb24']), T('orange.' + ext)])
+    const got = onBase(T('orange.' + ext), clipVideoChain('1:v', { type: 'image', start: 0, duration: 1 }, { W: FW, H: FH, fps: 30 }, 's'))
+    ok(Array.isArray(got) && near(got), `a ${ext.toUpperCase()} still plays back as #FF6A00 (got rgb ${got}; the BT.601 conversion gave about 255,113,0)`)
+  }
+  const logo = onBase(T('orange.png'), logoChain('1:v', { width: 32, opacity: 1, fade: 0, from: 0, to: 1 }, 's'))
+  ok(Array.isArray(logo) && near(logo), `the brand logo plays back as #FF6A00 (got rgb ${logo})`)
+  const old = onBase(T('orange.png'), '[1:v]format=yuva420p,scale=64:36[s]')
+  ok(Array.isArray(old) && !near(old), `(control: the old conversion really was off, rgb ${old})`)
+
+  console.log('\n-- HDR is scaled before it is tone mapped --')
+  // a 10-bit HLG clip of colour bars, tagged the way a phone tags it (scaled first, only the edges
+  // between bars may differ, by rounding; measured about 2x faster from 4K to 1080p)
+  const hlg = ff(['-f', 'lavfi', '-i', 'smptehdbars=s=1280x720:r=30:d=1', '-vf', 'format=yuv420p10le', '-c:v', 'libx265', '-preset', 'ultrafast', '-x265-params', 'log-level=error',
+    '-color_primaries', 'bt2020', '-color_trc', 'arib-std-b67', '-colorspace', 'bt2020nc', T('hlg.mp4')])
+  if (hlg.status === 0) {
+    const chain = clipVideoChain('0:v', { start: 0, duration: 1, hdr: true }, { W: 640, H: 360, fps: 30, hdrToSdr: HDR_TO_SDR }, 'v')
+    ok(/fps=30:start_time=0,scale=640:360:force_original_aspect_ratio=decrease,zscale/.test(chain), 'the scale comes before the tone map')
+    const pic = (g) => ffBuf(['-i', T('hlg.mp4'), '-filter_complex', g, '-map', '[v]', '-frames:v', '10', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'])
+    const fast = pic(chain.replace('[v]', '[x]') + ';[x]format=yuv420p[v]')
+    const slow = pic(`[0:v]fps=30:start_time=0,${HDR_TO_SDR},format=yuva420p,scale=640:360:force_original_aspect_ratio=decrease,format=yuv420p[v]`)
+    let diff = 0
+    if (fast.stdout?.length && fast.stdout.length === slow.stdout?.length) { for (let i = 0; i < fast.stdout.length; i++) diff += Math.abs(fast.stdout[i] - slow.stdout[i]); diff /= fast.stdout.length }
+    else diff = Infinity
+    ok(fast.status === 0 && diff < 1.5, `same picture as tone mapping at full size (mean difference ${diff.toFixed(2)} of 255)`)
+  } else console.log('  skip  HDR (this ffmpeg cannot write a 10-bit HEVC clip)')
+
   console.log('\n-- text is drawn literally --')
   const drawn = (text) => {
     fs.writeFileSync(T('t.txt'), text, 'utf8')
@@ -124,6 +219,44 @@ try {
   }
   ok(drawn('100% PLA') > 200, "'100% PLA' is drawn (the default expansion drew nothing)")
   ok(drawn('Save 20%') > 150 && drawn('C:\\path') > 150, "'Save 20%' and a backslash are drawn too")
+
+  console.log('\n-- titles are drawn the way the preview draws them --')
+  const esc = p => p.replace(/\\/g, '/').replace(/:/g, '\\:').replace(/'/g, "\\'")
+  const titleFont = path.join(here, '..', 'public', 'fonts', TITLE_FONT.file)
+  ok(fs.existsSync(titleFont), `the title font ships with the app (public/fonts/${TITLE_FONT.file})`)
+  const { THEME_FONTS } = await load('styletheme.ts')
+  ok(Object.values(THEME_FONTS).some(f => f.file === TITLE_FONT.file && f.family === TITLE_FONT.family && !f.bold),
+    'the preview has the same face: it is a theme font, registered at weight 400 (so nothing fakes a bold the export cannot)')
+  /** one title through titleDrawtext on a grey 640x360 frame, as gray bytes (null if ffmpeg refused it) */
+  const title = (t) => {
+    const c = cleanText(t)
+    fs.writeFileSync(T('title.txt'), c.text, 'utf8')
+    const opts = titleDrawtext(c, { W: 640, H: 360, fontFile: esc(titleFont), textFile: esc(T('title.txt')), alpha: '1' })
+    const run = ffBuf(['-f', 'lavfi', '-i', 'color=c=0x808080:s=640x360:d=1', '-vf', `drawtext=${opts},format=gray`, '-frames:v', '1', '-f', 'rawvideo', '-'])
+    return { opts, px: run.status === 0 && run.stdout.length === 640 * 360 ? run.stdout : null, err: String(run.stderr || '') }
+  }
+  const base = { text: 'A\nMUCH LONGER LINE', x: 0.5, y: 0.5, fontSize: 120, start: 0, duration: 1, color: '#ffffff' }
+  const plain = title(base)
+  ok(plain.px !== null, 'centred, shadowed title renders' + (plain.px ? '' : ': ' + plain.err.slice(-300)))
+  if (plain.px) {
+    // each line's ink, centred on the same x (the export used to left-align them)
+    const inkCentre = (rows) => { let x0 = 640, x1 = -1; for (const y of rows) for (let x = 0; x < 640; x++) if (plain.px[y * 640 + x] > 230) { x0 = Math.min(x0, x); x1 = Math.max(x1, x) } return (x0 + x1) / 2 }
+    const lit = []; for (let y = 0; y < 360; y++) { for (let x = 0; x < 640; x++) if (plain.px[y * 640 + x] > 230) { lit.push(y); break } }
+    const split = lit.findIndex((y, i) => i > 0 && y - lit[i - 1] > 3)
+    const c1 = inkCentre(lit.slice(0, split)), c2 = inkCentre(lit.slice(split))
+    ok(split > 0 && Math.abs(c1 - c2) < 3 && Math.abs(c2 - 320) < 4, `every line is centred on x (line centres ${c1}, ${c2}; frame centre 320)`)
+    let dark = 0; for (const v of plain.px) if (v < 100) dark++
+    ok(dark > 200, `bare text casts the preview's drop shadow (${dark} shadow pixels on the grey)`)
+  }
+  ok(/shadowy=\d+/.test(plain.opts) && !/shadow/.test(title({ ...base, box: true }).opts), 'a boxed title has no shadow, as in the preview')
+  const boxed = title({ ...base, text: 'BOX', box: true, boxColor: '#000000', boxOpacity: 1 })
+  ok(boxed.px !== null && /boxborderw=6\|16:/.test(boxed.opts), `the box is padded 0.15em top and bottom, 0.4em at the sides (${/boxborderw=[^:]+/.exec(boxed.opts)?.[0]})` + (boxed.px ? '' : ': ' + boxed.err.slice(-300)))
+  // the injection: a colour that smuggles a second textfile in (measured: it drew that file into the video)
+  fs.writeFileSync(T('secret.txt'), 'SECRET SECRET SECRET', 'utf8')
+  const sneaky = title({ ...base, text: 'Hi', box: true, color: `white:textfile='${esc(T('secret.txt'))}'`, boxColor: 'red:x=0', start: "0,1)':textfile=x:enable='1" })
+  const honest = title({ ...base, text: 'Hi', box: true, boxColor: '#000000' })
+  ok(!/secret/i.test(sneaky.opts) && !/x=0[:']/.test(sneaky.opts) && /enable='between\(t,0,1\)'/.test(sneaky.opts), 'colour and time fields cannot add options to the filter')
+  ok(sneaky.px && honest.px && Buffer.compare(sneaky.px, honest.px) === 0, 'the crafted colour renders exactly like a plain white title')
 
   console.log('\n-- a portrait phone proxy is not blown up --')
   ff(['-f', 'lavfi', '-i', 'testsrc=s=640x360:r=30:d=1', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', T('coded.mp4')])

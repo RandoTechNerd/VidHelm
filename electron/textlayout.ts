@@ -8,13 +8,29 @@
  * agent's `add_text` gets them for free and `export_video` reports the ones
  * that slipped through.
  *
- * Geometry is estimated, not measured: the export burns text with drawtext in
- * Arial, whose average advance is close to 0.56 em for mixed-case copy and
- * 0.66 em for CAPS. That is accurate enough to catch collisions and overflow,
- * which is the point; it is not a typesetter.
+ * Geometry is estimated, not measured: a title with no theme font is set in
+ * TITLE_FONT (Inter SemiBold), whose average advance measured 0.49 em for
+ * mixed-case copy and 0.62 em for CAPS through drawtext itself; the estimate
+ * adds a little for wide letters. That is accurate enough to catch collisions
+ * and overflow, which is the point; it is not a typesetter.
  *
  * Pure module: no I/O, no Electron.
  */
+
+/**
+ * The face a title is set in when it names no theme font, in the preview AND the export: the
+ * bundled file (public/fonts, also registered as a theme font) rather than whatever the system has.
+ * The export used to burn Arial Regular while the preview showed bold Inter, so every title changed
+ * shape and width on the way out. Registered for the browser at weight 400 (see fontFaceCss): ask
+ * for more and Chromium paints a fake bold the export cannot.
+ */
+export const TITLE_FONT = { file: 'Inter-SemiBold.ttf', family: 'Inter SemiBold' } as const
+
+/** A title's background box padding, in em: the CSS padding and drawtext's boxborderw (top/bottom, left/right). */
+export const BOX_PAD = { y: 0.15, x: 0.4 } as const
+
+/** Share of the frame width a title may take before it wraps (the preview's max-width). */
+export const WRAP_WIDTH = 0.92
 
 export interface TextLike {
   id?: string
@@ -38,7 +54,7 @@ function advance(text: string): number {
   const caps = (text.match(/[A-Z]/g) || []).length
   const letters = (text.match(/[A-Za-z]/g) || []).length || 1
   const capShare = caps / letters
-  return 0.56 + (0.66 - 0.56) * capShare
+  return 0.52 + (0.65 - 0.52) * capShare
 }
 
 /** Estimated on-screen box (including the background bar's padding when box is on). */
@@ -47,9 +63,8 @@ export function estimateBox(t: TextLike, frameW = 1920, frameH = 1080): Rect {
   const size = t.fontSize * scale
   const lines = String(t.text ?? '').split('\n')
   const widest = Math.max(...lines.map(l => l.length * advance(l)), 0.5)
-  const pad = t.box ? size * 0.25 : 0
-  const w = widest * size + pad * 2
-  const h = lines.length * size * LINE_HEIGHT + pad * 2
+  const w = widest * size + (t.box ? size * BOX_PAD.x * 2 : 0)
+  const h = lines.length * size * LINE_HEIGHT + (t.box ? size * BOX_PAD.y * 2 : 0)
   const cx = t.x * frameW, cy = t.y * frameH
   return { x0: (cx - w / 2) / frameW, y0: (cy - h / 2) / frameH, x1: (cx + w / 2) / frameW, y1: (cy + h / 2) / frameH }
 }
@@ -130,4 +145,84 @@ export function presetFor(name: string | undefined, text: string, frameW = 1920,
   if (!p) return {}
   const lane = name === 'lower-third' ? 0.44 : 0.9
   return { ...p, fontSize: fitFontSize(text, p.fontSize, lane, frameW, frameH) }
+}
+
+/* ---- checked fields ---------------------------------------------------------
+ * The exporter writes a text's colours and numbers straight into a drawtext
+ * filter, where ':' starts a new option. Unchecked, a colour such as
+ * "white:textfile=<any file>" rendered that file into the video, and a start
+ * time could rewrite the enable expression. Everything that reaches the filter
+ * is a number or a hex colour, checked here, at every door: the agent's
+ * add_text and update_text, a project being opened, and the export itself. */
+
+const NAMED: Record<string, string> = {
+  white: '#ffffff', black: '#000000', red: '#ff0000', green: '#008000', lime: '#00ff00', blue: '#0000ff',
+  yellow: '#ffff00', orange: '#ffa500', purple: '#800080', pink: '#ffc0cb', cyan: '#00ffff', magenta: '#ff00ff',
+  gray: '#808080', grey: '#808080',
+}
+
+/** A colour as '#rrggbb' or '#rrggbbaa' (also taken: '#rgb', no '#', and a few plain names), or the fallback. */
+export function hexColor(v: unknown, fallback: string): string {
+  const s = String(v ?? '').trim()
+  if (NAMED[s.toLowerCase()]) return NAMED[s.toLowerCase()]
+  const m = /^#?([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i.exec(s)
+  if (!m) return fallback
+  const h = m[1].length === 3 ? m[1].split('').map(c => c + c).join('') : m[1]
+  return '#' + h
+}
+
+const num = (v: unknown, fallback: number, lo = -Infinity, hi = Infinity) => {
+  const n = typeof v === 'number' ? v : typeof v === 'string' && v.trim() !== '' ? Number(v) : NaN
+  return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : fallback
+}
+
+export interface TextFields {
+  text?: unknown; start?: unknown; duration?: unknown; x?: unknown; y?: unknown; fontSize?: unknown
+  color?: unknown; fadeIn?: unknown; fadeOut?: unknown; box?: unknown; boxOpacity?: unknown; boxColor?: unknown
+  outline?: unknown; outlineColor?: unknown
+}
+
+/**
+ * The same text with every field the exporter uses made safe: numbers finite and in range, colours
+ * hex, the text a string. Fields it does not have stay absent; everything else (id, font, caption)
+ * passes through untouched.
+ */
+export function cleanText<T extends TextFields>(t: T): T & { text: string; start: number; duration: number; x: number; y: number; fontSize: number; color: string; fadeIn: number; fadeOut: number } {
+  const fixed: Record<string, unknown> = {
+    text: String(t.text ?? ''),
+    start: num(t.start, 0, 0),
+    duration: num(t.duration, 3, 0.04),
+    x: num(t.x, 0.5, -1, 2),
+    y: num(t.y, 0.5, -1, 2),
+    fontSize: num(t.fontSize, 64, 4, 1000),
+    color: hexColor(t.color, '#ffffff'),
+    fadeIn: num(t.fadeIn, 0, 0),
+    fadeOut: num(t.fadeOut, 0, 0),
+  }
+  if (t.box !== undefined) fixed.box = t.box === true || t.box === 'true' || t.box === 1
+  if (t.boxOpacity !== undefined) fixed.boxOpacity = num(t.boxOpacity, 0.5, 0, 1)
+  if (t.boxColor !== undefined) fixed.boxColor = hexColor(t.boxColor, '#000000')
+  if (t.outline !== undefined) fixed.outline = num(t.outline, 0, 0, 0.5)
+  if (t.outlineColor !== undefined) fixed.outlineColor = hexColor(t.outlineColor, '#000000')
+  return { ...t, ...fixed } as T & { text: string; start: number; duration: number; x: number; y: number; fontSize: number; color: string; fadeIn: number; fadeOut: number }
+}
+
+/**
+ * Line breaks where the preview wraps: greedy, at spaces, the author's own newlines kept, a word
+ * longer than the line left whole (as CSS does). The export has no wrapping of its own, so a title
+ * that took two lines in the preview ran off both edges of the frame. `measure` is the width of a
+ * string in the export's pixels, from a canvas in the renderer.
+ */
+export function wrapText(text: string, maxWidth: number, measure: (s: string) => number): string {
+  return String(text ?? '').split('\n').map(par => {
+    const words = par.split(' ')
+    const lines: string[] = []
+    let line = ''
+    for (const w of words) {
+      const next = line ? `${line} ${w}` : w
+      if (line && measure(next) > maxWidth) { lines.push(line); line = w } else line = next
+    }
+    lines.push(line)
+    return lines.join('\n')
+  }).join('\n')
 }

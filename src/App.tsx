@@ -20,7 +20,7 @@ import { TakesModal, takeStats, type TakeAnalysis } from './takes'
 import { groupTakes, removalRanges, removedSeconds, chunksFromWords, wordsOf } from '../electron/takes'
 import { snapToGrid, describeSnap } from '../electron/grid'
 import { fitBpm } from '../electron/score'
-import { layoutReport, presetFor, fitFontSize } from '../electron/textlayout'
+import { layoutReport, presetFor, fitFontSize, cleanText, wrapText, TITLE_FONT, BOX_PAD, WRAP_WIDTH } from '../electron/textlayout'
 import { THEMES, THEME_FONTS, CAPTION_Y as THEME_CAP_Y, chooseTheme, phrasesFromWords, retimeCaptionText, typeCaption, captionFrame, captionCss, captionPx, fontFaceCss, type CaptionSpec, type CapWord, type ThemeFont, type CapCue, type CaptionTyping } from '../electron/styletheme'
 import { planProxy, isHdr } from '../electron/playable'
 import { spanForPhrase, sentenceSpans, type Word as SpeechWord, type Span } from '../electron/speech'
@@ -32,6 +32,7 @@ import { DEPOP, splitClip, removeRange, planPauseCuts, rescaleAutomation, slideV
 import { tickStepFor, contentWidth, collectSnapTargets, nearestTarget, snapMove, trimTo, clampToSource, maxDurationFrom, footageLength, moveReadout, trimReadout, stripTiles, stripFits, shiftWords, offSpeechNote, timecode, followScroll, type TimecodeMode } from '../electron/timeline'
 import { TimeRuler } from './ruler'
 import { ClipWave, type Peaks } from './clipwave'
+import { etaStep, type EtaState } from '../electron/exportjob'
 
 interface MediaFile {
   id: string
@@ -685,7 +686,11 @@ function Editor() {
   // the speech the scan was read from (speechKey), so a stale scan can never cut the wrong seconds
   const takesAt = useRef<string | null>(null)
   const [eta, setEta] = useState<number | null>(null)
-  const exportStartRef = useRef(0)
+  // the smoothed render rate behind `eta`; null at the start of every export (see etaStep)
+  const etaRef = useRef<EtaState | null>(null)
+  const exportClickAt = useRef(0)
+  // Where the next export will be written and whether that replaces a file, for the Export panel.
+  const [exportTo, setExportTo] = useState<{ path: string; exists: boolean; nextVersion: string | null } | null>(null)
   const settingsLoaded = useRef(false)
 
   const runQualityCheck = async (filePath: string) => {
@@ -788,13 +793,13 @@ function Editor() {
   }, [])
 
   useEffect(() => {
-    const handleProgress = (_e: any, percent: number) => {
-      const pct = Math.max(0, Math.min(100, percent || 0))
+    // { pct, fps } from export-video (a bare number from older builds)
+    const handleProgress = (_e: unknown, p: { pct: number; fps?: number } | number) => {
+      const pct = Math.max(0, Math.min(100, (typeof p === 'number' ? p : p?.pct) || 0))
       setExportProgress(pct)
-      if (pct > 1 && pct < 100 && exportStartRef.current) {
-        const elapsed = (Date.now() - exportStartRef.current) / 1000
-        setEta((elapsed * (100 - pct)) / pct)
-      } else if (pct >= 100) setEta(null)
+      const { state, secondsLeft } = etaStep(etaRef.current, pct, Date.now())
+      etaRef.current = state
+      setEta(secondsLeft)
     }
     window.ipcRenderer.on('export-progress', handleProgress)
     const handleTranscribe = (_e: any, p: { stage: string; pct: number }) => {
@@ -1482,10 +1487,12 @@ function Editor() {
           if (ti.uppercase) t.text = t.text.toUpperCase()
         }
         if (cmd.font && THEME_FONTS[cmd.font as ThemeFont]) t.font = cmd.font
-        setTexts(prev => [...prev, t])
-        const rep = layoutReport([...texts, t], w, h)
-        const mine = rep.notes.filter(n => n.includes(`"${t.id}"`))
-        return { ok: true, textId: t.id, fontSize, start: t.start, ...(cmd.anchored ? { anchored: cmd.anchored } : {}), ...(mine.length ? { warnings: mine } : {}) }
+        // colours and numbers checked on the way in: they end up inside the export's drawtext filter
+        const added = cleanText(t)
+        setTexts(prev => [...prev, added])
+        const rep = layoutReport([...texts, added], w, h)
+        const mine = rep.notes.filter(n => n.includes(`"${added.id}"`))
+        return { ok: true, textId: added.id, fontSize: added.fontSize, start: added.start, ...(cmd.anchored ? { anchored: cmd.anchored } : {}), ...(mine.length ? { warnings: mine } : {}) }
       }
       case 'find_word': {
         if (!cmd.text) return { error: 'text required' }
@@ -1542,7 +1549,7 @@ function Editor() {
         if (!texts.find(t => t.id === cmd.textId)) return { error: `text not found: ${cmd.textId}` }
         const patch: Partial<TextClip> = {}
         for (const k of ['text', 'start', 'duration', 'x', 'y', 'fontSize', 'color', 'fadeIn', 'fadeOut', 'box', 'boxOpacity', 'boxColor', 'font', 'outline', 'outlineColor'] as const) if (cmd[k] !== undefined) (patch as any)[k] = cmd[k]
-        setTexts(prev => prev.map(t => t.id === cmd.textId ? patchTextClip(t, patch) : t))
+        setTexts(prev => prev.map(t => t.id === cmd.textId ? cleanText(patchTextClip(t, patch)) : t))
         return { ok: true }
       }
       case 'add_tag': {
@@ -2056,13 +2063,14 @@ function Editor() {
         if (preA) return { error: 'could not render the timeline for analysis: ' + preA }
         const out: string = cmd.outputPath || await window.ipcRenderer.analysisPath(currentProject?.name || 'timeline')
         setIsPlaying(false)
-        setExportProgress(0); setEta(null); exportStartRef.current = Date.now()
+        setExportProgress(0); setEta(null); etaRef.current = null
         try {
-          await window.ipcRenderer.exportVideo({
+          const done = await window.ipcRenderer.exportVideo({
             clips: exportClips(1280, 720, 30, 'analysis'),
-            texts, brand: { ...settings.brand, enabled: false }, audio: settings.audio, outputPath: out,
+            texts: await exportTexts(1280, 720), brand: { ...settings.brand, enabled: false }, audio: settings.audio, outputPath: out,
             settings: { width: 1280, height: 720, fps: 30, quality: 'analysis', masterVolume },
           })
+          if (done?.cancelled) { setExportProgress(null); setEta(null); return { error: 'the analysis render was cancelled in VidHelm (the Cancel button)' } }
         } catch (e) {
           setExportProgress(null); setEta(null)
           const f = exportFailure(e)
@@ -2087,13 +2095,14 @@ function Editor() {
         setIsPlaying(false)
         const payload = {
           clips: exportClips(w, h, fps, exportQuality),
-          texts, brand: settings.brand, audio: settings.audio, outputPath: cmd.outputPath,
+          texts: await exportTexts(w, h), brand: settings.brand, audio: settings.audio, outputPath: cmd.outputPath,
           settings: { width: w, height: h, fps, quality: exportQuality, masterVolume },
         }
         // Drive the same progress state the button uses: the human watches it render, and
         // the button re-enables afterwards (it stayed stuck and disabled before).
-        setExportProgress(0); setEta(null); exportStartRef.current = Date.now()
-        try { await window.ipcRenderer.exportVideo(payload) }
+        setExportProgress(0); setEta(null); etaRef.current = null
+        let done: { cancelled?: boolean; path?: string; warnings?: string[] } | null = null
+        try { done = await window.ipcRenderer.exportVideo(payload) }
         catch (e) {
           setExportProgress(null); setEta(null); setLastExport(null)
           const f = exportFailure(e)
@@ -2102,10 +2111,17 @@ function Editor() {
           // the reason first; ffmpeg's last lines (or the list behind a count) as detail
           return { error: 'export failed: ' + f.reason, ...(f.detail ? { detail: f.detail } : {}) }
         }
+        if (done?.cancelled) {
+          setExportProgress(null); setEta(null)
+          return { error: 'the export was cancelled in VidHelm (the Cancel button); nothing was written and any earlier file is untouched' }
+        }
+        // where it really landed: a file open in a player is not replaced, the render gets the next _vN name
+        const outPath = done?.path || cmd.outputPath
+        const exportWarnings = done?.warnings ?? []
         setExportProgress(100); setEta(null)
         setTimeout(() => setExportProgress(null), 3000)
-        setLastExport(cmd.outputPath)
-        const qc = cmd.qualityCheck === false ? null : await window.ipcRenderer.qualityCheck(cmd.outputPath).catch(() => null)
+        setLastExport(outPath)
+        const qc = cmd.qualityCheck === false ? null : await window.ipcRenderer.qualityCheck(outPath).catch(() => null)
         const checks: string[] = qc?.checks?.map((c: any) => `${c.status}: ${c.label} - ${c.detail}`) ?? []
         let verdict: string | undefined = qc?.verdict
         const worse = (v: string) => { if (v === 'fail' || (v === 'warn' && verdict === 'pass')) verdict = v }
@@ -2117,7 +2133,7 @@ function Editor() {
         let script: any
         const expected = String(cmd.script || boothScript || '').trim()
         if (expected && cmd.qualityCheck !== false) {
-          const tr = await window.ipcRenderer.transcribe(cmd.outputPath, { model: 'tiny', language: settings.caption.language, word: false }).catch(() => null)
+          const tr = await window.ipcRenderer.transcribe(outPath, { model: 'tiny', language: settings.caption.language, word: false }).catch(() => null)
           if (tr?.chunks) {
             const heard = wordsOf(tr.chunks.map(c => c.text).join(' '))
             const want = wordsOf(expected)
@@ -2134,7 +2150,7 @@ function Editor() {
             worse(status)
           }
         }
-        return { ok: true, outputPath: cmd.outputPath, qualityCheck: qc || checks.length ? { verdict, checks } : undefined, script, layout: layout.notes.length ? layout.notes : undefined }
+        return { ok: true, outputPath: outPath, qualityCheck: qc || checks.length ? { verdict, checks } : undefined, script, layout: layout.notes.length ? layout.notes : undefined, ...(exportWarnings.length ? { warnings: exportWarnings } : {}) }
       }
       default:
         return { error: `unknown action: ${cmd.action}` }
@@ -2238,6 +2254,8 @@ function Editor() {
   // sorts by track only (the same helper the preview uses), which keeps b-roll ON TOP of the A-roll
   // and keeps the order within a track exactly as the preview stacks it. v2 is picture only, so its
   // own audio is dropped here rather than mixed in: the A-roll keeps talking underneath the cutaway.
+  // Picture comes from the video tracks only, as in the preview: a video clip sitting on a1 (an older
+  // save, a hand-edited project) would otherwise burn its picture over the edit.
   const exportClips = (W: number, H: number, FPS: number, quality: string) => layerOrder(clips)
     .map(c => {
       const media = mediaBin.find(m => m.id === c.mediaId)
@@ -2246,6 +2264,26 @@ function Editor() {
       // preview, and used to cover the frame in the export alone
       return { ...c, path: src.path, hdr: src.hdr, hasVideo: (c.trackId === 'v1' || c.trackId === 'v2') && !!media?.hasVideo, hasAudio: c.trackId === 'v2' ? false : media?.hasAudio, chromaKey: media?.chromaKey }
     })
+
+  // A title wraps in the preview at 92% of the frame; drawtext has no wrapping of its own, so a title
+  // that took two lines on screen ran off both edges of the video. Each one gets the preview's line
+  // breaks, measured in its own face at the export's size. Captions are laid out by their theme.
+  const exportTexts = async (W: number, H: number): Promise<TextClip[]> => {
+    const ctx = document.createElement('canvas').getContext('2d')
+    if (!ctx) return texts
+    const out: TextClip[] = []
+    for (const t of texts) {
+      if (t.caption) { out.push(t); continue }
+      const fi = t.font ? THEME_FONTS[t.font] : undefined
+      const px = Math.max(8, Math.round(t.fontSize / 1080 * H))
+      const font = `${fi?.bold ? 700 : 400} ${px}px '${fi ? fi.family : TITLE_FONT.family}'`
+      try { await document.fonts.load(font) } catch { /* measured in the fallback face: still close */ }
+      ctx.font = font
+      const room = W * WRAP_WIDTH - (t.box ? 2 * px * BOX_PAD.x : 0)
+      out.push({ ...t, text: wrapText(t.text, room, s => ctx.measureText(s).width) })
+    }
+    return out
+  }
 
   // The exporter opens the source once per clip, and on a long cut of 4K HEVC HDR that is a lot of
   // heavy decodes plus tone maps. The preview copy is light and already SDR, but it is also smaller
@@ -2637,40 +2675,64 @@ function Editor() {
   }
 
   // ---- export ----
+  // A render is running (the bar stops at 99.5% until the file is done, then reads 100 for a moment).
+  const exporting = exportProgress !== null && exportProgress < 100
+  const exportTargetArgs = { projectDir: currentProject?.dir ?? null, name: currentProject?.name ?? null, orientation }
+  // The panel says where the next export goes, and warns before it replaces a file. Re-asked after
+  // every export, since the last one is usually what the next would replace.
+  useEffect(() => {
+    if (exporting) return
+    let alive = true
+    void window.ipcRenderer.exportTarget({ ...exportTargetArgs, custom: customExportPath })
+      .then(t => { if (alive) setExportTo(t?.path ? { path: t.path, exists: !!t.exists, nextVersion: t.nextVersion ?? null } : null) })
+      .catch(() => { if (alive) setExportTo(null) })
+    return () => { alive = false }
+  }, [customExportPath, currentProject?.dir, currentProject?.name, orientation, lastExport, exporting])   // eslint-disable-line react-hooks/exhaustive-deps
+
   const pickExportPath = async () => {
-    try { const p = await window.ipcRenderer.selectSavePath('vidhelm_export.mp4'); if (p) setCustomExportPath(p) } catch (e) { console.error(e) }
+    try { const p = await window.ipcRenderer.selectSavePath(exportTo?.path || 'video_landscape.mp4'); if (p) setCustomExportPath(p) } catch (e) { console.error(e) }
   }
 
   const handleExport = async () => {
+    // While a render runs the same button cancels it, but not from the second click of a double-click
+    // that started it: the button turns into Cancel under the pointer.
+    if (exporting) { if (Date.now() - exportClickAt.current > 800) void window.ipcRenderer.cancelExport(); return }
     if (clips.length === 0 && texts.length === 0) return
+    exportClickAt.current = Date.now()
     setIsPlaying(false)
     setExportProgress(0)
     setEta(null)
-    exportStartRef.current = Date.now()
+    etaRef.current = null
     try {
       // missing or removed media is named up front, rather than ffmpeg failing halfway through
       const pre = await exportPreflight()
       if (pre) { setExportProgress(null); notify(`Export not started. ${pre}`, 15000); return }
+      // No file picked: straight into the project's exports folder (or Videos/VidHelm), named after
+      // the project and the frame shape, instead of a save dialog every time.
       let finalPath = customExportPath
       if (!finalPath) {
-        finalPath = await window.ipcRenderer.selectSavePath('vidhelm_export.mp4')
-        if (!finalPath) { setExportProgress(null); return }
-        setCustomExportPath(finalPath)
+        const t = await window.ipcRenderer.exportTarget({ ...exportTargetArgs, create: true })
+        if (!t?.path) { setExportProgress(null); notify(`Export not started. ${t?.error || 'There is no folder to export into; choose one under Save To.'}`, 11000); return }
+        finalPath = t.path
       }
       const payload = {
         clips: exportClips(w, h, fps, exportQuality),
-        texts,
+        texts: await exportTexts(w, h),
         brand: settings.brand,
         audio: settings.audio,
         outputPath: finalPath,
         settings: { width: w, height: h, fps, quality: exportQuality, masterVolume },
       }
-      exportStartRef.current = Date.now()
-      await window.ipcRenderer.exportVideo(payload)
+      etaRef.current = null
+      const done = await window.ipcRenderer.exportVideo(payload)
+      if (done?.cancelled) { setExportProgress(null); setEta(null); notify('Export cancelled. Nothing was written, and any earlier export is untouched.', 6000); return }
+      // where it really landed: a file open in a player is not replaced, the render gets the next _vN name
+      const landed = done?.path || finalPath
       setExportProgress(100)
-      setLastExport(finalPath)
+      setLastExport(landed)
       setTimeout(() => setExportProgress(null), 3000)
-      runQualityCheck(finalPath) // auto "watch & verify" the result
+      if (done?.warnings?.length) notify(`Exported, but ${done.warnings.join('; ')}.`, 11000)
+      runQualityCheck(landed) // auto "watch & verify" the result
     } catch (err) {
       // never silent: the bar used to just vanish with no file and no reason. The toast gets the
       // reason; ffmpeg's last lines go to the log (DevTools console) for anyone digging deeper.
@@ -2777,6 +2839,8 @@ function Editor() {
   const resetProjectScratch = () => {
     setTakes(null); takesRef.current = null; takeSnap.current = null; takesAt.current = null
     brollRef.current = null; brollPlanRef.current = null; speechRef.current = null; sfxHitsRef.current = null
+    // a file picked for the last project's export would be overwritten by this one's
+    setCustomExportPath(null)
   }
 
   /** Replace the whole document with a loaded one: format values checked (an unknown one keeps the
@@ -2792,7 +2856,8 @@ function Editor() {
       mediaBin,
       // (a still has no in-point to be wrong about)
       clips: arr<TimelineClip>(data?.clips).map(c => c && typeof c === 'object' && c.type !== 'image' ? clampToSource(c, lenOf.get(c.mediaId)) : c),
-      texts: arr<TextClip>(data?.texts), markers: arr<Marker>(data?.markers),
+      // texts checked like an agent's: a project file is just as able to carry a crafted colour
+      texts: arr<TextClip>(data?.texts).map(t => cleanText(t)), markers: arr<Marker>(data?.markers),
       orientation: normOrientation(data?.orientation) ?? orientation,
       resolution: normResolution(data?.resolution) ?? resolution,
       fps: normFps(data?.fps) ?? fps,
@@ -3600,9 +3665,9 @@ function Editor() {
           <button className={`hdr-btn icon ${showHelpMenu ? 'on' : ''}`} onClick={e => { e.stopPropagation(); setShowImportMenu(false); setShowHelpMenu(v => !v) }}
             title="Help: the chat, getting started and the tour, community links, credits" aria-haspopup="menu" aria-expanded={showHelpMenu}><IcHelp /></button>
           <button className="hdr-btn icon" onClick={() => setShowSettings(true)} title="Brand kit & settings"><IcGear /></button>
-          <button className="hdr-export" onClick={handleExport} disabled={(clips.length === 0 && texts.length === 0) || exportProgress !== null}
-            title="Render the video with the settings in the Export panel (Ctrl+E)">
-            <IconExport /><span>{exportProgress !== null ? `${Math.round(exportProgress)}%` : 'Export'}</span>
+          <button className={`hdr-export ${exporting ? 'cancel' : ''}`} onClick={handleExport} disabled={!exporting && ((clips.length === 0 && texts.length === 0) || exportProgress !== null)}
+            title={exporting ? 'Stop the render. Nothing is written, and any earlier export stays as it was.' : 'Render the video with the settings in the Export panel (Ctrl+E)'}>
+            <IconExport /><span>{exporting ? `${Math.round(exportProgress ?? 0)}% · Cancel` : exportProgress !== null ? 'Done' : 'Export'}</span>
           </button>
           {showHelpMenu && (
             <HelpMenu onClose={closeHelpMenu} version={appVersion}
@@ -3705,8 +3770,10 @@ function Editor() {
                 <CaptionLayer key={t.id} t={t} time={currentTime} groupBase={texts.indexOf(t)} outW={w} outH={h} stageH={stageH} selected={selectedId === t.id && !isPlaying} onSelect={() => { if (!isPlaying) setSelectedId(t.id) }} />
               ) : (
                 <div key={t.id} className={`text-layer ${selectedId === t.id && !isPlaying ? 'editing' : ''} ${editingTextId === t.id ? 'typing' : ''}`}
-                  style={{ left: `${t.x * 100}%`, top: `${t.y * 100}%`, fontSize: `${t.fontSize / 1080 * stageH}px`, color: t.color, opacity: fadeFactor(t, currentTime), background: t.box ? (t.boxColor ? `${t.boxColor}${Math.round((t.boxOpacity ?? 0.5) * 255).toString(16).padStart(2, '0')}` : `rgba(0,0,0,${t.boxOpacity ?? 0.5})`) : 'transparent', padding: t.box ? '0.15em 0.4em' : 0, borderRadius: t.box ? '4px' : 0,
-                    ...(t.font && THEME_FONTS[t.font] ? { fontFamily: `'${THEME_FONTS[t.font].family}', sans-serif`, fontWeight: THEME_FONTS[t.font].bold ? 700 : 400 } : {}),
+                  style={{ left: `${t.x * 100}%`, top: `${t.y * 100}%`, fontSize: `${t.fontSize / 1080 * stageH}px`, color: t.color, opacity: fadeFactor(t, currentTime), background: t.box ? (t.boxColor ? `${t.boxColor}${Math.round((t.boxOpacity ?? 0.5) * 255).toString(16).padStart(2, '0')}` : `rgba(0,0,0,${t.boxOpacity ?? 0.5})`) : 'transparent',
+                    // the export's drawtext twins (titleDrawtext): square box padded BOX_PAD, a hard shadow under bare text only
+                    padding: t.box ? `${BOX_PAD.y}em ${BOX_PAD.x}em` : 0, textShadow: t.box ? 'none' : '0 0.04em 0 rgba(0, 0, 0, 0.6)',
+                    ...(t.font && THEME_FONTS[t.font] ? { fontFamily: `'${THEME_FONTS[t.font].family}', sans-serif`, fontWeight: THEME_FONTS[t.font].bold ? 700 : 400 } : { fontFamily: `'${TITLE_FONT.family}', sans-serif`, fontWeight: 400 }),
                     ...(t.outline && !t.box ? { WebkitTextStroke: `${(t.outline * 2 * t.fontSize / 1080 * stageH).toFixed(1)}px ${t.outlineColor || '#000'}`, paintOrder: 'stroke fill' } : {}) }}
                   ref={editingTextId === t.id ? editRef : undefined}
                   contentEditable={editingTextId === t.id}
@@ -3733,11 +3800,15 @@ function Editor() {
                   || (b.showMode === 'outro' && currentTime >= totalDuration - b.windowSec)
                 if (!inWindow) return null
                 const posStyle: React.CSSProperties = { position: 'absolute', width: `${b.sizePct}%`, opacity: b.opacity, pointerEvents: 'none' }
-                const mg = `${(b.margin / 1080) * 100 * (ORIENTATIONS[orientation].ratio >= 1 ? 1 / ORIENTATIONS[orientation].ratio : 1)}%`
-                if (b.position.includes('t')) posStyle.top = '4%'; else if (b.position.includes('b')) posStyle.bottom = '4%'
-                if (b.position.includes('l')) posStyle.left = '3%'; else if (b.position.includes('r')) posStyle.right = '3%'
+                // the export's margin: margin/1080 of the frame HEIGHT in from each edge, the same pixels
+                // on both axes (a fixed 4% / 3% matched the export on no frame shape, worst in portrait)
+                const m = (b.margin ?? 40) / 1080
+                const mY = `${m * 100}%`, mX = `${m * (h / w) * 100}%`
                 if (b.position === 'center') { posStyle.top = '50%'; posStyle.left = '50%'; posStyle.transform = 'translate(-50%,-50%)' }
-                void mg
+                else {
+                  if (b.position.includes('t')) posStyle.top = mY; else posStyle.bottom = mY
+                  if (b.position.includes('l')) posStyle.left = mX; else posStyle.right = mX
+                }
                 return <img className="brand-logo" style={posStyle} src={fileUrl(b.logoPath)} alt="logo" />
               })()}
             </div>
@@ -3776,9 +3847,19 @@ function Editor() {
                 </div>
                 <div className="field chk" onClick={() => setSettings(s => ({ ...s, audio: { ...s.audio, optimize: !s.audio.optimize } }))}><input type="checkbox" checked={settings.audio.optimize} readOnly id="norm" /><label htmlFor="norm" style={{ cursor: 'pointer', marginBottom: 0 }}>Optimize loudness (−14 LUFS)</label></div>
                 <div className="field chk" onClick={() => setSettings(s => ({ ...s, audio: { ...s.audio, noiseReduction: !s.audio.noiseReduction } }))}><input type="checkbox" checked={settings.audio.noiseReduction} readOnly id="nr" /><label htmlFor="nr" style={{ cursor: 'pointer', marginBottom: 0 }}>Noise reduction</label></div>
-                <div className="field"><label>Save To</label><div className="path-box" onClick={pickExportPath}><IconFolder /><span>{customExportPath ? customExportPath.split(/[\\/]/).pop() : 'Choose on export…'}</span></div></div>
+                <div className="field"><label>Save To</label>
+                  <div className="path-box" onClick={pickExportPath} title={exportTo ? `${exportTo.path}\nClick to choose another file` : 'Choose where the export is saved'}><IconFolder /><span>{exportTo ? baseName(exportTo.path) : customExportPath ? baseName(customExportPath) : 'Choose a file…'}</span></div>
+                  {exportTo?.exists && !exporting && (
+                    <div className="replace-note"><span>Will replace {baseName(exportTo.path)}</span>
+                      {exportTo.nextVersion && <button className="reveal-link" onClick={() => setCustomExportPath(exportTo.nextVersion)}>Save as new version</button>}
+                    </div>
+                  )}
+                </div>
                 <div className={`progress-line ${exportProgress !== null ? 'show' : ''}`}><div className="fill" style={{ width: `${exportProgress || 0}%` }} /></div>
-                <button className="action-btn export" onClick={handleExport} disabled={(clips.length === 0 && texts.length === 0) || exportProgress !== null}><IconExport /> <span>{exportProgress !== null ? `Rendering ${Math.round(exportProgress)}%${eta && eta > 0 ? ` • ${fmtEta(eta)} left` : ''}` : 'Export Video'}</span></button>
+                <button className={`action-btn export ${exporting ? 'cancel' : ''}`} onClick={handleExport} disabled={!exporting && ((clips.length === 0 && texts.length === 0) || exportProgress !== null)}
+                  title={exporting ? 'Stop the render. Nothing is written, and any earlier export stays as it was.' : undefined}>
+                  <IconExport /> <span>{exporting ? `Cancel (${Math.round(exportProgress ?? 0)}%${eta && eta > 0 ? `, ${fmtEta(eta)} left` : ''})` : exportProgress !== null ? 'Done' : 'Export Video'}</span>
+                </button>
                 {lastExport && exportProgress === null && (
                   <div className="post-export">
                     <button className="reveal-link" onClick={() => window.ipcRenderer.revealFile(lastExport)}><IcCheck /> Show in folder</button>
