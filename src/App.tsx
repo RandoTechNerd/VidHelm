@@ -173,8 +173,10 @@ const masterVolumeHint = (audio: AppSettings['audio'], masterVolume: number) => 
   const off = Math.abs(mvDb) >= 0.05 ? `${mvDb > 0 ? '+' : '\u2212'}${Math.abs(mvDb).toFixed(1)} dB` : ''
   if (!(masterVolume > 0)) return 'The export will be silent.'
   if (!audio.optimize) return `No loudness target: the mix as it is${off ? `, ${off}` : ''}, under a \u22121 dBTP ceiling.`
+  // at 0 dB the readout below the target picker already says where it lands; only an offset needs saying here
+  if (!off) return ''
   const t = platformTarget(audio.target)
-  return `Export lands at ${lufsText(t.lufs + mvDb)} LUFS${off ? ` (${off} from the ${lufsText(t.lufs)} target)` : ''}.`
+  return `Export lands at ${lufsText(t.lufs + mvDb)} LUFS (${off} from the ${lufsText(t.lufs)} target).`
 }
 
 /**
@@ -4397,11 +4399,11 @@ function Editor() {
                 </div>
                 <div className="field"><label htmlFor="master-vol"><IconVolume /> Master volume <span className="prop-val">{dbLabel(masterVolume)}</span></label>
                   <DbSlider id="master-vol" value={masterVolume} onChange={setMasterVolume} title="Moves the whole export up or down from the target. Double-click for 0 dB" />
-                  <p className="hint">{masterVolumeHint(settings.audio, masterVolume)}</p>
+                  {(() => { const h = masterVolumeHint(settings.audio, masterVolume); return h ? <p className="hint">{h}</p> : null })()}
                 </div>
-                {/* one label per switch: the whole row is the click target, exactly once */}
-                <div className="field"><label className="toggle-row"><input type="checkbox" className="toggle" checked={settings.audio.optimize} onChange={e => setSettings(s => ({ ...s, audio: { ...s.audio, optimize: e.target.checked } }))} /><span>Optimize loudness</span>
-                  {settings.audio.optimize && <span className="toggle-meta">{platformTarget(settings.audio.target).lufs} LUFS</span>}</label></div>
+                {/* one label per switch: the whole row is the click target, exactly once. The target
+                    itself is named once, in the picker below, not repeated beside the switch. */}
+                <div className="field"><label className="toggle-row"><input type="checkbox" className="toggle" checked={settings.audio.optimize} onChange={e => setSettings(s => ({ ...s, audio: { ...s.audio, optimize: e.target.checked } }))} /><span>Optimize loudness</span></label></div>
                 {settings.audio.optimize && (
                   <div className="field"><label htmlFor="loud-target">Loudness target</label>
                     <select id="loud-target" value={platformTarget(settings.audio.target).id} onChange={e => setSettings(s => ({ ...s, audio: { ...s.audio, target: e.target.value } }))}>
