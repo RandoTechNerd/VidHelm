@@ -641,6 +641,26 @@ function fadeFactor(c: { start: number; duration: number; fadeIn: number; fadeOu
   return clamp(o, 0, 1)
 }
 
+/** A title's face and size at an export frame `H` px high, as a CSS font (what drawtext is given). */
+const titleFontCss = (t: TextClip, H: number) => {
+  const fi = t.font ? THEME_FONTS[t.font] : undefined
+  return `${fi?.bold ? 700 : 400} ${Math.max(8, Math.round(t.fontSize / 1080 * H))}px '${fi ? fi.family : TITLE_FONT.family}'`
+}
+const titleCanvas = typeof document !== 'undefined' ? document.createElement('canvas').getContext('2d') : null
+/**
+ * A title's lines in a W x H export: wrapText at 92% of the frame less the box's side padding, measured
+ * in the title's own face. The export burns exactly these lines and the preview shows exactly these
+ * lines, so the two break in the same places and a boxed title's bar hugs the same widest line (the
+ * preview wrapping by itself drew the bar the full 92% wide, and broke at hyphens the export did not).
+ */
+const titleLines = (t: TextClip, W: number, H: number): string => {
+  if (!titleCanvas) return t.text
+  const px = Math.max(8, Math.round(t.fontSize / 1080 * H))
+  titleCanvas.font = titleFontCss(t, H)
+  const room = W * WRAP_WIDTH - (t.box ? 2 * px * BOX_PAD.x : 0)
+  return wrapText(t.text, room, s => titleCanvas.measureText(s).width)
+}
+
 // The audio side (gainAt, audioFadeFactor: the clip's volume line and its de-pop ramps, exactly as
 // the export's clip chain applies them) lives in src/previewAudio.ts with the rest of the preview mix.
 
@@ -2666,24 +2686,40 @@ function Editor() {
         role: media?.audio?.role, voiceFix: fixOf(media) }
     })
 
-  // A title wraps in the preview at 92% of the frame; drawtext has no wrapping of its own, so a title
-  // that took two lines on screen ran off both edges of the video. Each one gets the preview's line
-  // breaks, measured in its own face at the export's size. Captions are laid out by their theme.
+  // A title wraps at 92% of the frame; drawtext has no wrapping of its own, so a title that took two
+  // lines on screen ran off both edges of the video. Each one gets its line breaks from titleLines,
+  // measured in its own face at the export's size: the same lines the preview shows. Captions are
+  // laid out by their theme.
   const exportTexts = async (W: number, H: number): Promise<TextClip[]> => {
-    const ctx = document.createElement('canvas').getContext('2d')
-    if (!ctx) return texts
     const out: TextClip[] = []
     for (const t of texts) {
       if (t.caption) { out.push(t); continue }
-      const fi = t.font ? THEME_FONTS[t.font] : undefined
-      const px = Math.max(8, Math.round(t.fontSize / 1080 * H))
-      const font = `${fi?.bold ? 700 : 400} ${px}px '${fi ? fi.family : TITLE_FONT.family}'`
-      try { await document.fonts.load(font) } catch { /* measured in the fallback face: still close */ }
-      ctx.font = font
-      const room = W * WRAP_WIDTH - (t.box ? 2 * px * BOX_PAD.x : 0)
-      out.push({ ...t, text: wrapText(t.text, room, s => ctx.measureText(s).width) })
+      try { await document.fonts.load(titleFontCss(t, H)) } catch { /* measured in the fallback face: still close */ }
+      out.push({ ...t, text: titleLines(t, W, H) })
     }
     return out
+  }
+  // The preview's titles, broken by the same call at the export's frame size (lines are proportional,
+  // so they hold at any preview size). Measured again once the faces have loaded.
+  const [fontsTick, setFontsTick] = useState(0)
+  useEffect(() => {
+    if (!document.fonts) return
+    let alive = true
+    const bump = () => { if (alive) setFontsTick(n => n + 1) }
+    document.fonts.addEventListener('loadingdone', bump)
+    void document.fonts.ready.then(bump)
+    return () => { alive = false; document.fonts.removeEventListener('loadingdone', bump) }
+  }, [])
+  const previewLineCache = useMemo(() => new Map<string, string>(), [fontsTick, w, h])   // eslint-disable-line react-hooks/exhaustive-deps
+  const previewLines = (t: TextClip) => {
+    const k = [t.text, t.font ?? '', t.fontSize, t.box ? 1 : 0].join('\u0001')
+    let v = previewLineCache.get(k)
+    if (v === undefined) {
+      if (previewLineCache.size > 400) previewLineCache.clear()
+      v = titleLines(t, w, h)
+      previewLineCache.set(k, v)
+    }
+    return v
   }
 
   // The exporter opens the source once per clip, and on a long cut of 4K HEVC HDR that is a lot of
@@ -4252,6 +4288,8 @@ function Editor() {
                   style={{ left: `${t.x * 100}%`, top: `${t.y * 100}%`, fontSize: `${t.fontSize / 1080 * stageH}px`, color: t.color, opacity: fadeFactor(t, currentTime), background: t.box ? boxFill(t) : 'transparent',
                     // the export's drawtext twins (titleDrawtext): square box padded BOX_PAD, a hard shadow under bare text only
                     padding: t.box ? `${BOX_PAD.y}em ${BOX_PAD.x}em` : 0, textShadow: t.box ? 'none' : '0 0.04em 0 rgba(0, 0, 0, 0.6)',
+                    // the export's own line breaks (titleLines), so the box hugs the same widest line; only while typing does it wrap by itself
+                    whiteSpace: editingTextId === t.id ? 'pre-wrap' : 'pre',
                     ...(t.font && THEME_FONTS[t.font] ? { fontFamily: `'${THEME_FONTS[t.font].family}', sans-serif`, fontWeight: THEME_FONTS[t.font].bold ? 700 : 400 } : { fontFamily: `'${TITLE_FONT.family}', sans-serif`, fontWeight: 400 }),
                     ...(t.outline && !t.box ? { WebkitTextStroke: `${(t.outline * 2 * t.fontSize / 1080 * stageH).toFixed(1)}px ${t.outlineColor || '#000'}`, paintOrder: 'stroke fill' } : {}) }}
                   ref={editingTextId === t.id ? editRef : undefined}
@@ -4269,7 +4307,7 @@ function Editor() {
                     if (!(e.ctrlKey || e.metaKey)) e.stopPropagation()
                     if (e.key === 'Escape' || (e.key === 'Enter' && !e.shiftKey)) { e.preventDefault(); endTextEdit() }
                   }}>
-                  {editingTextId === t.id ? undefined : (t.text || ' ')}
+                  {editingTextId === t.id ? undefined : (previewLines(t) || ' ')}
                 </div>
               ))}
               {settings.brand.enabled && settings.brand.logoPath && (() => {
