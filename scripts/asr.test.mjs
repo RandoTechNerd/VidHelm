@@ -217,6 +217,24 @@ const sentence = [W(10, 10.3, 'This'), W(10.3, 10.5, 'is'), W(10.5, 10.8, 'real.
   eq(cleanTranscript(okay, { total: 30, word: true }).kept.length, 1, 'a quick "Okay." stays')
 }
 {
+  // A closing line really said from 120 to 121 s, timed by Whisper to 127 because its end ran on
+  // over what followed. The envelope says somebody spoke, so the long span is not a sign.
+  const talk = [W(100, 104, ' Welcome back to the channel.'), W(105, 110, ' Today we build a thing.'), W(111, 118, ' That is the whole build.')]
+  const thanks = W(120, 127, ' Thanks for watching!')
+  const bed = envelope(130, [[121, 130, SPEECH / 30]], { wobble: false })        // outro music 15 dB under the voice
+  eq(cleanTranscript([...talk, thanks], { total: 130, word: false, env: bed }).kept.length, 4, 'phrase mode: "Thanks for watching!" said, then 6 s of quieter music in its timestamp, stays')
+  const hush = envelope(130, [[121, 130, 1e-9]], { wobble: false })
+  eq(cleanTranscript([...talk, thanks], { total: 130, word: false, env: hush }).kept.length, 4, '...and with silence after it')
+  const said = [W(120, 120.4, 'Thanks'), W(120.4, 120.6, 'for'), W(120.6, 127, 'watching!')]
+  const words = [W(100, 100.5, 'Welcome'), W(100.5, 101, 'back.'), W(105, 105.5, 'Today'), W(105.5, 106, 'we'), W(106, 106.6, 'build.')]
+  eq(cleanTranscript([...words, ...said], { total: 130, word: true, env: bed }).kept.length, 8, 'word mode: the same line with its last word stretched stays')
+  // nobody speaking: the "line" is just the bed all the way through
+  const loudBed = envelope(130, [[119, 130, SPEECH * 0.5]], { wobble: false })   // outro music up, 3 dB under the voice
+  eq(cleanTranscript([...talk, thanks], { total: 130, word: false, env: loudBed }).kept.length, 3, 'a stretched "Thanks for watching!" over a steady loud outro still goes')
+  const quietBed = envelope(130, [[119, 130, SPEECH / 30]], { wobble: false })
+  eq(cleanTranscript([...talk, thanks], { total: 130, word: false, env: quietBed }).kept.length, 3, '...and over a steady quiet one')
+}
+{
   // loudness: speech at -20 dB, a "you" heard in -70 dB silence, a whisper 12 dB down
   const env = envelope(40, [[30, 40, 1e-9]], { wobble: false })
   for (let i = Math.round(15 / ENV_STEP); i < Math.round(16 / ENV_STEP); i++) env[i] = SPEECH / 16

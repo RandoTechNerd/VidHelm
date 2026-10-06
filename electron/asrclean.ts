@@ -13,6 +13,11 @@
 // 3.5 s or more, or it sits 20 dB under the speech around it. Anything 30 dB under the median
 // spoken word, whatever it says, was heard in silence.
 //
+// The stretch is not a sign when the loudness says somebody spoke: Whisper runs the end of a real
+// closing line on over the music or room tone after it ("Thanks for watching!" said in a second,
+// timed [120, 127]), so a span that opens at speaking level and then falls 6 dB or more is a real
+// line with a stretched end. A ghost over a steady outro bed stays level all the way through.
+//
 // No Electron imports, so `npm run test:asr` can exercise it.
 
 import { levelDb, ENV_STEP } from './asrwindows'
@@ -67,6 +72,13 @@ export function cleanTranscript(items: Piece[], opts: CleanOptions): { kept: Pie
   const voiced = inside.filter(it => it.end - it.start >= 0.05).map(it => db(it.start, it.end)).sort((a, b) => a - b)
   const medianDb = env && voiced.length >= 3 ? voiced[Math.floor(voiced.length / 2)] : null
 
+  // speech that stopped: the first second at speaking level, the last 2.5 s 6 dB or more under it
+  const spokeThenStopped = (start: number, end: number) => {
+    if (!env || end - start < 3.5) return false
+    const head = db(start, start + 1)
+    return head - db(end - 2.5, end) >= 6 && (medianDb === null || head >= medianDb - 10)
+  }
+
   const kept: Piece[] = []
   for (const g of groups) {
     const text = plain(g.map(x => x.text).join(' '))
@@ -80,7 +92,7 @@ export function cleanTranscript(items: Piece[], opts: CleanOptions): { kept: Pie
       : g.length >= 2 && g.every(x => x.end - x.start < 0.05) && end - start < 0.05 ? 'every word at one instant'
       : SUSPECT.test(text) && (
           g.every(x => x.end - x.start < 0.05) ? true
-          : words <= 3 && end - start >= 3.5 ? true
+          : words <= 3 && end - start >= 3.5 ? !spokeThenStopped(start, end)
           : medianDb !== null && level < medianDb - 20
         ) ? 'a stock phrase with nobody saying it'
       : ''
