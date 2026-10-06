@@ -198,5 +198,83 @@ console.log('meter')
   ok(Math.abs(20 * Math.log10(H(sh, w) * H(hp, w))) < 0.7, `K-weighting at 1 kHz ${(20 * Math.log10(H(sh, w) * H(hp, w))).toFixed(2)} dB`)
 }
 
+console.log('the WebAudio graph (against a stand-in that enforces the spec\'s automation rules)')
+{
+  // AudioParam's rule that bites: a value curve may not overlap any other scheduled event
+  // (NotSupportedError), so a reschedule that forgot to cancel would throw mid-playback.
+  class Param {
+    constructor(v) { this.value = v; this.events = [] }
+    setValueAtTime(v, t) { this.events.push({ kind: 'set', t, v }); this.value = v; return this }
+    setTargetAtTime(v, t, tau) { this.events.push({ kind: 'target', t, v, tau }); return this }
+    setValueCurveAtTime(curve, t, d) {
+      for (const e of this.events) {
+        const end = e.kind === 'curve' ? e.t + e.d : e.t
+        if ((e.t >= t && e.t < t + d) || (e.kind === 'curve' && t >= e.t && t < end)) throw new Error('NotSupportedError: overlaps an automation event')
+      }
+      this.events.push({ kind: 'curve', t, d, curve }); return this
+    }
+    cancelScheduledValues(t) { this.events = this.events.filter((e) => e.t < t && !(e.kind === 'curve' && e.t + e.d > t)); return this }
+  }
+  const node = (extra = {}) => ({ outs: new Set(), connect(n) { this.outs.add(n); return n }, disconnect() { this.outs.clear() }, ...extra })
+  class FakeCtx {
+    constructor() { this.currentTime = 0; this.sampleRate = 48000; this.state = 'running'; this.destination = node(); this.sources = 0 }
+    createGain() { return node({ gain: new Param(1) }) }
+    createDynamicsCompressor() { return node({ threshold: { value: 0 }, ratio: { value: 0 }, knee: { value: 0 }, attack: { value: 0 }, release: { value: 0 } }) }
+    createChannelSplitter() { return node() }
+    createIIRFilter(ff, fb) { if (fb[0] !== 1 || ff.length !== 3) throw new Error('bad IIR'); return node() }
+    createAnalyser() { return node({ fftSize: 2048, getFloatTimeDomainData(b) { b.fill(0.1) } }) }
+    createMediaElementSource(el) { if (el.captured) throw new Error('InvalidStateError: already connected'); el.captured = true; this.sources++; return node() }
+    resume() { return Promise.resolve() }
+  }
+  globalThis.AudioContext = FakeCtx
+  const mx = new P.PreviewMixer()
+  ok(mx.available, 'the mixer starts')
+  const el = { volume: 0.3 }, el2 = { volume: 1 }
+  ok(mx.attach('a', el, 'music') && el.volume === 1, 'an element is routed, and its own volume goes to 1')
+  ok(mx.attach('a', el, 'voice') && mx.attach('a', el, 'voice'), 'moving it to another bus (a new role) re-routes the same node')
+  mx.detach('a')
+  ok(mx.attach('b', el, 'sfx'), 'an element captured once is routed again after a detach (one source node per element, for ever)')
+  ok(mx.attach('c', el2, 'music'), 'a second element')
+  const ctx = mx.ctx, voiceBus = mx.buses.voice, musicBus = mx.buses.music
+  mx.setClipGain('c', 0.5); mx.setClipGain('c', 0.5)
+  ok(mx.clips.get('c').gain.gain.events.filter((e) => e.kind === 'target').length === 1, 'a per-frame gain that has not changed schedules nothing')
+  const traps = A.duckTraps([[2, 5], [9, 12]], A.DUCK)
+  let threw = null
+  try {
+    mx.scheduleDucks({ music: traps, sfx: [] }, 0, true)
+    const first = musicBus.gain.events.filter((e) => e.kind === 'curve').length
+    ok(first === 1, 'playing: one duck curve on the music bus')
+    ctx.currentTime += 0.5
+    mx.scheduleDucks({ music: traps, sfx: [] }, 0.5, true)
+    ok(musicBus.gain.events.filter((e) => e.kind === 'curve').length === 1, 'the clock moving on as planned schedules nothing new')
+    ctx.currentTime += 0.1
+    mx.scheduleDucks({ music: traps, sfx: [] }, 7, true)
+    const cur = musicBus.gain.events.filter((e) => e.kind === 'curve')
+    ok(cur.length === 1 && Math.abs(cur[0].t - (ctx.currentTime + 0.02)) < 1e-9, 'a jump of the playhead replaces the curve (cancelled first, so it never overlaps)')
+    const curveNow = () => musicBus.gain.events.find((e) => e.kind === 'curve')
+    const before = curveNow()
+    const moved = A.duckTraps([[3, 6], [9, 12]], A.DUCK)
+    mx.scheduleDucks({ music: moved, sfx: [] }, 7.01, true)
+    ok(musicBus.gain.events.filter((e) => e.kind === 'curve').length === 1 && curveNow() !== before, 'an edit to the speech replaces it too')
+    const edited = curveNow()
+    ctx.currentTime += 24.9
+    mx.scheduleDucks({ music: moved, sfx: [] }, 31.92, true)
+    ok(curveNow() === edited, 'with more than 5 s of curve left it is kept')
+    ctx.currentTime += 0.2
+    mx.scheduleDucks({ music: moved, sfx: [] }, 32.12, true)
+    ok(musicBus.gain.events.filter((e) => e.kind === 'curve').length === 1 && curveNow() !== edited, 'renewed before the window runs out')
+    mx.scheduleDucks({ music: moved, sfx: [] }, 10, false)
+    ok(!musicBus.gain.events.some((e) => e.kind === 'curve') && Math.abs(db(musicBus.gain.value) + 10) < 1e-6, 'paused: no curve, the gain held at the duck\'s value (-10 dB inside speech)')
+    mx.scheduleDucks({ music: [], sfx: [] }, 10, true)
+    ok(Math.abs(musicBus.gain.value - 1) < 1e-9, 'Duck off while playing: back to unity')
+  } catch (e) { threw = e }
+  ok(!threw, `no automation call threw${threw ? `: ${threw.message}` : ''}`)
+  ok(voiceBus.gain.events.length === 0, 'the voice bus is never ducked')
+  ok(Math.abs(mx.momentary() - (-0.691 + 10 * Math.log10(0.02))) < 1e-6, 'the meter reads both sides of the master')
+  delete globalThis.AudioContext
+  const none = new P.PreviewMixer()
+  ok(!none.available && none.attach('x', { volume: 0.5 }, 'voice') === false && none.momentary() === null, 'no WebAudio: the caller is told to keep el.volume')
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)
