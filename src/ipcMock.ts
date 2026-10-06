@@ -24,6 +24,7 @@ export function installIpcMock() {
     loadProject: async () => null,
     revealFile: async () => {},
     makeThumbnails: async () => ({ error: 'mock' }),
+    audioPeaks: async () => ({ error: 'Waveforms need the desktop app' }),
     getSettings: async () => null,
     setSettings: async () => true,
     pickLogo: async () => null,

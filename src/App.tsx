@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, Component, type ReactNode } from 'react'
+import { useState, useRef, useEffect, useCallback, useMemo, Component, type ReactNode } from 'react'
 import './App.css'
 import { VidHelmMark, IcSave, IcOpen, IcCloud, IcRecipe, IcCube, IcSparkle, IcBot, IcSun, IcMoon, IcHelp, IcRefresh, IcFolder, IcPlus, IcBooth, IcVoice, IcCut, IcList, IcCheck, IcEye, IcChat, IcMissing, IcGear, IcClose, IcImport } from './icons'
 // The editor's controls under the names their call sites have always used; they are the shared
@@ -29,6 +29,9 @@ import { looksLikeThumbPhoto } from '../electron/thumbpick'
 import { resolveProfile, describeProfile, type PerfProfile, type Tier, type TierPreference } from '../electron/capability'
 import { shortcutFor, focusKind, stepTime, type Shortcut } from '../electron/shortcuts'
 import { DEPOP, splitClip, removeRange, planPauseCuts, rescaleAutomation, slideVolume, type VolumeSlide } from '../electron/edit'
+import { tickStepFor, contentWidth, collectSnapTargets, nearestTarget, snapMove, trimTo, clampToSource, maxDurationFrom, footageLength, moveReadout, trimReadout, stripTiles, stripFits, shiftWords, offSpeechNote, timecode, followScroll, type TimecodeMode } from '../electron/timeline'
+import { TimeRuler } from './ruler'
+import { ClipWave, type Peaks } from './clipwave'
 
 interface MediaFile {
   id: string
@@ -52,6 +55,7 @@ interface MediaFile {
   fps?: number         // the source's own frame rate (a 30 fps copy of 30 fps footage loses nothing)
   relPath?: string     // where it sat inside the project folder when saved, so a moved folder relinks
   offline?: boolean    // the file is not where the project says and nothing matched: relink or remove it
+  durationGuess?: boolean   // duration is a stand-in (a cloud clip with no length yet): no trim wall until a probe measures it
 }
 
 interface TimelineClip {
@@ -314,6 +318,11 @@ const frameDims = (o: OrientationKey, r: ResolutionKey): [number, number] => ORI
 // render) dropped UNDER the next cut in the render while the preview showed it on top.
 const TRACK_LAYER: Record<string, number> = { v1: 0, v2: 1, a1: 2, a2: 3 }
 const layerOrder = <T extends { trackId: string }>(list: T[]): T[] => [...list].sort((a, b) => TRACK_LAYER[a.trackId] - TRACK_LAYER[b.trackId])
+// A drag edge snaps to anything within this many screen pixels (Alt drags freely)
+const SNAP_PX = 8
+// Clip heights on the picture rows (.track height minus the clip's 3px inset each side in App.css):
+// filmstrip frames are sized to these so they keep their 16:9 shape.
+const STRIP_TILE_H: Record<string, number> = { v1: 46, v2: 34 }
 
 // Inline volume-automation editor: draggable line of gain points over a clip's duration.
 function VolumeGraph({ points, duration, base, onChange }: { points: { t: number; v: number }[]; duration: number; base: number; onChange: (pts: { t: number; v: number }[]) => void }) {
@@ -364,7 +373,8 @@ const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v
 const fileUrl = (p?: string | null) => p
   ? 'file:///' + p.replace(/\\/g, '/').split('/').map((seg, i) => i === 0 ? seg : encodeURIComponent(seg)).join('/')
   : ''
-const fmt = (s: number) => `${Math.floor(s / 60)}:${Math.floor(s % 60).toString().padStart(2, '0')}.${Math.floor((s % 1) * 10)}`
+// m:ss.t, counted in whole tenths (electron/timeline.ts): (2.3 % 1) * 10 floors to 2 in floating point
+const fmt = (s: number) => timecode(s, 'tenths')
 const fmtEta = (s: number) => s >= 60 ? `${Math.floor(s / 60)}:${Math.floor(s % 60).toString().padStart(2, '0')}` : `${Math.ceil(s)}s`
 
 /** One bin entry from an ffprobe result. Every way media comes in goes through here, so none of
@@ -641,8 +651,12 @@ function Editor() {
   const [showQC, setShowQC] = useState(false)
   const [captioning, setCaptioning] = useState<string | null>(null) // status text while transcribing
   const [captionPct, setCaptionPct] = useState<number | null>(null)
-  const [thumbs, setThumbs] = useState<Record<string, { sig: string; path: string }>>({})
-  const thumbsRef = useRef<Record<string, { sig: string; path: string }>>({})
+  const [thumbs, setThumbs] = useState<Record<string, { sig: string; n: number; path: string }>>({})
+  const thumbsRef = useRef<Record<string, { sig: string; n: number; path: string }>>({})
+  // Waveform peaks per bin item, with the file they were read from (a relinked item reads again)
+  const [peaks, setPeaks] = useState<Record<string, Peaks & { path: string }>>({})
+  const peaksAsked = useRef(new Set<string>())
+  const peaksQueue = useRef<Promise<void>>(Promise.resolve())
   const [collapsed, setCollapsed] = useState<{ text: boolean; video: boolean; broll: boolean; audio: boolean; sfx: boolean }>({ text: false, video: false, broll: false, audio: false, sfx: false })
   const [markers, setMarkers] = useState<Marker[]>([])
   const [showBooth, setShowBooth] = useState(false)
@@ -694,12 +708,31 @@ function Editor() {
   const [isRecording, setIsRecording] = useState(false)
 
   const timelineRef = useRef<HTMLDivElement>(null)
+  const [tlView, setTlView] = useState({ w: 1200, h: 300 })
+  // The playhead clock in tenths (m:ss.t) or frames (m:ss:ff); a click on it switches, and the
+  // choice is this machine's, like the UI theme
+  const [tcMode, setTcMode] = useState<TimecodeMode>(() => { try { return localStorage.getItem('vh-timecode') === 'frames' ? 'frames' : 'tenths' } catch { return 'tenths' } })
+  useEffect(() => { try { localStorage.setItem('vh-timecode', tcMode) } catch { /* private storage */ } }, [tcMode])
+  // When the user last scrolled the timeline themselves, and where the follow last put it (so its
+  // own scroll is not mistaken for theirs)
+  const userScrollAt = useRef(0)
+  const autoScrollTo = useRef<number | null>(null)
   const stageRef = useRef<HTMLDivElement>(null)
   const [stageH, setStageH] = useState(400)
   const videoEls = useRef<Map<string, HTMLVideoElement>>(new Map())
   const audioEls = useRef<Map<string, HTMLAudioElement>>(new Map())
   const recorderRef = useRef<{ rec: MediaRecorder; chunks: Blob[]; startTime: number } | null>(null)
   const draggingRef = useRef(false)
+  // What a timeline drag shows while it runs: which item is moving, the snap guide (seconds, null
+  // when nothing snapped) and the time readout that follows the pointer.
+  const [drag, setDrag] = useState<{ id: string; snap: number | null; hud: { x: number; y: number; text: string } } | null>(null)
+  // A trim handle that just hit the end of its footage glows red briefly, so the stop reads as a wall
+  const [limitHit, setLimitHit] = useState<{ id: string; side: 'left' | 'right' } | null>(null)
+  const limitTimer = useRef(0)
+  // Where each dragged caption sat the first time it was grabbed, taken as where its speech is. Any
+  // change to the clips (a cut, a trim, a move) can shift that speech, so they start over then.
+  const capHeardAt = useRef(new Map<string, number>())
+  useEffect(() => { capHeardAt.current.clear() }, [clips])
   // the current saveProject, for handlers registered once (keyboard, the close-window prompt)
   const saveRef = useRef<(as?: boolean) => Promise<boolean>>(async () => false)
 
@@ -781,6 +814,36 @@ function Editor() {
     ro.observe(stageRef.current)
     return () => ro.disconnect()
   }, [])
+  // The timeline's visible size: the lanes and the ruler are at least this wide, and the ruler's
+  // hover line reaches its bottom. Measured, because reading clientWidth during render is a frame late.
+  useEffect(() => {
+    const el = timelineRef.current
+    if (!el) return
+    const ro = new ResizeObserver(() => setTlView(v => (v.w === el.clientWidth && v.h === el.clientHeight ? v : { w: el.clientWidth, h: el.clientHeight })))
+    ro.observe(el)
+    // a wheel, or a scroll that is not the follow's own, hands the view to the user for a moment
+    const onWheel = () => { userScrollAt.current = performance.now() }
+    const onScroll = () => {
+      if (autoScrollTo.current !== null && Math.abs(el.scrollLeft - autoScrollTo.current) <= 1) { autoScrollTo.current = null; return }
+      userScrollAt.current = performance.now()
+    }
+    el.addEventListener('wheel', onWheel, { passive: true })
+    el.addEventListener('scroll', onScroll, { passive: true })
+    return () => { ro.disconnect(); el.removeEventListener('wheel', onWheel); el.removeEventListener('scroll', onScroll) }
+  }, [])
+
+  // The playhead stays on screen while it plays: at any zoom but Fit it used to run off the right
+  // edge seconds after Space. The view pages along, and holds off for 1.5 s after the user scrolls
+  // so it never fights them.
+  useEffect(() => {
+    if (!isPlaying) return
+    const el = timelineRef.current
+    if (!el || performance.now() - userScrollAt.current < 1500) return
+    const next = followScroll(currentTime * pxPerSec, el.scrollLeft, el.clientWidth)
+    if (next === null) return
+    el.scrollLeft = next
+    autoScrollTo.current = el.scrollLeft   // read back: the browser clamps past the end
+  }, [currentTime, isPlaying, pxPerSec])
 
   // Playback clock
   useEffect(() => {
@@ -982,23 +1045,41 @@ function Editor() {
         // While a proxy is building, pulling frames from the 4K HEVC original would queue a dozen
         // slow ffmpeg jobs behind it. Wait: the strip regenerates from the proxy once it lands.
         if (media.proxyPct !== undefined) return
-        // The strip is stretched across the clip, so a fixed eight frames turn into billboards
-        // once you zoom in. Ask for roughly one frame per 110px of clip instead, bucketed so a
-        // nudge of the zoom slider does not re-render every filmstrip.
+        // The strip is stretched across the clip, so the frame count decides each frame's shape.
+        // Ask for as many 16:9 frames as fit the clip's row height (b-roll is shorter), and keep a
+        // strip through a zoom step until stretching it would visibly distort it (stripFits).
         const widthPx = c.duration * pxPerSec
-        const count = clamp(Math.round(widthPx / 110), 6, 120)
-        const bucket = Math.round(count / 4)
-        const sig = `${Math.round(c.sourceStart * 2)}:${Math.round(c.duration * 2)}:${bucket}:${media.proxyPath ? 'p' : 'o'}`
-        if (thumbsRef.current[c.id]?.sig === sig) return
+        const tileH = STRIP_TILE_H[c.trackId] ?? STRIP_TILE_H.v1
+        const sig = `${Math.round(c.sourceStart * 2)}:${Math.round(c.duration * 2)}:${media.proxyPath ? 'p' : 'o'}`
+        const have = thumbsRef.current[c.id]
+        if (have?.sig === sig && stripFits(have.n, widthPx, tileH)) return
+        const n = stripTiles(widthPx, tileH)
         // the proxy is small and h264: far quicker to pull frames from than a 4K HEVC original
-        const r = await window.ipcRenderer.makeThumbnails({ filePath: media.proxyPath || media.path, sourceStart: c.sourceStart, duration: c.duration, count: bucket * 4 || 8 })
+        const r = await window.ipcRenderer.makeThumbnails({ filePath: media.proxyPath || media.path, sourceStart: c.sourceStart, duration: c.duration, count: n })
         const p = r?.path
-        if (p) setThumbs(prev => ({ ...prev, [c.id]: { sig, path: p } }))
+        if (p) setThumbs(prev => ({ ...prev, [c.id]: { sig, n, path: p } }))
       }
       pump()
     }, 400)
     return () => clearTimeout(handle)
   }, [clips, mediaBin, pxPerSec, perf.thumbnailWorkers])
+
+  // Waveforms for everything with sound that is on the timeline (b-roll's own sound is never used).
+  // One file at a time on a single queue: each is a whole-file decode, cached on disk for good once
+  // done, and the filmstrips and the preview share the machine with it. Media still building its
+  // preview copy waits, so the two big decodes of one file do not run together.
+  useEffect(() => {
+    if (!window.ipcRenderer.audioPeaks) return
+    const want = mediaBin.filter(m => m.hasAudio && !m.offline && m.proxyPct === undefined
+      && !peaksAsked.current.has(`${m.id}|${m.path}`) && clips.some(c => c.mediaId === m.id && c.trackId !== 'v2'))
+    for (const m of want) {
+      peaksAsked.current.add(`${m.id}|${m.path}`)
+      peaksQueue.current = peaksQueue.current.then(async () => {
+        const r = await window.ipcRenderer.audioPeaks(m.path).catch(() => null)
+        if (r?.data && r.rate) { const { rate, data } = r; setPeaks(prev => ({ ...prev, [m.id]: { rate, data, path: m.path } })) }
+      })
+    }
+  }, [clips, mediaBin])
 
   // ---- media import ----
   const importFiles = useCallback(async (files: File[]): Promise<MediaFile[]> => {
@@ -1120,7 +1201,9 @@ function Editor() {
       setTexts(prev => prev.map(t => ({ ...t, start: t.start + dur })))
       setMarkers(prev => prev.map(m => ({ ...m, t: m.t + dur })))   // tags stay on their beats
     } else {
-      setClips(prev => [intro, ...prev])
+      // Later in the list draws on top within a track, in the preview and the export alike
+      // (layerOrder), so an overlay intro goes last: first, it sat UNDER the clip it was meant to cover.
+      setClips(prev => [...prev, intro])
     }
     setSelectedId(intro.id)
     setCurrentTime(0)
@@ -1309,7 +1392,12 @@ function Editor() {
         if (cmd.track && !['v1', 'v2', 'a1', 'a2'].includes(cmd.track)) return { error: `track must be v1 (video), v2 (b-roll), a1 (voice/music) or a2 (sfx), not "${cmd.track}"` }
         const trackId = trackFor(media, cmd.track)
         if (cmd.track && trackId !== cmd.track) return { error: `${media.name} is ${media.type === 'audio' ? 'sound, so it goes on a1 or a2' : 'a picture, so it goes on v1 or v2'}` }
-        const clip: TimelineClip = { id: rid(), mediaId: media.id, type: media.type, trackId, start: cmd.start ?? 0, duration: cmd.duration ?? media.duration, sourceStart: cmd.sourceStart ?? 0, volume: cmd.volume ?? 1, fadeIn: cmd.fadeIn ?? 0, fadeOut: cmd.fadeOut ?? 0 }
+        // without a duration it runs to the end of the file from its in-point, not a whole file's length past it
+        const len = footageLength(media), from = Math.max(0, Number(cmd.sourceStart) || 0)
+        if (len !== undefined && from >= len) return { error: `sourceStart ${from} is past the end of ${media.name} (${len.toFixed(3)} s)` }
+        const dur = cmd.duration ?? (len !== undefined ? len - from : media.duration)
+        if (len !== undefined && from + dur > len + 1e-3) return { error: `${media.name} is ${len.toFixed(3)} s long: from sourceStart ${from} the clip can last at most ${(len - from).toFixed(3)} s` }
+        const clip: TimelineClip = { id: rid(), mediaId: media.id, type: media.type, trackId, start: cmd.start ?? 0, duration: dur, sourceStart: from, volume: cmd.volume ?? 1, fadeIn: cmd.fadeIn ?? 0, fadeOut: cmd.fadeOut ?? 0 }
         setClips(prev => [...prev, clip])
         return { ok: true, clipId: clip.id, track: trackId }
       }
@@ -1319,6 +1407,17 @@ function Editor() {
         if (cmd.trackId !== undefined && !['v1', 'v2', 'a1', 'a2'].includes(cmd.trackId)) return { error: `trackId must be v1, v2, a1 or a2, not "${cmd.trackId}"` }
         const patch: Partial<TimelineClip> = {}
         for (const k of ['start', 'duration', 'sourceStart', 'volume', 'fadeIn', 'fadeOut', 'trackId'] as const) if (cmd[k] !== undefined) (patch as any)[k] = cmd[k]
+        // A trim past the footage froze the preview and rendered black in the export: refused with the
+        // numbers that would fit, rather than quietly changed into something the agent did not ask for
+        if (patch.duration !== undefined || patch.sourceStart !== undefined) {
+          const media = mediaBin.find(m => m.id === cur.mediaId)
+          const next = { ...cur, ...patch }
+          const len = footageLength(media)
+          if (!(Number(next.sourceStart) >= 0)) return { error: `sourceStart must be 0 or more (got ${next.sourceStart})` }
+          if (len !== undefined && next.sourceStart + next.duration > len + 1e-3) {
+            return { error: `${media!.name} is ${len.toFixed(3)} s long: from sourceStart ${(+next.sourceStart).toFixed(3)} the clip can last at most ${maxDurationFrom(next.sourceStart, len).toFixed(3)} s (asked for ${(+next.duration).toFixed(3)})` }
+          }
+        }
         // on a clip with automation the line is what plays, so a new volume moves the whole line
         // (as the Volume slider does); setting only the flat value would change nothing you hear
         setClips(prev => prev.map(c => c.id !== cmd.clipId ? c
@@ -2143,7 +2242,9 @@ function Editor() {
     .map(c => {
       const media = mediaBin.find(m => m.id === c.mediaId)
       const src = exportSource(media, W, H, FPS, quality)
-      return { ...c, path: src.path, hdr: src.hdr, hasVideo: media?.hasVideo, hasAudio: c.trackId === 'v2' ? false : media?.hasAudio, chromaKey: media?.chromaKey }
+      // Only the picture rows draw a picture: a video file on a sound row plays as sound in the
+      // preview, and used to cover the frame in the export alone
+      return { ...c, path: src.path, hdr: src.hdr, hasVideo: (c.trackId === 'v1' || c.trackId === 'v2') && !!media?.hasVideo, hasAudio: c.trackId === 'v2' ? false : media?.hasAudio, chromaKey: media?.chromaKey }
     })
 
   // The exporter opens the source once per clip, and on a long cut of 4K HEVC HDR that is a lot of
@@ -2682,9 +2783,16 @@ function Editor() {
    *  current setting), undo history restarted. Returns the document as it now stands. */
   const applyProjectData = (data: any, bin?: MediaFile[]): DocFields => {
     const arr = <T,>(v: unknown): T[] => Array.isArray(v) ? v as T[] : []
+    const mediaBin = bin ?? arr<MediaFile>(data?.mediaBin)
+    // Projects saved before trims were held inside the footage can carry a negative in-point or a
+    // clip running past its file's end: frozen in the preview, black and silent in the export.
+    // Pulled back in here, once, for every way a project comes in.
+    const lenOf = new Map(mediaBin.map(m => [m.id, footageLength(m)]))
     const doc: DocFields = {
-      mediaBin: bin ?? arr<MediaFile>(data?.mediaBin),
-      clips: arr<TimelineClip>(data?.clips), texts: arr<TextClip>(data?.texts), markers: arr<Marker>(data?.markers),
+      mediaBin,
+      // (a still has no in-point to be wrong about)
+      clips: arr<TimelineClip>(data?.clips).map(c => c && typeof c === 'object' && c.type !== 'image' ? clampToSource(c, lenOf.get(c.mediaId)) : c),
+      texts: arr<TextClip>(data?.texts), markers: arr<Marker>(data?.markers),
       orientation: normOrientation(data?.orientation) ?? orientation,
       resolution: normResolution(data?.resolution) ?? resolution,
       fps: normFps(data?.fps) ?? fps,
@@ -2784,20 +2892,33 @@ function Editor() {
    *  footage that never needed a copy is not probed again on every open. `recheck` names entries
    *  that now point at a different file (relinked), which are always looked at afresh. */
   const backfillMedia = async (items: MediaFile[], recheck: Set<string> | 'all' = new Set()) => {
-    const needs = (m: MediaFile) => recheck === 'all' || recheck.has(m.id) || m.hdr === undefined || m.fps === undefined
+    const needs = (m: MediaFile) => recheck === 'all' || recheck.has(m.id) || m.hdr === undefined || m.fps === undefined || !!m.durationGuess
       || (m.proxyPath ? !(m.proxyWidth && m.proxyHeight && m.proxyFps) : !!m.proxyNote)   // proxyNote without a copy: it was needed (lost, or the build failed)
-    const vids = items.filter(m => m.type === 'video' && !m.offline && needs(m))
-    if (!vids.length) return
+    // sound is only looked at for a stand-in length; everything else here is about pictures
+    const look = items.filter(m => !m.offline && (m.type === 'video' ? needs(m) : m.type === 'audio' && !!m.durationGuess))
+    if (!look.length) return
     const probes = new Map<string, Probe>()
     const fill: Record<string, Partial<MediaFile>> = {}
-    for (const m of vids) {
+    const measured = new Map<string, number>()   // stand-in lengths replaced by the file's own
+    for (const m of look) {
       const meta = await window.ipcRenderer.getMetadata(m.path).catch(() => null)
       if (!meta || meta.ok === false) continue
       probes.set(m.id, meta as Probe)
-      fill[m.id] = { hdr: isHdr({ colorTransfer: meta.colorTransfer }), ...(meta.fps ? { fps: meta.fps } : {}) }
+      const len = m.durationGuess && Number(meta.duration) > 0 ? Number(meta.duration) : 0
+      if (len) measured.set(m.id, len)
+      fill[m.id] = {
+        ...(m.type === 'video' ? { hdr: isHdr({ colorTransfer: meta.colorTransfer }), ...(meta.fps ? { fps: meta.fps } : {}) } : {}),
+        ...(len ? { duration: len, durationGuess: undefined } : {}),
+      }
     }
     if (Object.keys(fill).length) setMediaBin(prev => prev.map(x => fill[x.id] ? { ...x, ...fill[x.id] } : x))
-    await ensureProxies(vids.filter(m => probes.has(m.id)), probes)
+    // The open skipped the pull-back inside the footage for these (a guess is not an edge); now the
+    // edge is real, the same clamp applies. A save would change, so the project reads as unsaved.
+    if (measured.size) setClips(prev => {
+      const next = prev.map(c => c.type !== 'image' && measured.has(c.mediaId) ? clampToSource(c, measured.get(c.mediaId)) : c)
+      return next.some((c, i) => c !== prev[i]) ? next : prev
+    })
+    await ensureProxies(look.filter(m => m.type === 'video' && probes.has(m.id)), probes)
   }
 
   const refreshProjects = async (root: string | null) => {
@@ -3164,50 +3285,104 @@ function Editor() {
   }, [])   // eslint-disable-line react-hooks/exhaustive-deps
 
   // ---- generic drags on timeline ----
-  const startClipMove = (e: React.MouseEvent, clip: TimelineClip) => {
+  // Where a dragged edge may snap: 0, the playhead, tag points, and both edges of every other clip
+  // and text on every row. Taken once when the drag starts, so it cannot snap to itself.
+  const snapTargetsFor = (excludeId: string) =>
+    collectSnapTargets([...clips, ...texts], excludeId, [0, currentTime, ...markers.map(mk => mk.t)])
+  const flashLimit = (id: string, side: 'left' | 'right') => {
+    setLimitHit({ id, side })
+    clearTimeout(limitTimer.current)
+    limitTimer.current = window.setTimeout(() => setLimitHit(null), 300)
+  }
+  /** Mouse listeners for one drag; `done` runs on release. */
+  const trackDrag = (move: (m: MouseEvent) => void, done?: () => void) => {
+    const up = () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); setDrag(null); done?.() }
+    window.addEventListener('mousemove', move); window.addEventListener('mouseup', up)
+  }
+
+  // Move a clip or a title/caption along the timeline. Nothing moves until the pointer has gone a
+  // few pixels, so a plain click selects, a double-click on text still opens typing, and snapping
+  // cannot hop an item onto the playhead from a click.
+  const startMove = (e: React.MouseEvent, kind: 'clip' | 'text', id: string) => {
+    if (e.button !== 0) return
     e.stopPropagation()
-    setSelectedId(clip.id)
+    setSelectedId(id)
+    const clip = kind === 'clip' ? clips.find(c => c.id === id) : undefined
+    const text = kind === 'text' ? texts.find(t => t.id === id) : undefined
+    const it = clip ?? text
+    if (!it) return
     const startX = e.clientX
-    const origStart = clip.start
+    const origStart = it.start
     draggingRef.current = false
-    // Up or down moves it between the rows it may live on: picture between video and b-roll,
-    // sound between voice/music and SFX. The row under the pointer says which.
-    const isAudio = clip.type === 'audio'
-    let track = clip.trackId
+    // Up or down moves a clip between the rows it may live on: picture between video and b-roll,
+    // sound between voice/music and SFX. The row under the pointer says which. Text has one row.
+    const isAudio = clip?.type === 'audio'
+    let track = clip?.trackId
+    const targets = snapTargetsFor(id)
+    // a caption carries its words with it, so moving it takes them off the speech they were heard
+    // at; the readout says by how much, from where it sat the first time it was grabbed
+    if (text?.caption && !capHeardAt.current.has(id)) capHeardAt.current.set(id, text.start)
+    const heardAt = text?.caption ? capHeardAt.current.get(id) : null
     const rowAt = (m: MouseEvent) => (document.elementFromPoint(m.clientX, m.clientY) as HTMLElement | null)?.closest('[data-track]')?.getAttribute('data-track') as TimelineClip['trackId'] | undefined
     const move = (m: MouseEvent) => {
       const dx = m.clientX - startX
       if (Math.abs(dx) > 3) draggingRef.current = true
-      const row = rowAt(m)
+      const row = clip ? rowAt(m) : undefined
       if (row && row !== track && (isAudio ? row === 'a1' || row === 'a2' : row === 'v1' || row === 'v2')) { track = row; draggingRef.current = true }
-      const others = clips.filter(c => c.trackId === track && c.id !== clip.id)
-      let ns = Math.max(0, origStart + dx / pxPerSec)
-      // snap to 0, playhead, tag points and neighbour edges
-      const snaps = [0, currentTime, ...markers.map(mk => mk.t), ...others.flatMap(o => [o.start, o.start + o.duration])]
-      for (const s of snaps) { if (Math.abs(ns - s) < 6 / pxPerSec) { ns = s; break } }
-      setClips(prev => prev.map(c => c.id === clip.id ? { ...c, start: ns, trackId: track } : c))
+      if (!draggingRef.current) return
+      // either edge snaps (Alt drags freely); the guide shows which time it caught
+      const r = m.altKey ? { start: Math.max(0, origStart + dx / pxPerSec), line: null } : snapMove(origStart + dx / pxPerSec, it.duration, targets, SNAP_PX / pxPerSec)
+      if (clip) setClips(prev => prev.map(c => c.id === id ? { ...c, start: r.start, trackId: track ?? c.trackId } : c))
+      else setTexts(prev => prev.map(t => t.id === id ? { ...t, start: r.start } : t))
+      const note = offSpeechNote(r.start, heardAt)
+      setDrag({ id, snap: r.line, hud: { x: m.clientX, y: m.clientY, text: moveReadout(r.start, origStart) + (note ? ' · ' + note : '') } })
     }
-    const up = () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); setTimeout(() => { draggingRef.current = false }, 0) }
-    window.addEventListener('mousemove', move); window.addEventListener('mouseup', up)
+    trackDrag(move, () => setTimeout(() => { draggingRef.current = false }, 0))
   }
 
-  const startTrim = (e: React.MouseEvent, clip: TimelineClip, side: 'left' | 'right') => {
+  // Drag one edge of a clip or a title/caption. Footage stops at the ends of its file; stills,
+  // titles and captions have no such edge.
+  const startTrim = (e: React.MouseEvent, kind: 'clip' | 'text', id: string, side: 'left' | 'right') => {
+    if (e.button !== 0) return
     e.stopPropagation()
+    setSelectedId(id)
+    const clip = kind === 'clip' ? clips.find(c => c.id === id) : undefined
+    const text = kind === 'text' ? texts.find(t => t.id === id) : undefined
+    const o = clip ?? text
+    if (!o) return
     const startX = e.clientX
-    const o = { ...clip }
+    const media = clip ? mediaBin.find(m => m.id === clip.mediaId) : undefined
+    const opts = clip
+      ? { hasSource: media?.type !== 'image', sourceDuration: footageLength(media), minDuration: 0.3 }
+      : { hasSource: false, minDuration: 0.2 }
+    const targets = snapTargetsFor(id)
+    const edge0 = side === 'left' ? o.start : o.start + o.duration
+    let live = false
+    let lastStart = o.start
+    draggingRef.current = false
     const move = (m: MouseEvent) => {
-      const dt = (m.clientX - startX) / pxPerSec
-      setClips(prev => prev.map(c => {
-        if (c.id !== clip.id) return c
-        if (side === 'left') {
-          const newStart = Math.max(0, Math.min(o.start + dt, o.start + o.duration - 0.3))
-          return { ...c, start: newStart, duration: o.duration - (newStart - o.start), sourceStart: o.sourceStart + (newStart - o.start) }
-        }
-        return { ...c, duration: Math.max(0.3, o.duration + dt) }
-      }))
+      // the same small dead zone as a move, so pressing a handle cannot snap its edge somewhere
+      if (!live && Math.abs(m.clientX - startX) <= 2) return
+      // a wall or a snap stops the edge short of the pointer, so the release lands on empty lane
+      // and its click would seek there and drop the selection: flagged as a drag, like a move
+      live = true; draggingRef.current = true
+      const raw = edge0 + (m.clientX - startX) / pxPerSec
+      const caught = m.altKey ? null : nearestTarget(raw, targets, SNAP_PX / pxPerSec)
+      const r = trimTo(o, side, caught ?? raw, opts)
+      const edge = side === 'left' ? r.start : r.start + r.duration
+      lastStart = r.start
+      if (clip) setClips(prev => prev.map(c => c.id === id ? { ...c, start: r.start, duration: r.duration, sourceStart: r.sourceStart } : c))
+      // a caption's words keep their spoken times when its start moves (they count from the start)
+      else setTexts(prev => prev.map(t => t.id === id ? { ...t, start: r.start, duration: r.duration, ...(text!.caption ? { caption: { ...text!.caption, words: shiftWords(text!.caption.words, r.start - text!.start) } } : {}) } : t))
+      // the guide only when the edge really sits on the target (a wall may have stopped it short)
+      setDrag({ id, snap: caught !== null && Math.abs(edge - caught) < 1e-6 ? caught : null, hud: { x: m.clientX, y: m.clientY, text: trimReadout(r.duration, o.duration, r.limit) } })
+      if (r.limit) flashLimit(id, side)
     }
-    const up = () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up) }
-    window.addEventListener('mousemove', move); window.addEventListener('mouseup', up)
+    // a trimmed caption is as far off its speech as before: its first-grab position moves with the start
+    trackDrag(move, () => {
+      const h = capHeardAt.current.get(id); if (h !== undefined) capHeardAt.current.set(id, h + (lastStart - o.start))
+      setTimeout(() => { draggingRef.current = false }, 0)
+    })
   }
 
   const startResizeTimeline = (e: React.MouseEvent) => {
@@ -3235,6 +3410,10 @@ function Editor() {
   }
 
   const onTimelineClick = (e: React.MouseEvent) => {
+    // A press on a clip selects it on mousedown; the click that follows bubbles up to here, and used
+    // to clear that selection again straight away (so Split never lit up from a click). Clicks on a
+    // clip, a row label or a tag belong to them: only empty lane space seeks and deselects.
+    if ((e.target as HTMLElement).closest('.clip, .track-label, .marker-flag')) return
     if (draggingRef.current || scrubbing) return
     setCurrentTime(timeAtClientX(e.clientX))
     setSelectedId(null)
@@ -3266,6 +3445,16 @@ function Editor() {
     setScrubbing(false)
   }
   const scrubHandlers = { onPointerDown: startScrub, onPointerMove: moveScrub, onPointerUp: endScrub, onPointerCancel: endScrub }
+  // The same handlers with a fixed identity for the memoised ruler, which would otherwise redraw
+  // every tick on every playback frame. They call through to this render's versions.
+  const scrubLive = useRef(scrubHandlers)
+  scrubLive.current = scrubHandlers
+  const rulerHandlers = useMemo(() => ({
+    onPointerDown: (e: React.PointerEvent<HTMLDivElement>) => scrubLive.current.onPointerDown(e),
+    onPointerMove: (e: React.PointerEvent<HTMLDivElement>) => scrubLive.current.onPointerMove(e),
+    onPointerUp: (e: React.PointerEvent<HTMLDivElement>) => scrubLive.current.onPointerUp(e),
+    onPointerCancel: (e: React.PointerEvent<HTMLDivElement>) => scrubLive.current.onPointerCancel(e),
+  }), [])
 
   const patchClip = (patch: Partial<TimelineClip>) => setClips(prev => prev.map(c => c.id === selectedId ? { ...c, ...patch } : c))
   const patchText = (patch: Partial<TextClip>) => setTexts(prev => prev.map(t => t.id === selectedId ? patchTextClip(t, patch) : t))
@@ -3295,16 +3484,13 @@ function Editor() {
   }
 
   // ---- render ----
-  // Pick a tick spacing that leaves room for its own label, otherwise zooming out prints every
-  // five seconds on top of itself. Steps climb through the units people actually think in.
-  const TICK_STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600]
-  const tickStep = TICK_STEPS.find(step => step * pxPerSec >= 58) ?? TICK_STEPS[TICK_STEPS.length - 1]
-  // seconds while they fit, m:ss once a tick is a minute or more
-  const tickLabel = (s: number) => s < 60 ? `${s}s` : `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, '0')}`
-  const rulerTicks = []
-  for (let s = 0; s <= Math.ceil(totalDuration) + tickStep; s += tickStep) {
-    rulerTicks.push(<div key={s} className={`tick ${tickStep >= 60 && s % (tickStep * 2) === 0 ? 'major' : ''}`} style={{ left: s * pxPerSec }}><span>{tickLabel(s)}</span></div>)
-  }
+  // The ruler (src/ruler.tsx) picks a tick spacing that leaves room for its labels; the lanes span
+  // the same width it does, so backgrounds, drops and the scrub area reach past the last clip.
+  const tlWidth = contentWidth(totalDuration, pxPerSec, tlView.w, tickStepFor(pxPerSec))
+  // Whether the Takes panel may re-apply: the whole timeline serialised and compared. It ran on every
+  // render, which is every frame while playing; now only when the document or the scan changes
+  // (takeSnap is only ever set together with one of those).
+  const canReapply = useMemo(() => !!takeSnap.current && takeSnap.current.after === stateKey(), [clips, texts, markers, takes])   // eslint-disable-line react-hooks/exhaustive-deps
 
   const renderClip = (c: TimelineClip) => {
     const media = mediaBin.find(m => m.id === c.mediaId)
@@ -3315,19 +3501,27 @@ function Editor() {
       else if (thumbs[c.id]?.path) bg = `url("${fileUrl(thumbs[c.id].path)}")`
     }
     const lost = !media || media.offline
+    const atLimit = (side: 'left' | 'right') => limitHit?.id === c.id && limitHit.side === side ? ' at-limit' : ''
+    // the waveform: full height on the sound rows, a strip along the bottom of a video clip with
+    // sound; b-roll's sound is never mixed, so it gets none
+    const pk = media && !lost && c.trackId !== 'v2' && peaks[media.id]?.path === media.path ? peaks[media.id] : null
+    const wave = pk ? (c.trackId === 'v1' ? 'under' : 'full') : null
     return (
       <div
         key={c.id}
-        onMouseDown={(e) => startClipMove(e, c)}
-        className={`clip ${c.trackId === 'v2' ? 'b-clip' : c.trackId !== 'v1' ? 'a-clip' : 'v-clip'} ${c.type} ${bg ? 'has-thumb' : ''} ${selectedId === c.id ? 'selected' : ''} ${lost ? 'offline' : ''}`}
+        onMouseDown={(e) => startMove(e, 'clip', c.id)}
+        className={`clip ${c.trackId === 'v2' ? 'b-clip' : c.trackId !== 'v1' ? 'a-clip' : 'v-clip'} ${c.type} ${bg ? 'has-thumb' : ''} ${wave ? 'has-wave' : ''} ${selectedId === c.id ? 'selected' : ''} ${drag?.id === c.id ? 'dragging' : ''} ${lost ? 'offline' : ''}`}
         style={{ left: c.start * pxPerSec, width: c.duration * pxPerSec, backgroundImage: bg, backgroundSize: bgSize, backgroundPosition: 'center', backgroundRepeat: 'no-repeat' }}
         title={!media ? 'Its media was removed from the Media Bin: delete this clip or re-import the file' : media.offline ? `${media.name}: file missing, right-click it in the Media Bin to relink` : media.name}
       >
-        <div className="trim-handle left" onMouseDown={(e) => startTrim(e, c, 'left')} />
+        {pk && wave && <ClipWave peaks={pk} sourceStart={c.sourceStart} duration={c.duration} pxPerSec={pxPerSec} variant={wave} tint={uiTheme}
+          gain={t => gainAt(c, c.start + t) * audioFadeFactor(c, c.start + t)}
+          gainKey={JSON.stringify([c.volume, c.volumePoints ?? null, c.fadeIn, c.fadeOut, c.aFadeIn ?? null, c.aFadeOut ?? null, c.sourceStart > 0])} />}
+        <div className={`trim-handle left${atLimit('left')}`} onMouseDown={(e) => startTrim(e, 'clip', c.id, 'left')} />
         {c.fadeIn > 0 && <div className="fade-tri in" style={{ width: c.fadeIn * pxPerSec }} />}
         <span className="clip-label">{media?.name}</span>
         {c.fadeOut > 0 && <div className="fade-tri out" style={{ width: c.fadeOut * pxPerSec }} />}
-        <div className="trim-handle right" onMouseDown={(e) => startTrim(e, c, 'right')} />
+        <div className={`trim-handle right${atLimit('right')}`} onMouseDown={(e) => startTrim(e, 'clip', c.id, 'right')} />
       </div>
     )
   }
@@ -3635,7 +3829,8 @@ function Editor() {
                     <div><label>Fade In (s)</label><input type="number" step="0.1" min="0" className="duration-input" value={selClip.fadeIn} onChange={e => patchClip({ fadeIn: clamp(parseFloat(e.target.value) || 0, 0, selClip.duration) })} /></div>
                     <div><label>Fade Out (s)</label><input type="number" step="0.1" min="0" className="duration-input" value={selClip.fadeOut} onChange={e => patchClip({ fadeOut: clamp(parseFloat(e.target.value) || 0, 0, selClip.duration) })} /></div>
                   </div>
-                  <div className="field"><label>Duration (s)</label><input type="number" step="0.1" min="0.1" className="duration-input" value={selClip.duration.toFixed(2)} onChange={e => patchClip({ duration: parseFloat(e.target.value) || 0.1 })} /></div>
+                  <div className="field"><label>Duration (s)</label><input type="number" step="0.1" min="0.1" className="duration-input" value={selClip.duration.toFixed(2)}
+                    onChange={e => patchClip({ duration: clamp(parseFloat(e.target.value) || 0.1, 0.1, maxDurationFrom(selClip.sourceStart, footageLength(mediaBin.find(m => m.id === selClip.mediaId)))) })} /></div>
                   <p className="hint">Overlap two video clips and give them fades for a transparent crossfade.</p>
                 </div>
               )}
@@ -3675,7 +3870,9 @@ function Editor() {
                 which also keeps the dropdown clear of the scroll container's clipping. */}
             <div className="tool-group">
             <button className={`tool-btn play ${isPlaying ? 'playing' : ''}`} onClick={() => setIsPlaying(p => !p)} disabled={totalDuration <= 0} title="Play / pause (Space)">{isPlaying ? <IconPause /> : <IconPlay />} {isPlaying ? 'Pause' : 'Play'}</button>
-            <span className="timecode" title="Playhead / total length"><b>{fmt(currentTime)}</b><i>/</i>{fmt(totalDuration)}</span>
+            <span className="timecode" role="button" tabIndex={0} title={`Playhead / total length. Click to show ${tcMode === 'frames' ? 'tenths of a second' : 'frames'}`}
+              onClick={() => setTcMode(m => (m === 'frames' ? 'tenths' : 'frames'))} onKeyDown={e => { if (e.key === 'Enter') setTcMode(m => (m === 'frames' ? 'tenths' : 'frames')) }}>
+              <b>{timecode(currentTime, tcMode, fps)}</b><i>/</i>{timecode(totalDuration, tcMode, fps)}</span>
             <div className="divider" />
             <button className="tool-btn compactable" onClick={undo} disabled={!canUndo} title="Undo (Ctrl+Z)"><IconUndo /> <span className="tb-label">Undo</span></button>
             <button className="tool-btn compactable" onClick={redo} disabled={!canRedo} title="Redo (Ctrl+Shift+Z)"><IconRedo /> <span className="tb-label">Redo</span></button>
@@ -3722,7 +3919,8 @@ function Editor() {
                 setPxPerSec(next)
                 requestAnimationFrame(() => { el.scrollLeft = Math.max(0, tAtCursor * next - (e.clientX - el.getBoundingClientRect().left)) })
               }}>
-              <div className="time-ruler" title="Drag to scrub" {...scrubHandlers}>{rulerTicks}</div>
+              <div className="tl-content" style={{ width: tlWidth }}>
+              <TimeRuler pxPerSec={pxPerSec} widthPx={tlWidth} viewW={tlView.w} viewH={tlView.h} fps={fps} mode={tcMode} scroller={timelineRef} handlers={rulerHandlers} />
               {markers.map(m => (
                 <div key={m.id} className="marker-flag" style={{ left: m.t * pxPerSec, background: m.color }} title={m.label || 'tag point'}
                   onClick={e => { e.stopPropagation(); setCurrentTime(m.t) }}
@@ -3737,18 +3935,22 @@ function Editor() {
                   {m.label && <span className="marker-flag-label">{m.label}</span>}
                 </div>
               ))}
-              <div className="scrubber" style={{ left: currentTime * pxPerSec }}>
+              <div className="scrubber" style={{ transform: `translateX(${currentTime * pxPerSec}px)` }}>
                 <div className="scrubber-grab" title="Drag to scrub" {...scrubHandlers} />
               </div>
+              {drag?.snap != null && <div className="snap-line" style={{ left: drag.snap * pxPerSec }} />}
               <div className="tracks">
                 <button className="track-label" onClick={() => setCollapsed(c => ({ ...c, text: !c.text }))}><IconChevron open={!collapsed.text} /> TEXT</button>
                 {!collapsed.text && (
                   <div className="track text-track">
                     {texts.map(t => (
-                      <div key={t.id} onMouseDown={(e) => { e.stopPropagation(); setSelectedId(t.id) }}
+                      <div key={t.id} onMouseDown={(e) => startMove(e, 'text', t.id)}
                         onDoubleClick={(e) => { e.stopPropagation(); setCurrentTime(t.start + Math.min(0.2, t.duration / 2)); startTextEdit(t.id) }}
-                        className={`clip text-clip ${selectedId === t.id ? 'selected' : ''}`} style={{ left: t.start * pxPerSec, width: t.duration * pxPerSec }} title={`${t.text}  (double-click to type)`}>
+                        className={`clip text-clip ${selectedId === t.id ? 'selected' : ''} ${drag?.id === t.id ? 'dragging' : ''}`} style={{ left: t.start * pxPerSec, width: t.duration * pxPerSec }}
+                        title={`${t.text}\nDrag to move, drag an edge to trim, double-click to type`}>
+                        <div className="trim-handle left" onMouseDown={(e) => startTrim(e, 'text', t.id, 'left')} />
                         <span className="clip-label"><IconText /> {t.text}</span>
+                        <div className="trim-handle right" onMouseDown={(e) => startTrim(e, 'text', t.id, 'right')} />
                       </div>
                     ))}
                   </div>
@@ -3765,6 +3967,7 @@ function Editor() {
                 <button className="track-label" onClick={() => setCollapsed(c => ({ ...c, sfx: !c.sfx }))}><IconChevron open={!collapsed.sfx} /> SFX</button>
                 {!collapsed.sfx && <div className="track a-track sfx-track" data-track="a2" onDragOver={e => e.preventDefault()} onDrop={e => { e.stopPropagation(); void dropMedia(e, 'a2') }}>{clips.filter(c => c.trackId === 'a2').map(renderClip)}</div>}
               </div>
+              </div>
             </div>
           </div>
         </section>
@@ -3775,6 +3978,7 @@ function Editor() {
         context={{ version: appVersion, clips: clips.length + texts.length, duration: totalDuration, format: ORIENTATIONS[orientation].label, aiKeys: !!(settings.aiGen?.falKey || settings.aiGen?.geminiKey) }} />
       {dragFiles && <DropOverlay startsTimeline={clips.length === 0 && texts.length === 0} />}
       <div className="toasts">{toasts.map(t => <div key={t.id} className="toast" onClick={() => setToasts(x => x.filter(y => y.id !== t.id))}>{t.text}</div>)}</div>
+      {drag && <div className="drag-hud" style={{ left: drag.hud.x, top: drag.hud.y - 14 }}>{drag.hud.text}</div>}
       {ask && (
         <div className="modal-backdrop ask-backdrop">
           <div className="modal ask-modal" role="alertdialog" aria-modal="true" aria-label={ask.title}>
@@ -3829,7 +4033,7 @@ function Editor() {
         photos={thumbPhotos()} theme={thumbTheme()} themeName={chooseTheme(thumbTheme()).theme.name} />
 
       <TakesModal open={showTakes} onClose={() => setShowTakes(false)} analysis={takes} busy={takesBusy}
-        canReapply={!!takeSnap.current && takeSnap.current.after === stateKey()}
+        canReapply={canReapply}
         onScan={async () => { const r = await scanTakes(); if (r.error) notify(r.error); else notify(r.groups ? `Found ${r.groups} repeated spot${r.groups === 1 ? '' : 's'} across ${r.lines} lines. Pick the takes you want, then cut.` : `No repeated takes in ${r.lines} lines. You can still strike out any line by hand.`) }}
         onApply={() => { const r = applyTakes(); if (r.error) notify(r.error); else notify(`Cut ${r.cuts} spot${r.cuts === 1 ? '' : 's'} (~${r.seconds}s). Undo with Ctrl+Z, or change a take in Takes & history.`) }}
         onSetKeep={setTakeKeep} onToggleDrop={toggleTakeDrop} onSeek={t => setCurrentTime(t)} />

@@ -44,6 +44,17 @@ assert.equal(proj.orientation, 'portrait'); assert.equal(proj.mediaBin.length, 3
 const v1 = proj.clips.filter(c => c.trackId === 'v1'); assert.equal(v1.length, 2)
 assert.equal(v1[0].sourceStart, 4.5); assert.equal(v1[0].duration, 7.5); assert.equal(v1[1].start, 6.9)   // 7.5 - 0.6 crossfade
 assert.equal(proj.clips.filter(c => c.trackId === 'a1').length, 1); assert.equal(proj.texts.length, 1); assert.equal(proj.markers.length, 2)
+// a clip the cloud has no length for yet keeps a stand-in, flagged so the desktop does not trim to it
+{
+  const unmeasured = { ...manifest, clips: [{ ...manifest.clips[0], duration: null }, manifest.clips[1], manifest.clips[2]] }
+  const p = buildProject(unmeasured, { segments: [{ src: 'a', in: 12, out: 42 }] }, { a: { path: 'C:\\p\\talk.mp4', hasAudio: true }, b: { path: 'C:\\p\\still.png', hasAudio: false } }, { 'narration/narration-1.mp3': 'C:\\p\\cloud\\narration\\narration-1.mp3' }, [])
+  const [talk, still, voice] = p.mediaBin
+  assert.equal(talk.duration, 5); assert.equal(talk.durationGuess, true)
+  assert.equal(still.durationGuess, undefined)   // a still's 5 s is how long it shows, not a guess at a file
+  assert.equal(voice.duration, 3); assert.equal(voice.durationGuess, undefined)   // a length the manifest gave is real
+  assert.equal(p.clips[0].sourceStart, 12); assert.equal(p.clips[0].duration, 30)   // the plan's segment is kept whole
+  assert.equal(proj.mediaBin[0].durationGuess, undefined)
+}
 
 /* zip slip: a crafted hand-off must never write outside <project>/cloud */
 assert.deepEqual(entriesToWrite(entries).map(e => e.name).sort(), ['manifest.json', 'narration/narration-1.mp3', 'plan.json', 'review-notes.json'])

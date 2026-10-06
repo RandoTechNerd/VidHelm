@@ -17,6 +17,7 @@
     { "id": "abc123", "name": "clip.mp4", "path": "C:\\videos\\clip.mp4",
       "type": "video",             // video | audio | image
       "duration": 12.4, "hasVideo": true, "hasAudio": true,
+      "durationGuess": true,       // optional: "duration" is a stand-in (a cloud hand-off clip with no length yet), measured on open
       "relPath": "clip.mp4",       // optional: where the file sits inside projectDir (voice takes: "voice\\voiceover ....webm")
       "fps": 59.94,                // optional: the source's own frame rate
       "hdr": true,                 // optional: HLG/PQ footage, tone-mapped on export
@@ -58,6 +59,7 @@ Notes for tooling:
 
 - **Media paths are absolute**: projects reference files in place, nothing is copied. The one exception is voice takes recorded before the project had a folder (or under an older version, in `%TEMP%`): saving into a project folder copies them into its `voice` sub-folder and points the file at the copies.
 - **Relinking on open.** For each `mediaBin` entry, opening a project folder tries, in order: `relPath` inside the folder being opened; when the folder was moved or copied (`projectDir` differs), a file of the same name in it; the saved `path`; then a file of the same name in the folder. Whatever is still not found loads with `offline: true` (relink it in the Media panel) instead of as blank clips. A relinked entry drops its `proxyPath` and proxy size so the preview copy is rebuilt from the right file. `offline` and `relPath` are worked out again on every open and save, so editing them by hand changes nothing.
+- **Clips stay inside their footage.** On open, a clip with a negative `sourceStart` or one running past the end of its file is pulled back inside it (a still has no such edge). Only a measured `duration` counts: an entry with `durationGuess` is left alone until a probe of the file replaces the guess, and then the same pull-back applies.
 - The proxy fields describe the preview copy, not the source. A Standard export reads that copy only when it is at least as big and as smooth as the export needs; a High quality export always reads the original.
 - Overlapping `v1` clips composite in array order (later on top), in the preview and in the export alike; `v2` always sits above `v1`. Give both fades for a crossfade.
 - All clips with audio are mixed regardless of track; tracks are an organizational convention (`a2` keeps effects out of the voice lane).

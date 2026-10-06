@@ -1566,3 +1566,68 @@ textarea.duration-input { height: auto; padding: 7px 9px; resize: vertical; line
 .crash-screen .crash-detail { font-family: ui-monospace, Consolas, monospace; font-size: 12px; color: var(--text-dim); max-width: 100%; overflow-wrap: anywhere; }
 .crash-screen button { margin-top: 6px; height: 34px; padding: 0 18px; border: none; border-radius: var(--radius-sm); background: var(--accent-primary); color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; }
 .crash-screen button:hover { background: var(--accent-hover); }
+
+/* ============ Wave 1 timeline lane (W1-03, W1-04, W1-05, W1-07, W1-20) ============
+   Appended here, not edited in place above, so the other Wave 1 lanes can merge around it. */
+
+/* The scrollable content: ruler, tags, playhead and lanes all span the whole timeline, not the
+   first screen of it (its width is set inline from the timeline length) */
+.tl-content { position: relative; min-height: 100%; }
+.tick span { left: 5px; }
+.tick.minor { top: 17px; border-left-color: rgb(var(--ink) / 0.1); }
+/* the playhead head: a small downward pentagon that points at the frame instead of a blob over 0s */
+.scrubber::before { left: -4.5px; width: 11px; height: 14px; border-radius: 0; clip-path: polygon(0 0, 100% 0, 100% 62%, 50% 100%, 0 62%); }
+/* hovering the ruler: where a click would land, and what time that is */
+.ruler-ghost { position: absolute; top: 0; left: 0; width: 1px; background: rgb(var(--ink) / 0.3); pointer-events: none; z-index: 1; }
+.ruler-tip {
+  position: absolute; top: 3px; left: 5px; padding: 1px 5px; border-radius: 4px;
+  font-size: 10px; font-variant-numeric: tabular-nums; white-space: nowrap;
+  background: var(--bg-surface-elevated); color: var(--text-main);
+  border: 1px solid var(--border-strong); box-shadow: var(--shadow-sm);
+}
+
+/* Trim handles you can see: a grip appears on hover, the selected clip shows both edges in the
+   accent, and an edge that hit the end of its footage flashes red (W1-04) */
+.trim-handle { width: 8px; }
+.trim-handle::after {
+  content: ''; position: absolute; top: 50%; width: 3px; height: 16px; max-height: calc(100% - 6px);
+  transform: translateY(-50%); border-radius: 2px; background: currentColor; opacity: 0; transition: opacity 0.12s;
+}
+.trim-handle.left::after { left: 2px; }
+.trim-handle.right::after { right: 2px; }
+.clip:hover .trim-handle::after { opacity: 0.7; }
+.clip.selected .trim-handle { background: var(--accent-primary); }
+.clip.selected .trim-handle::after { opacity: 0.9; width: 1px; box-shadow: 2px 0 0 currentColor; left: 2.5px; right: auto; }
+.trim-handle.at-limit, .clip.selected .trim-handle.at-limit { background: var(--accent-error); }
+.clip.dragging { cursor: grabbing; opacity: 0.94; z-index: 10; box-shadow: 0 0 0 2px var(--accent-primary), var(--shadow-lg); }
+/* where a dragged edge snapped */
+.snap-line { position: absolute; top: 0; bottom: 0; width: 1px; margin-left: -0.5px; background: var(--accent-warning); box-shadow: 0 0 4px var(--accent-warning); z-index: 15; pointer-events: none; }
+/* the time readout that rides above the pointer while dragging */
+.drag-hud {
+  position: fixed; z-index: 300; transform: translate(-50%, -100%); pointer-events: none;
+  padding: 3px 8px; border-radius: 999px; white-space: nowrap;
+  background: var(--bg-surface-elevated); color: var(--text-main); border: 1px solid var(--border-strong); box-shadow: var(--shadow-md);
+  font-family: 'JetBrains Mono', 'Cascadia Mono', Consolas, ui-monospace, monospace; font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums;
+}
+
+/* The grip on a selected (accent) handle reads in the accent's own foreground, on every clip
+   colour including the yellow text row, whose ink is dark (W1-05) */
+:root { --on-accent: #ffffff; }
+.clip.selected .trim-handle { color: var(--on-accent); }
+
+/* Waveforms (W1-07): full height on the sound rows, the bottom 40% of a video clip with sound over a
+   dark scrim so the bars read on any filmstrip. Bars take the canvas's colour (src/clipwave.tsx). */
+:root { --clip-wave: rgba(255, 255, 255, 0.5); --clip-wave-under: rgba(255, 255, 255, 0.78); --wave-scrim: rgba(0, 0, 0, 0.55); }
+:root[data-theme="light"] { --clip-wave: rgba(255, 255, 255, 0.62); }
+.clip-wave { position: absolute; left: 0; top: 0; width: 100%; height: 100%; pointer-events: none; color: var(--clip-wave); }
+.clip-wave.under { top: auto; bottom: 0; height: 40%; color: var(--clip-wave-under); background: linear-gradient(to top, var(--wave-scrim), transparent); }
+/* the name moves to the top-left, out of the bars' way */
+.clip.has-wave { align-items: flex-start; }
+.clip.has-wave .clip-label { margin-top: 3px; }
+.clip.has-wave.has-thumb .clip-label { margin-top: 2px; padding: 1px 6px; }
+
+/* The playhead moves by transform (W1-20): no layout on every playback frame */
+.scrubber { left: 0; will-change: transform; }
+/* the toolbar clock switches between tenths and frames on a click */
+.timecode[role="button"] { cursor: pointer; border-radius: var(--radius-sm); padding: 2px 4px; margin-left: 6px; }
+.timecode[role="button"]:hover { background: rgb(var(--ink) / 0.07); }

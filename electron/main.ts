@@ -21,6 +21,8 @@ import { stillInput, clipAudioChain, masterChain, friendlyExportError, stderrTai
 import { bridgeRefusal, commandForEditor, replyAlias, replyKey, type PendingReply } from './bridgeguard'
 import { isAppNavigation, externalLink } from './navguard'
 import { pathToFileURL } from 'node:url'
+import { PeakBucketer, peakDecodeArgs, PEAK_RATE, PEAK_VERSION } from './peaks'
+import crypto from 'node:crypto'
 import path from 'node:path'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -420,7 +422,9 @@ ipcMain.handle('make-thumbnails', async (_event, { filePath, sourceStart, durati
   const dir = path.join(app.getPath('temp'), 'vidhelm_thumbs')
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
   const out = path.join(dir, `t_${Date.now()}_${Math.random().toString(36).slice(2, 7)}.jpg`)
-  const count = Math.max(4, Math.min(120, Math.round(want || 8)))
+  // the renderer sizes the count so each 160x90 frame keeps its shape on the clip; a short clip
+  // needs one or two, and forcing four squeezed them
+  const count = Math.max(1, Math.min(120, Math.round(want || 8)))
   const dur = Math.max(0.5, duration)
   const fps = Math.max(0.1, count / dur)
   await new Promise<void>((resolve) => {
@@ -430,6 +434,43 @@ ipcMain.handle('make-thumbnails', async (_event, { filePath, sourceStart, durati
     p.on('error', () => resolve())
   })
   return fs.existsSync(out) ? { path: out } : { error: 'failed' }
+})
+
+// Waveform peaks for the timeline (electron/peaks.ts): the file's audio decoded once at 8 kHz mono,
+// the loudest sample of every 10 ms kept as a byte while it streams (the PCM is never held), and
+// the result cached by the file's identity so a project reopens with its waveforms already drawn.
+// Always the ORIGINAL file: a preview copy's audio may be re-encoded or missing.
+const peaksBuilds = new Map<string, Promise<{ rate?: number; data?: Uint8Array; error?: string }>>()
+ipcMain.handle('audio-peaks', async (_event, { filePath }: { filePath: string }) => {
+  if (!filePath || !fs.existsSync(filePath)) return { error: 'no file' }
+  const st = fs.statSync(filePath)
+  const key = crypto.createHash('sha1').update(`${PEAK_VERSION}|${filePath}|${st.size}|${st.mtimeMs}`).digest('hex')
+  const dir = path.join(app.getPath('userData'), 'peaks')
+  const cached = path.join(dir, key + '.bin')
+  if (fs.existsSync(cached)) {
+    try { return { rate: PEAK_RATE, data: new Uint8Array(fs.readFileSync(cached)) } } catch { /* unreadable: decode again */ }
+  }
+  const running = peaksBuilds.get(key)
+  if (running) return await running
+  const job = new Promise<{ rate?: number; data?: Uint8Array; error?: string }>(resolve => {
+    const b = new PeakBucketer()
+    let err = ''
+    const p = spawn(paths.ffmpeg, peakDecodeArgs(filePath))
+    p.stdout.on('data', (d: Buffer) => b.pushBytes(d))
+    p.stderr.on('data', d => { err = (err + d).slice(-2000) })
+    p.on('error', e => resolve({ error: String(e) }))
+    p.on('close', code => {
+      const data = b.finish()
+      if (!data.length) return resolve({ error: err.trim().split(/\r?\n/).pop() || 'no audio could be read' })
+      // only a clean decode is kept: a damaged tail would otherwise be remembered as silence
+      if (code === 0) {
+        try { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(cached + '.part', data); fs.renameSync(cached + '.part', cached) } catch { /* the drawing still works, just uncached */ }
+      }
+      resolve({ rate: PEAK_RATE, data })
+    })
+  }).finally(() => peaksBuilds.delete(key))
+  peaksBuilds.set(key, job)
+  return await job
 })
 
 // Decode a media file's audio to 16kHz mono float32 PCM for Whisper
