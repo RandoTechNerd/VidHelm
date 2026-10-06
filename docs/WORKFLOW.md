@@ -99,13 +99,13 @@ Placement recipe: seek to a tag (click its flag), then hit **+** on the effect.
 | **VOICE / MUSIC** | booth takes, cloned narration, voiceovers, music beds | the star of the mix |
 | **SFX** | library + custom effects | accents; keep short |
 
-Mixing tools, per clip: flat volume slider, **drawable volume-automation graph** (click to add points, drag to shape, double-click to delete), fade in/out. Master volume on the right.
+Mixing tools, per clip (the Inspector's Sound group): **Sound** chips (Voice, Music, SFX, As is; marked *guessed* until you pick), **Fix voice** for a voice (Off, Light, Studio) with the one line of what it did ("Lifted 18 dB, cleaned 16 dB of room noise") and its progress while it works, a volume slider in dB (double-click for 0 dB) that trims on top of the level the role sets, the **drawable volume-automation graph** (click to add points, drag to shape, double-click to delete), and fades. Master volume (in dB) on the Export tab. The preview plays all of it as the export will: the fixed voice, the bed level, the ducks and the master gain.
 
 **Export mastering** (the Export tab, or Settings → Audio):
 - Every clip plays as what it is. Voices (camera speech, voiceovers, booth takes, narration) are measured and fixed one recording at a time: lifted to a working level, room noise cleaned only as far as the room needs, knocks tamed. Music sits 5 LU under the voice; sound effects peak at the voice's level. Roles are guessed from where a file came from and how it sounds; a clip with continuous sound under the picture is left as recorded.
-- *Duck music under speech* (on by default) dips music 10 dB and sound effects 6 dB while someone talks, already fully down before the first word and back within half a second of a pause.
+- *Duck music under voice* (on by default) dips music 10 dB and sound effects 6 dB while someone talks, already fully down before the first word and back within half a second of a pause. *Advanced mix* changes the two depths and how far the bed sits under the voice.
 - *Optimize loudness* lands the export on the *Loudness target* (YouTube and social −14 LUFS, Podcast −16, Broadcast R128 −23, Audiobook −20) with one measured gain and a −1.5 dBTP ceiling. Nothing compresses the whole mix, so the bed does not pump. Off: the mix as it is, under a −1 dBTP ceiling.
-- *Master volume* moves the export from the target (50% is 6 dB under it); the line under the slider says where it will land, and Watch & Verify reports planned against measured.
+- *Master volume* moves the export from the target (−6 dB is 6 dB under it). Under the target, **Export will land at** says where it will land, measured in the background on the export's own mix, and a live meter shows the loudness of what is playing with that mark on it. Watch & Verify reports planned against measured.
 - The first export of a recording takes a little longer while its voice is fixed; the result is cached and every later export reuses it.
 
 ## 7 · Captions

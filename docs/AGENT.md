@@ -31,15 +31,16 @@ Add to `claude_desktop_config.json`:
 
 | Tool | Purpose |
 |---|---|
-| `get_state` | Read the whole project: format, media bin, clips per track, texts, tag points, playhead |
+| `get_state` | Read the whole project: format, media bin, clips per track (each heard clip with its sound role and Fix voice status), texts, tag points, playhead, and where the export will land |
 | `screenshot` | See the app window exactly as you see it |
-| `add_media` / `add_clip` / `update_clip` / `split_clip` / `delete_item` | Build and edit the timeline |
+| `add_media` / `add_clip` / `update_clip` / `split_clip` / `delete_item` | Build and edit the timeline. `update_clip` also sets a file's sound `role` (voice, music, sfx, asis, auto) and `voiceFix` (off, light, studio) |
 | `add_text` / `update_text` | Titles and captions |
 | `add_tag` / `update_tag` | Read/write the beat map you create with `M` |
 | `list_sfx` / `place_sfx` | The sound-effect library, placed on the SFX track |
 | `transport` | Seek / play / pause your window (e.g. "show me the reveal") |
 | `set_format` | Landscape/portrait/square, resolution, fps |
-| `export_video` | Render + automatic quality check (loudness, peaks, black frames) |
+| `export_video` | Render + automatic quality check (loudness, peaks, black frames); `target` (youtube, podcast, broadcast, audiobook) and `duck` for that export |
+| `analyze_audio` | Measure each recording's sound and the Fix voice plan without changing anything (see [AUDIO.md](AUDIO.md)) |
 | `cut_pauses` | Remove silent/static dead space across the timeline, spliced with crossfades |
 | `find_repeats` | Read the timeline's speech on-device and return the spots where a line was said more than once, with every attempt's words, timing, and the default pick. Cuts nothing |
 | `apply_takes` | Cut the rejected takes (`keep` as `"group:member"` pairs, `drop` as line indexes). Ripples and stays undoable; re-running rebuilds from the pre-cut state |

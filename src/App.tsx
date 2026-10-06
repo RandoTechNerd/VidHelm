@@ -906,9 +906,11 @@ function Editor() {
   const measuredMix = loudScan && loudScan.sig === mixSig && loudScan.r.ok && !loudScan.r.unbaked && loudScan.r.I != null ? loudScan.r : null
   const masterPlan = previewMasterDb({ optimize: settings.audio.optimize, target: settings.audio.target, masterVolume, measuredLufs: measuredMix?.I, measuredTp: measuredMix?.TP, predictedLufs: previewMix.predictedLufs })
   const masterGain = dbToGain(masterPlan.gainDb)
-  // the media whose sound is in the mix, and whether any of it is still being measured or baked
-  const mixMediaIds = new Set(clips.filter(c => previewMix.clips.has(c.id) || (c.trackId !== 'v2' && mediaBin.find(m => m.id === c.mediaId)?.hasAudio)).map(c => c.mediaId))
-  const soundBusy = mediaBin.some(m => mixMediaIds.has(m.id) && !m.offline && ((m.audio?.facts === undefined && !m.audio?.error) || !!m.audio?.baking))
+  // whether any sound in the mix is still being measured or baked (worked out once per edit, not per frame)
+  const soundBusy = useMemo(() => {
+    const ids = new Set(clips.filter(c => previewMix.clips.has(c.id) || (c.trackId !== 'v2' && mediaBin.find(m => m.id === c.mediaId)?.hasAudio)).map(c => c.mediaId))
+    return mediaBin.some(m => ids.has(m.id) && !m.offline && ((m.audio?.facts === undefined && !m.audio?.error) || !!m.audio?.baking))
+  }, [clips, mediaBin, previewMix])
 
   // ---- effects ----
   // Ask the main process what this machine can take. The heavy defaults (which Whisper model,
@@ -1111,20 +1113,41 @@ function Editor() {
     }
   }, [mediaBin, clips, previewMix])
 
-  /** The Export panel's line: where the export will land, from the background scan of this very timeline. */
-  const exportLandsLine = (): { text: string; busy: boolean } => {
-    if (!previewMix.clips.size) return { text: 'Nothing on the timeline makes a sound yet.', busy: false }
-    if (soundBusy) return { text: 'Measuring the mix once Fix voice has finished…', busy: true }
+  /** Where the export will land, from the background scan of this very timeline (the Export panel and get_state both read it). */
+  const exportLands = (): { state: 'empty' | 'measuring' | 'error' | 'silent' | 'ready'; lufs?: number; dbtp?: number | null; unbaked?: number; error?: string } => {
+    if (!previewMix.clips.size) return { state: 'empty' }
+    if (soundBusy) return { state: 'measuring' }
     const r = loudScan?.sig === mixSig ? loudScan.r : null
-    if (!r) return { text: 'Measuring where the export will land…', busy: true }
-    if (!r.ok || r.error) return { text: `The mix could not be measured (${r.error || 'unknown error'}).`, busy: false }
-    if (r.silent || r.I == null) return { text: 'The mix is silent.', busy: false }
+    if (!r) return { state: 'measuring' }
+    if (!r.ok || r.error) return { state: 'error', error: r.error || 'unknown error' }
+    if (r.silent || r.I == null) return { state: 'silent' }
     const m = previewMasterDb({ optimize: settings.audio.optimize, target: settings.audio.target, masterVolume, measuredLufs: r.I, measuredTp: r.TP })
-    if (m.plannedLufs == null) return { text: 'The export will be silent.', busy: false }
+    if (m.plannedLufs == null) return { state: 'silent' }
     // the ceiling takes any peak above it, so the delivered peak is at most the ceiling
     const tp = r.TP != null ? Math.min(r.TP + m.gainDb, m.ceilingDbtp) : null
-    const later = r.unbaked ? ` For now: ${r.unbaked} voice${r.unbaked > 1 ? 's are' : ' is'} still to be fixed, which the export does first.` : ''
-    return { text: `Export will land at ${lufsText(m.plannedLufs)} LUFS${tp != null ? `, ${lufsText(tp)} dBTP` : ''}.${later}`, busy: false }
+    return { state: 'ready', lufs: +m.plannedLufs.toFixed(1), dbtp: tp == null ? null : +tp.toFixed(1), unbaked: r.unbaked }
+  }
+  const exportLandsLine = (): { text: string; busy: boolean } => {
+    const e = exportLands()
+    if (e.state === 'empty') return { text: 'Nothing on the timeline makes a sound yet.', busy: false }
+    if (e.state === 'measuring') return { text: soundBusy ? 'Measuring the mix once Fix voice has finished…' : 'Measuring where the export will land…', busy: true }
+    if (e.state === 'error') return { text: `The mix could not be measured (${e.error}).`, busy: false }
+    if (e.state === 'silent') return { text: 'The export will be silent.', busy: false }
+    const later = e.unbaked ? ` For now: ${e.unbaked} voice${e.unbaked > 1 ? 's are' : ' is'} still to be fixed, which the export does first.` : ''
+    return { text: `Export will land at ${lufsText(e.lufs!)} LUFS${e.dbtp != null ? `, ${lufsText(e.dbtp)} dBTP` : ''}.${later}`, busy: false }
+  }
+  /** A clip's sound for get_state: what it plays as, at what level, and where its Fix voice is. */
+  const clipSoundState = (c: TimelineClip) => {
+    const m = mediaBin.find(x => x.id === c.mediaId), p = previewMix.clips.get(c.id)
+    if (!m || !p) return undefined
+    const a = m.audio, fix = fixOf(m), b = bakeFor(m)
+    const baking = a?.baking && a.baking.want.split('|')[0] === fix ? a.baking : null
+    const failed = a?.bakeError && a.bakeError.want.split('|')[0] === fix ? a.bakeError : null
+    const fixStatus = fix === 'off' ? 'off' : baking ? `baking ${baking.pct}%` : failed ? `failed: ${failed.error}` : b ? (b.path ? 'baked' : 'left as is') : a?.facts ? 'queued' : 'measuring'
+    return {
+      role: p.role, guessed: p.guessed, why: p.why, levelDb: +p.levelDb.toFixed(1),
+      ...(p.role === 'voice' ? { voiceFix: fix, fixStatus, summary: b?.summary ?? a?.measured?.plan } : {}),
+    }
   }
   const setAudio = (patch: Partial<AppSettings['audio']>) => setSettings(s => ({ ...s, audio: { ...s.audio, ...patch } }))
 
@@ -1509,9 +1532,19 @@ function Editor() {
         return {
           format: { orientation, resolution, fps, width: w, height: h },
           duration: totalDuration, currentTime, isPlaying,
-          mediaBin: mediaBin.map(m => ({ id: m.id, name: m.name, type: m.type, duration: m.duration, path: m.path, chromaKey: m.chromaKey, ...(m.offline ? { offline: true } : {}) })),
+          mediaBin: mediaBin.map(m => ({ id: m.id, name: m.name, type: m.type, duration: m.duration, path: m.path, chromaKey: m.chromaKey, ...(m.offline ? { offline: true } : {}), ...(userAudio(m.audio) ? { sound: userAudio(m.audio) } : {}) })),
           unsaved: isDirty(), project: currentProject?.name || (saveFile ? baseName(saveFile) : null),
-          clips: clips.map(c => ({ id: c.id, track: c.trackId, media: mediaBin.find(m => m.id === c.mediaId)?.name, start: +c.start.toFixed(3), duration: +c.duration.toFixed(3), sourceStart: +c.sourceStart.toFixed(3), volume: c.volume, fadeIn: c.fadeIn, fadeOut: c.fadeOut, automationPoints: c.volumePoints?.length || 0 })),
+          clips: clips.map(c => ({ id: c.id, track: c.trackId, media: mediaBin.find(m => m.id === c.mediaId)?.name, start: +c.start.toFixed(3), duration: +c.duration.toFixed(3), sourceStart: +c.sourceStart.toFixed(3), volume: c.volume, fadeIn: c.fadeIn, fadeOut: c.fadeOut, automationPoints: c.volumePoints?.length || 0, ...(previewMix.clips.has(c.id) ? { audio: clipSoundState(c) } : {}) })),
+          // the mix: the loudness target, the ducking, and where the export will land (measured in the background)
+          sound: (() => {
+            const T = platformTarget(settings.audio.target), lands = exportLands()
+            return {
+              optimize: settings.audio.optimize, target: T.id, targetLufs: settings.audio.optimize ? T.lufs : null, duck: settings.audio.duck,
+              duckDb: tune.duckDb, sfxDuckDb: tune.sfxDuckDb, bedLu: tune.bedLu, masterVolumeDb: masterVolume > 0 ? +(20 * Math.log10(masterVolume)).toFixed(1) : null,
+              exportLandsAt: lands.state === 'ready' ? { lufs: lands.lufs, dbtp: lands.dbtp, ...(lands.unbaked ? { provisional: `${lands.unbaked} voice(s) not baked yet; the export bakes them first` } : {}) } : lands.state,
+              ducks: previewMix.traps.music.length,
+            }
+          })(),
           texts: texts.map(t => ({ id: t.id, text: t.text, start: +t.start.toFixed(3), duration: +t.duration.toFixed(3), x: t.x, y: t.y, fontSize: t.fontSize, color: t.color, ...(t.font ? { font: t.font } : {}), ...(t.caption ? { caption: chooseTheme(t.caption.theme).theme.id } : {}) })),
           theme: (() => { const cs = settings.caption; if (cs.theme === 'classic') return { id: 'classic', note: 'Plain manual captions. set_theme to switch to a theme.' }; const c = chooseTheme(themeRequest(cs)); return { request: themeRequest(cs), id: c.theme.id, name: c.theme.name, feel: { transitions: c.theme.transition, music: c.theme.music, sfx: c.theme.sfx } } })(),
           tags: [...markers].sort((a, b) => a.t - b.t).map(m => ({ id: m.id, t: +m.t.toFixed(3), label: m.label })),
@@ -1581,12 +1614,89 @@ function Editor() {
         return { ok: true, clipId: clip.id, track: trackId }
       }
       case 'update_clip': {
-        if (!clips.find(c => c.id === cmd.clipId)) return { error: `clip not found: ${cmd.clipId}` }
+        const clip = clips.find(c => c.id === cmd.clipId)
+        if (!clip) return { error: `clip not found: ${cmd.clipId}` }
         if (cmd.trackId !== undefined && !['v1', 'v2', 'a1', 'a2'].includes(cmd.trackId)) return { error: `trackId must be v1, v2, a1 or a2, not "${cmd.trackId}"` }
+        // the sound choices belong to the FILE (its bake and its guess are per file): checked before anything changes
+        const sound: { role?: Role; fix?: Preset } = {}
+        if (cmd.role !== undefined) {
+          if (cmd.role === 'auto' || cmd.role === null || cmd.role === '') sound.role = undefined
+          else if (isRole(cmd.role)) sound.role = cmd.role
+          else return { error: `role must be voice, music, sfx, asis or auto (back to the guess), not "${cmd.role}"` }
+        }
+        if (cmd.voiceFix !== undefined) {
+          if (!isPreset(cmd.voiceFix)) return { error: `voiceFix must be off, light or studio, not "${cmd.voiceFix}"` }
+          sound.fix = cmd.voiceFix
+        }
         const patch: Partial<TimelineClip> = {}
         for (const k of ['start', 'duration', 'sourceStart', 'volume', 'fadeIn', 'fadeOut', 'trackId'] as const) if (cmd[k] !== undefined) (patch as any)[k] = cmd[k]
         setClips(prev => prev.map(c => c.id === cmd.clipId ? { ...c, ...patch } : c))
-        return { ok: true }
+        if (cmd.role === undefined && cmd.voiceFix === undefined) return { ok: true }
+        setMediaAudio(clip.mediaId, sound)
+        const m = mediaBin.find(x => x.id === clip.mediaId)
+        const n = clips.filter(c => c.mediaId === clip.mediaId).length
+        const notes = [`role and voiceFix belong to the file (${m?.name || 'its media'}), so they apply to ${n === 1 ? 'this clip' : `all ${n} clips cut from it`}`]
+        if (sound.fix && sound.fix !== 'off') notes.push('a new Fix voice level bakes in the background; get_state shows its progress (clips[].audio.fixStatus)')
+        if (clip.trackId === 'v2' || !m?.hasAudio) notes.push('this clip itself is not heard (b-roll, or no sound)')
+        return { ok: true, note: notes.join('; ') }
+      }
+      case 'analyze_audio': {
+        // which files: one clip's, one bin item, or every file heard on the timeline
+        let targets: MediaFile[]
+        if (cmd.clipId) {
+          const c = clips.find(x => x.id === cmd.clipId)
+          if (!c) return { error: `clip not found: ${cmd.clipId}` }
+          const m = mediaBin.find(x => x.id === c.mediaId)
+          if (!m) return { error: 'that clip\'s media was removed from the bin' }
+          targets = [m]
+        } else if (cmd.media) {
+          const m = findMedia(cmd.media)
+          if (!m) return { error: `media not found: ${cmd.media}` }
+          targets = [m]
+        } else {
+          const ids = new Set(clips.filter(c => previewMix.clips.has(c.id)).map(c => c.mediaId))
+          targets = mediaBin.filter(m => ids.has(m.id))
+          if (!targets.length) return { error: 'nothing on the timeline makes a sound: pass media (a bin name or id) or clipId' }
+        }
+        if (cmd.voiceFix !== undefined && !isPreset(cmd.voiceFix)) return { error: `voiceFix must be off, light or studio, not "${cmd.voiceFix}"` }
+        const out: Record<string, unknown>[] = []
+        for (const m of targets) {
+          if (!m.hasAudio || m.type === 'image') { out.push({ media: m.name, mediaId: m.id, error: 'this file has no sound' }); continue }
+          if (m.offline) { out.push({ media: m.name, mediaId: m.id, error: 'the file is missing (relink it in the Media panel)' }); continue }
+          const preset: Preset = isPreset(cmd.voiceFix) ? cmd.voiceFix : fixOf(m)
+          const r = await window.ipcRenderer.analyzeAudioMedia({ filePath: m.path, preset, isVideo: m.type === 'video' }).catch(e => ({ error: errText(e) }) as AudioMediaAnalysis)
+          if (!r?.ok) { out.push({ media: m.name, mediaId: m.id, error: r?.error || 'could not be measured' }); continue }
+          // the role it plays as: on the timeline as the export decides it, else its own guess
+          const onTl = clips.filter(c => c.mediaId === m.id).map(c => previewMix.clips.get(c.id)).filter((x): x is PreviewClipPlan => !!x)
+          const role = onTl.find(x => x.role === 'voice') || onTl[0] || { ...resolveRole({ role: m.audio?.role, trackId: m.type === 'audio' ? 'a1' : 'v1', type: m.type }, r.sound as SoundFacts), guessed: !m.audio?.role }
+          const plan = r.plan
+          const b = bakeFor(m)
+          out.push({
+            media: m.name, mediaId: m.id, durationS: r.durationS,
+            role: { role: role.role, guessed: role.guessed, why: role.why, setOnFile: m.audio?.role ?? null },
+            measured: {
+              loudnessLufs: r.I, roomNoiseDbfs: r.floorDb, speechLevelDbfs: r.speechDb, speechToNoiseDb: r.snr, worstSectionSnrDb: r.worstSnr,
+              speechSeconds: r.activeS, speechFraction: r.speechFraction, longestPauseS: r.longestPauseS, loudestMomentLufs: r.momentaryMaxLufs,
+              channels: r.channel?.decision === 'fold' ? 'both sides folded together' : r.channel?.decision === 'asis' ? 'as recorded' : `the ${r.channel?.decision} channel only (cleaner)`,
+            },
+            ...(role.role === 'voice' && plan ? {
+              fixVoice: {
+                preset, runs: plan.effective, summary: plan.summary, liftDb: plan.staticDb, noiseReductionDb: plan.nrDb,
+                levelledSections: plan.riderOn ? plan.sections.filter(x => Math.abs(x) >= 1.5).length : 0, knocksTamed: plan.transients.length,
+                ...(plan.skipped ? { skipped: plan.skipped } : {}), ...(plan.sparse ? { note: 'little speech, so the Light rules run' } : {}),
+                baked: preset === fixOf(m) ? (b ? (b.path ? { summary: b.summary } : 'left as recorded') : 'not yet') : 'a different level than the one set',
+              },
+            } : {}),
+            ...(role.role === 'music' ? { asMusic: { bedGainDb: +(previewMix.clips.get(clips.find(c => c.mediaId === m.id)?.id || '')?.levelDb ?? r.music?.bedDb ?? 0).toFixed(1) } } : {}),
+            ...(role.role === 'sfx' ? { asSfx: { gainDb: r.sfx?.gainDb } } : {}),
+          })
+        }
+        const lands = exportLands()
+        return {
+          ok: true, media: out,
+          exportLandsAt: lands.state === 'ready' ? { lufs: lands.lufs, dbtp: lands.dbtp } : lands.state,
+          note: 'Nothing changed. The plan is measured before noise reduction; the bake measures again and lands every voice at -16 LUFS before the master. Change a role or Fix voice with update_clip (role, voiceFix).',
+        }
       }
       case 'delete_item':
         setClips(c => c.filter(x => x.id !== cmd.id))
@@ -2242,12 +2352,18 @@ function Editor() {
       case 'export': {
         if (!cmd.outputPath) return { error: 'outputPath required' }
         if (clips.length === 0 && texts.length === 0) return { error: 'timeline is empty' }
+        // target and duck apply to this export only; the human's Export panel settings stay as they are
+        const known = /^(youtube|vimeo|instagram|tiktok|facebook|social)$/i
+        if (cmd.target !== undefined && (typeof cmd.target !== 'string' || (platformTarget(cmd.target).id === 'youtube' && !known.test(cmd.target.trim()))))
+          return { error: `target must be one of ${PLATFORM_TARGETS.map(t => t.id).join(', ')}, not "${cmd.target}"` }
+        if (cmd.duck !== undefined && typeof cmd.duck !== 'boolean') return { error: 'duck must be true or false' }
         const pre = await exportPreflight()
         if (pre) return { error: 'export not started: ' + pre }
         setIsPlaying(false)
+        const audio = { ...settings.audio, ...(cmd.target !== undefined ? { target: platformTarget(cmd.target).id, optimize: true } : {}), ...(typeof cmd.duck === 'boolean' ? { duck: cmd.duck } : {}) }
         const payload = {
           clips: exportClips(w, h, fps, exportQuality),
-          texts, brand: settings.brand, audio: settings.audio, outputPath: cmd.outputPath,
+          texts, brand: settings.brand, audio, outputPath: cmd.outputPath,
           settings: { width: w, height: h, fps, quality: exportQuality, masterVolume },
         }
         // Drive the same progress state the button uses: the human watches it render, and
@@ -2294,7 +2410,8 @@ function Editor() {
             worse(status)
           }
         }
-        return { ok: true, outputPath: cmd.outputPath, qualityCheck: qc || checks.length ? { verdict, checks } : undefined, script, layout: layout.notes.length ? layout.notes : undefined }
+        const T = platformTarget(audio.target)
+        return { ok: true, outputPath: cmd.outputPath, sound: { target: audio.optimize ? T.id : 'none (Optimize loudness is off)', targetLufs: audio.optimize ? T.lufs : null, duck: audio.duck }, qualityCheck: qc || checks.length ? { verdict, checks } : undefined, script, layout: layout.notes.length ? layout.notes : undefined }
       }
       default:
         return { error: `unknown action: ${cmd.action}` }
