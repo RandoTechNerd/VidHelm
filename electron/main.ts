@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, shell, screen, nativeTheme } from 'electron'
+import { app, BrowserWindow, Menu, ipcMain, dialog, shell, screen, nativeTheme, type WebContents } from 'electron'
 import { restoreDragOffset, plainDragOffset, shouldSnapMaximize } from './dragMath'
 import { findModelInHtml } from './modelSniff'
 import { buildAss, chooseTheme, THEME_FONTS, type ThemeFont } from './styletheme'
@@ -19,6 +19,8 @@ import { generateClip, videoGenAvailable, estimateUsd, VIDEO_MODELS, GenTimeout 
 import { bridgeTimeoutMs, QUICK_MS } from '../agent/timeouts.mjs'
 import { stillInput, clipAudioChain, masterChain, friendlyExportError, stderrTail, UNREADABLE_STILL } from './exportgraph'
 import { bridgeRefusal, commandForEditor, replyAlias, replyKey, type PendingReply } from './bridgeguard'
+import { isAppNavigation, externalLink } from './navguard'
+import { pathToFileURL } from 'node:url'
 import path from 'node:path'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -220,7 +222,38 @@ if (!isPrimaryInstance) {
   })
 }
 
-app.whenReady().then(createWindow)
+// No application menu in the installed app. The window has no menu bar to show one, but
+// Electron's default menu still owned its accelerators: Ctrl+R reloaded the editor (and threw the
+// timeline away), Ctrl+W closed it, Ctrl+M minimised it, and DevTools, zoom and full screen were
+// all one chord away. The editor's own keys live in electron/shortcuts.ts. A development run
+// keeps the default menu for reload and DevTools.
+app.whenReady().then(() => {
+  if (app.isPackaged) Menu.setApplicationMenu(null)
+  createWindow()
+})
+
+// The editor window may only ever show the editor (electron/navguard.ts has the why): every web
+// contents gets the rules as it is created. Navigating away is refused, a new window is refused
+// (a web link goes to the real browser instead) and no <webview> can be attached. The capture_site
+// window is the one exception, for navigation only: loading other sites is its whole job, and
+// sites redirect and route.
+const freeToNavigate = new WeakSet<WebContents>()
+const APP_PAGE = { devServer: process.env.VITE_DEV_SERVER_URL || null, indexUrl: pathToFileURL(path.join(process.env.DIST, 'index.html')).href }
+app.on('web-contents-created', (_event, contents) => {
+  const guard = (e: { preventDefault(): void }, url: string) => {
+    if (freeToNavigate.has(contents) || isAppNavigation(url, APP_PAGE)) return
+    e.preventDefault()
+    console.warn('refused to navigate the window to', url)
+  }
+  contents.on('will-navigate', guard)
+  contents.on('will-redirect', guard)
+  contents.setWindowOpenHandler(({ url }) => {
+    const link = externalLink(url)
+    if (link) void shell.openExternal(link)
+    return { action: 'deny' }
+  })
+  contents.on('will-attach-webview', e => e.preventDefault())
+})
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
@@ -2533,6 +2566,7 @@ ipcMain.handle('capture-site', async (_event, { url, width = 1920, height = 1080
     width: W, height: H, show: false, frame: false, backgroundColor: '#000000',
     webPreferences: { offscreen: true, contextIsolation: true, sandbox: true },
   })
+  freeToNavigate.add(cap.webContents)   // no preload, sandboxed, and its page is any site at all
   try {
     cap.webContents.setAudioMuted(true)
     if (theme === 'dark' || theme === 'light') nativeTheme.themeSource = theme

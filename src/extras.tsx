@@ -4,35 +4,16 @@ import { useState, useRef, useEffect } from 'react'
 import { InfoNote } from './help'
 import { SecretField } from './controls'
 import { IcStop, IcRecord, IcFolder, IcSearch, IcSparkle, IcRefresh, IcPlaySm, IcClose, IcStar, IcKey, IcDownload, IcDice, IcExternal, IcPlus, IcGrip, IcMic, IcPause, IcCheck, IcCopy, IcTerminal, IcGlobe, IcFilm, IcChevron, IcGear, IcImage } from './icons'
+import { newMarker, type Marker } from './markers'
+import { saveTake } from './recording'
+import { RECIPE_TOGGLES, recipeActive, toggleRecipeLine, type RecipeSettings } from './recipe'
 
-export interface Marker { id: string; t: number; label: string; color: string }
 export interface SfxItem { name: string; path: string; duration: number; builtin: boolean; about?: string }
-
-const rid = () => Math.random().toString(36).substr(2, 9)
-export const MARKER_COLORS = ['#f472b6', '#60a5fa', '#4ade80', '#facc15', '#c084fc', '#fb923c']
-export const newMarker = (t: number, label = ''): Marker => ({ id: rid(), t, label, color: MARKER_COLORS[Math.floor(Math.random() * MARKER_COLORS.length)] })
 
 const fileUrl = (p?: string | null) => p
   ? 'file:///' + p.replace(/\\/g, '/').split('/').map((seg, i) => i === 0 ? seg : encodeURIComponent(seg)).join('/')
   : ''
 const fmtT = (s: number) => `${Math.floor(s / 60)}:${(Math.floor(s % 60)).toString().padStart(2, '0')}.${Math.floor((s % 1) * 10)}`
-
-/** Save a recorded take (voiceover or booth) somewhere that lasts: <project>/voice when a project
- *  folder is open, otherwise the app's own recordings folder, never %TEMP%, which Windows cleans
- *  out from under saved projects. The bytes go over IPC as they are (structured clone): turning
- *  them into base64 one character per byte used to balloon memory on long takes. If the project
- *  folder cannot be written, main keeps the take in its own folder and the next Save moves it in. */
-export async function saveTake(blob: Blob, projectDir?: string | null): Promise<{ path: string; keptElsewhere: boolean }> {
-  const bytes = new Uint8Array(await blob.arrayBuffer())
-  if (!bytes.length) throw new Error('nothing was recorded')
-  const dir = projectDir ? `${projectDir.replace(/[\\/]+$/, '')}/voice` : undefined
-  const r: unknown = await window.ipcRenderer.saveRecording(bytes, dir)
-  const p = typeof r === 'string' ? r : (r as { path?: string } | null)?.path
-  if (!p) throw new Error((r as { error?: string } | null)?.error || 'no file was written')
-  // keptElsewhere: the project folder could not be written, so main kept it in its own folder
-  const norm = (s: string) => s.replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase()
-  return { path: p, keptElsewhere: !!projectDir && !norm(p).startsWith(norm(projectDir) + '\\') }
-}
 
 // ---------------- SFX library panel ----------------
 export function SfxPanel({ onPlace, genCommand, onGenCommand, freesoundToken, onFreesoundToken, favorites, onToggleFavorite }: {
@@ -208,6 +189,15 @@ export function SfxPanel({ onPlace, genCommand, onGenCommand, freesoundToken, on
     a.onended = () => setPlaying(null)
     a.play().catch(() => setPlaying(null))
   }
+  // The button under a playing sound shows Stop, and it used to start the sound again instead
+  const stopAudition = () => {
+    const a = audioRef.current
+    if (a) { a.onended = null; a.onerror = null; a.pause() }
+    audioRef.current = null
+    setPlaying(null)
+  }
+  // and a sound still playing when the panel goes away (another tab) stops with it
+  useEffect(() => () => { audioRef.current?.pause() }, [])
 
   return (
     <div className="sfx-panel">
@@ -216,7 +206,7 @@ export function SfxPanel({ onPlace, genCommand, onGenCommand, freesoundToken, on
       <div className="sfx-list">
         {shown.map(item => (
           <div key={item.path} className={`sfx-item ${playing === item.path ? 'playing' : ''} ${favSet.has(item.name) ? 'fav' : ''}`}>
-            <button className="sfx-play" title="Audition" onClick={() => audition(item)}>{playing === item.path ? <IcStop /> : <IcPlaySm />}</button>
+            <button className="sfx-play" title={playing === item.path ? 'Stop' : 'Audition'} onClick={() => playing === item.path ? stopAudition() : audition(item)}>{playing === item.path ? <IcStop /> : <IcPlaySm />}</button>
             <button className={`sfx-star ${favSet.has(item.name) ? 'on' : ''}`}
               title={favSet.has(item.name) ? 'Remove from favourites' : 'Favourite, keeps it at the top of the list'}
               aria-label={favSet.has(item.name) ? 'Remove from favourites' : 'Add to favourites'} aria-pressed={favSet.has(item.name)}
@@ -248,8 +238,8 @@ export function SfxPanel({ onPlace, genCommand, onGenCommand, freesoundToken, on
         {hits.length > 0 && <div className="sfx-hits">
           {hits.map(h => (
             <div key={h.provider + h.id} className="sfx-hit">
-              <button className="sfx-play" title="Audition (streams from the library)"
-                onClick={() => auditionUrl(h.audioUrl, h.provider + h.id)}>{playing === h.provider + h.id ? <IcStop /> : <IcPlaySm />}</button>
+              <button className="sfx-play" title={playing === h.provider + h.id ? 'Stop' : 'Audition (streams from the library)'}
+                onClick={() => playing === h.provider + h.id ? stopAudition() : auditionUrl(h.audioUrl, h.provider + h.id)}>{playing === h.provider + h.id ? <IcStop /> : <IcPlaySm />}</button>
               <span className="sfx-name" title={`${h.name}\nby ${h.author} · ${h.provider}`}>{h.name}</span>
               <span className={`sfx-lic ${h.needsAttribution ? 'credit' : 'free'}`} title={h.needsAttribution ? `${h.license}. Credit required, and it goes into CREDITS.txt when you save it.` : `${h.license}. No credit needed.`}>
                 {h.needsAttribution ? 'credit' : 'free'}
@@ -579,18 +569,6 @@ export function KaraokeBooth({ open, onClose, markers, totalDuration, currentTim
 // "Start G-code" for videos: a plain-text block of standing instructions that runs when you
 // (or your AI) kick off a project. Lines starting with # are off. Toggles below rewrite the
 // text; free-typed lines are preserved and shown to the AI via the agent bridge.
-export interface RecipeSettings { text: string; introAudioPath: string | null }
-
-export const RECIPE_TOGGLES: { key: string; label: string; hint: string }[] = [
-  { key: 'cut-pauses', label: 'Cut dead air', hint: 'remove silent/static pauses first' },
-  { key: 'thumbnail', label: 'Thumbnail', hint: 'your photo or the best real frame, subtitle + logo' },
-  { key: 'subtitle', label: 'Catchy subtitle', hint: 'one-liner burned onto the thumbnail' },
-  { key: 'titles', label: '5 title options', hint: 'your AI pitches titles, you pick' },
-  { key: 'logo', label: 'Brand logo', hint: 'watermark on every export' },
-  { key: 'intro-audio', label: 'Intro audio', hint: 'your sting placed at 0:00' },
-  { key: 'captions', label: 'Captions', hint: 'on-device Whisper subtitles in your style theme' },
-]
-
 export const DEFAULT_RECIPE = `# ── Start Recipe, runs when you (or your AI) kick off a video ──
 cut-pauses           # tighten dead air; never strand a fragment under 1s, it reads as a stutter
 thumbnail            # real photo first (thumb.jpg in the project), else the best real frame
@@ -627,31 +605,6 @@ intro-audio          # your intro sting at 0:00 (pick it below)
 # SHORTS: make 9:16 by zooming in (never blurred bars). Use plan_framing to point the crop: it
 # holds still inside a shot and only moves when the subject really does. Logo top-left for the
 # first 5s only. End on the payoff line.`
-
-const lineKey = (line: string) => line.replace(/^#/, '').trim().split(/\s+/)[0] || ''
-export const recipeActive = (text: string): Record<string, boolean> => {
-  const state: Record<string, boolean> = {}
-  for (const t of RECIPE_TOGGLES) state[t.key] = false
-  for (const raw of text.split('\n')) {
-    const key = lineKey(raw)
-    if (key && state[key] !== undefined && !raw.trim().startsWith('#')) state[key] = true
-  }
-  return state
-}
-export const toggleRecipeLine = (text: string, key: string, on: boolean): string => {
-  const lines = text.split('\n')
-  let found = false
-  const out = lines.map(raw => {
-    if (lineKey(raw) !== key) return raw
-    found = true
-    const isOff = raw.trim().startsWith('#')
-    if (on && isOff) return raw.replace(/^(\s*)#\s?/, '$1')
-    if (!on && !isOff) return '# ' + raw
-    return raw
-  })
-  if (on && !found) out.push(key)
-  return out.join('\n')
-}
 
 export function RecipeSection({ recipe, onChange, logoPath, onPickLogo }: {
   recipe: RecipeSettings; onChange: (r: RecipeSettings) => void

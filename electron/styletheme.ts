@@ -393,6 +393,126 @@ export function cueWords(c: CapCue): CapWord[] {
   return tokens.map((t, i) => ({ s: c.start + i * step, e: c.start + (i + 1) * step, t }))
 }
 
+const normWord = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '')
+
+/**
+ * Word timings for a caption whose text was edited, kept from the old ones wherever the words
+ * still line up. Any edit that changed the word count ("Crux Study" to "CruxStudy", deleting an
+ * "um") used to throw the timings away and spread the words evenly (cueWords' fallback), so the
+ * highlight and karaoke drifted off the voice: a median 0.12 s, a quarter of words off by more
+ * than 0.25 s. Here the old and new words are aligned (an edit distance over normalised words,
+ * where two words may merge into one or one split into two):
+ *  - a word that is still there, or was replaced by another, keeps its slot;
+ *  - a merge spans both old slots, a split divides the slot by letters;
+ *  - an inserted word takes the gap beside it, or half of the word before it (after it, at the
+ *    start) when there is no gap to take;
+ *  - a rewrite that keeps almost none of the words is spread over the old speech by letters.
+ * `old` and the result share a time base (absolute, or seconds from the caption's start), and
+ * nothing leaves [start, end].
+ */
+export function retimeWords(old: CapWord[], text: string, start: number, end: number): CapWord[] {
+  const nt = String(text || '').trim().split(/\s+/).filter(Boolean)
+  if (!nt.length) return []
+  const r3 = (x: number) => +Math.min(end, Math.max(start, x)).toFixed(3)
+  const prev = old.filter(w => isFinite(w.s) && isFinite(w.e)).map(w => ({ s: w.s, e: Math.max(w.s, w.e), t: String(w.t || '') }))
+  // spread by letters over a span: the fallback for a rewrite, and for a caption with no timings at all
+  const spread = (a: number, b: number) => {
+    const letters = nt.reduce((n, t) => n + Math.max(1, t.length), 0)
+    let t = a
+    return nt.map(tok => { const d = (b - a) * Math.max(1, tok.length) / letters; const w = { s: r3(t), e: r3(t + d), t: tok }; t += d; return w })
+  }
+  if (!prev.length) return spread(start, end)
+  const A = prev.map(w => normWord(w.t)), B = nt.map(normWord)
+  const n = A.length, m = B.length
+  type Step = { i: number; j: number; op: 'sub' | 'merge' | 'split' | 'del' | 'ins'; same?: boolean }
+  const cost: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(Infinity))
+  const back: (Step | null)[][] = Array.from({ length: n + 1 }, () => new Array<Step | null>(m + 1).fill(null))
+  cost[0][0] = 0
+  for (let i = 0; i <= n; i++) for (let j = 0; j <= m; j++) {
+    const c = cost[i][j]
+    if (c === Infinity) continue
+    const relax = (ii: number, jj: number, add: number, st: Step) => { if (c + add < cost[ii][jj]) { cost[ii][jj] = c + add; back[ii][jj] = st } }
+    if (i < n && j < m) relax(i + 1, j + 1, A[i] === B[j] ? 0 : 1, { i, j, op: 'sub', same: A[i] === B[j] })
+    if (i + 1 < n && j < m && A[i] && A[i] + A[i + 1] === B[j]) relax(i + 2, j + 1, 0.5, { i, j, op: 'merge' })   // "Crux Study" -> "CruxStudy"
+    if (i < n && j + 1 < m && B[j] && B[j] + B[j + 1] === A[i]) relax(i + 1, j + 2, 0.5, { i, j, op: 'split' })   // "VidHelm" -> "Vid Helm"
+    if (i < n) relax(i + 1, j, 1, { i, j, op: 'del' })
+    if (j < m) relax(i, j + 1, 1, { i, j, op: 'ins' })
+  }
+  const out: ({ s: number; e: number } | null)[] = new Array(m).fill(null)
+  let kept = 0
+  for (let i = n, j = m; i > 0 || j > 0;) {
+    const b = back[i][j]!
+    if (b.op === 'sub') { out[b.j] = { s: prev[b.i].s, e: prev[b.i].e }; if (b.same) kept++ }
+    else if (b.op === 'merge') { out[b.j] = { s: prev[b.i].s, e: prev[b.i + 1].e }; kept++ }
+    else if (b.op === 'split') {
+      const w = prev[b.i], mid = w.s + (w.e - w.s) * B[b.j].length / Math.max(1, A[b.i].length)
+      out[b.j] = { s: w.s, e: mid }; out[b.j + 1] = { s: mid, e: w.e }; kept += 2
+    }
+    i = b.i; j = b.j
+  }
+  // almost nothing survived: the old slots belong to words that are gone, so spread the new
+  // words over the stretch that was spoken instead of pinning a few of them to stale slots
+  if (m > 2 && kept < m / 3) return spread(Math.max(start, prev[0].s), Math.min(end, prev[prev.length - 1].e))
+  // inserted words share the gap they sit in by letters; with no gap they take half a neighbour
+  for (let j = 0; j < m; j++) {
+    if (out[j]) continue
+    let k = j
+    while (k < m && !out[k]) k++
+    let a = j ? out[j - 1]!.e : start
+    let b = k < m ? out[k]!.s : end
+    if (b - a < 0.08 * (k - j)) {
+      if (j) { const p = out[j - 1]!; a = p.s + (p.e - p.s) / 2; p.e = a; b = Math.max(b, a) }
+      else if (k < m) { const q = out[k]!; b = q.s + (q.e - q.s) / 2; q.s = b; a = Math.min(a, b) }
+    }
+    const letters = nt.slice(j, k).reduce((x, t) => x + Math.max(1, t.length), 0)
+    let t = a
+    for (let q = j; q < k; q++) { const d = (b - a) * Math.max(1, nt[q].length) / letters; out[q] = { s: t, e: t + d }; t += d }
+  }
+  // never backwards: a word starts no earlier than the one before it
+  let floor = start
+  return out.map((w, j) => {
+    const s = Math.max(floor, w!.s), e = Math.max(s, w!.e)
+    floor = s
+    return { s: r3(s), e: r3(e), t: nt[j] }
+  })
+}
+
+/** A caption as it stood when an edit began: its text, its word times (seconds from its start)
+ *  and its length. */
+export interface CaptionEditBase { text: string; words?: CapWord[]; duration: number }
+
+/**
+ * Word times for a caption's new text, aligned against `base`: the caption as it was when the
+ * edit began, not as the previous keystroke left it. A text box sends a change per keystroke,
+ * and retiming each one against the last threw the rewrite rule away: the first letter typed is
+ * one word against the whole line, so it lands on a single old slot, and every word after it is
+ * an insertion that halves its neighbour. A typed rewrite ended up crammed into the last word's
+ * slot (nothing highlighted for most of the line, then seven words flashing past at the end),
+ * where the same text pasted in one go was spread over the speech. Against the pre-edit base the
+ * result depends only on the final text, however it arrived.
+ */
+export function retimeCaptionText(base: CaptionEditBase, text: string, duration: number): CapWord[] {
+  const old = cueWords({ start: 0, end: base.duration, text: base.text, words: base.words })
+  return retimeWords(old, text, 0, duration)
+}
+
+/** A keystroke-by-keystroke edit of one caption: where it began, and the words it last wrote. */
+export interface CaptionTyping { id: string; base: CaptionEditBase; wrote?: CapWord[] }
+
+/**
+ * One keystroke in a caption's text box: the caption's new word times, and the typing session to
+ * pass to the next keystroke. The session carries on only while the caption's words are still the
+ * very array it last wrote (an identity check, so it is cheap and cannot be fooled by equal-looking
+ * times); an undo, an agent edit or a cut in between replaces that array, and the next keystroke
+ * starts afresh from the caption as it now stands rather than reverting it to a stale base.
+ */
+export function typeCaption(session: CaptionTyping | null, cap: { id: string; text: string; duration: number; words?: CapWord[] }, text: string): { session: CaptionTyping; words: CapWord[] | undefined } {
+  const s = session && session.id === cap.id && session.wrote === cap.words ? session
+    : { id: cap.id, base: { text: cap.text, words: cap.words, duration: cap.duration } }
+  const words = text === cap.text ? cap.words : retimeCaptionText(s.base, text, cap.duration)
+  return { session: { ...s, wrote: words }, words }
+}
+
 /** Up to `max` words, broken after punctuation, never more than ~maxChars of big text. */
 export function groupWords(words: CapWord[], max = 3, maxChars = 14): CapWord[][] {
   const out: CapWord[][] = []

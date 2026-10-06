@@ -13,7 +13,8 @@ You are co-editing with a human: they see every change live in the GUI and can m
 2. Batch a few edits, then `screenshot` to verify what the human sees. Re-read state after they touch anything.
 3. Report progress in chat conversationally; the human is watching the app, not your tool calls.
 4. **Unsaved work belongs to the human.** `get_state.unsaved` is true while there are changes not saved yet (`get_state.project` names what is open). `open_project` replaces the timeline, so it refuses then: ask the human, and call again with `save:true` (save, then open) or `force:true` (discard the changes). It also opens nothing when the target project holds unsaved work from an earlier session; only the human can restore or discard that, so ask them to choose the project in the Media panel's project list (they get Restore / Discard), then carry on. A media bin entry with `offline:true` is a missing file the human relinks in the Media panel.
-5. Pictures go on `v1`/`v2` and sound on `a1`/`a2` (`add_clip` refuses the rest). `set_format` takes only landscape/portrait/square, 4K/1440p/1080p/720p and 24/30/60 fps; anything else is refused and nothing changes.
+5. **Slow commands are not failures.** Time limits live in one table, `agent/timeouts.mjs`, read by both the bridge and the MCP proxy (15 s for quick edits, up to 20 min for renders and Whisper passes, 15 min for `generate_clip`, 4 h for `export`). A timeout cancels nothing: a reply with `stillRunning: true` means the work is still going in the app, so call `get_state` to see whether it landed rather than sending it again. Never retry `generate_clip` after a timeout or `stillRunning`: the provider keeps generating, and a second call pays for a second clip.
+6. Pictures go on `v1`/`v2` and sound on `a1`/`a2` (`add_clip` refuses the rest). `set_format` takes only landscape/portrait/square, 4K/1440p/1080p/720p and 24/30/60 fps; anything else is refused and nothing changes.
 
 ## The "make me a video" workflow (their Start Recipe)
 
@@ -101,6 +102,7 @@ Derive final chapter timestamps from `get_state` after the edit is cut, not from
 - B-roll on `v2` never contributes audio, by design. Natural sound from a cutaway has to go on `a1`/`a2` as its own clip.
 - If a tool errors "VidHelm is not running": the app must be open. Ask, or run `npm run dev` in the background yourself.
 - Connection problems on the user's side → tell them to click **Connect AI** in the header (live diagnostics + per-client config) or see docs/CONNECT.md.
+- The bridge (`127.0.0.1:5959`) is for the MCP tools, curl and scripts: it refuses requests that carry an `Origin` or `Sec-Fetch-Site` header (anything a web page sends) or a `Host` other than `127.0.0.1`, `localhost` or `[::1]` on its port.
 
 ## Word anchors, the grid, and the other 1.9 habits
 

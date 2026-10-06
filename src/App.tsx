@@ -10,7 +10,10 @@ import { SecretField } from './controls'
 import { StageEmpty, MediaEmpty, DropOverlay } from './welcome'
 import { rangeFill, dragHasFiles, dropIntent, isTextEntry, MEDIA_DRAG, firstVideoOf, recentProjects, formatLine } from './uikit'
 import type { HelpAction } from '../electron/helpdesk'
-import { SfxPanel, MarkerPanel, KaraokeBooth, NarrationModal, RecipeSection, ThumbnailModal, ConnectModal, DEFAULT_RECIPE, recipeActive, newMarker, saveTake, type Marker, type SfxItem, type RecipeSettings } from './extras'
+import { SfxPanel, MarkerPanel, KaraokeBooth, NarrationModal, RecipeSection, ThumbnailModal, ConnectModal, DEFAULT_RECIPE, type SfxItem } from './extras'
+import { newMarker, type Marker } from './markers'
+import { saveTake } from './recording'
+import { recipeActive, type RecipeSettings } from './recipe'
 import { Model3DModal, KEY_GREEN, KEY_MAGENTA, type Model3DApi } from './model3d'
 import { HelpModal, HelpMenu, InfoNote, type HelpPanel, type HelpTab } from './help'
 import { TakesModal, takeStats, type TakeAnalysis } from './takes'
@@ -18,12 +21,14 @@ import { groupTakes, removalRanges, removedSeconds, chunksFromWords, wordsOf } f
 import { snapToGrid, describeSnap } from '../electron/grid'
 import { fitBpm } from '../electron/score'
 import { layoutReport, presetFor, fitFontSize } from '../electron/textlayout'
-import { THEMES, THEME_FONTS, CAPTION_Y as THEME_CAP_Y, chooseTheme, phrasesFromWords, captionFrame, captionCss, captionPx, fontFaceCss, type CaptionSpec, type CapWord, type ThemeFont, type CapCue } from '../electron/styletheme'
+import { THEMES, THEME_FONTS, CAPTION_Y as THEME_CAP_Y, chooseTheme, phrasesFromWords, retimeCaptionText, typeCaption, captionFrame, captionCss, captionPx, fontFaceCss, type CaptionSpec, type CapWord, type ThemeFont, type CapCue, type CaptionTyping } from '../electron/styletheme'
 import { planProxy, isHdr } from '../electron/playable'
 import { spanForPhrase, sentenceSpans, type Word as SpeechWord, type Span } from '../electron/speech'
 import { planBroll, snapToWords, describePlan, type BrollAsset, type Placement } from '../electron/broll'
 import { looksLikeThumbPhoto } from '../electron/thumbpick'
 import { resolveProfile, describeProfile, type PerfProfile, type Tier, type TierPreference } from '../electron/capability'
+import { shortcutFor, focusKind, stepTime, type Shortcut } from '../electron/shortcuts'
+import { DEPOP, splitClip, removeRange, planPauseCuts, rescaleAutomation, slideVolume, type VolumeSlide } from '../electron/edit'
 
 interface MediaFile {
   id: string
@@ -241,6 +246,17 @@ function captionClip(p: CapCue, spec: CaptionSpec, theme: string, outW: number, 
   return { id: rid(), text: p.text, start: p.start, duration: Math.max(0.3, p.end - p.start), x: 0.5, y: THEME_CAP_Y[spec.position],
     fontSize: Math.round(captionPx(spec, outW, outH) / outH * 1080), color: spec.color, fadeIn: 0, fadeOut: 0,
     caption: { spec, theme, words: (p.words || []).map(w => ({ s: +(w.s - p.start).toFixed(3), e: +(w.e - p.start).toFixed(3), t: w.t })) } }
+}
+/** A text item with an edit applied. When a themed caption's words change, the words still there
+ *  keep their spoken times (retimeWords); fixing "Crux Study" to "CruxStudy" or deleting an "um"
+ *  used to spread every word evenly and pull the highlight off the voice. This is the one-shot
+ *  path (an agent's update_text, an edit typed onto the picture); the Inspector's Content box,
+ *  which changes per keystroke, goes through typeContent instead. */
+function patchTextClip(t: TextClip, patch: Partial<TextClip>): TextClip {
+  const next = { ...t, ...patch }
+  if (!t.caption || patch.text === undefined || patch.text === t.text || patch.caption) return next
+  const base = { text: t.text, words: t.caption.words, duration: t.duration }
+  return { ...next, caption: { ...t.caption, words: retimeCaptionText(base, patch.text, next.duration) } }
 }
 /** A themed caption in the preview, drawn from the same per-frame description the export follows. */
 function CaptionLayer({ t, time, groupBase, outW, outH, stageH, selected, onSelect }: { t: TextClip; time: number; groupBase: number; outW: number; outH: number; stageH: number; selected: boolean; onSelect: () => void }) {
@@ -535,70 +551,10 @@ function gainAt(c: TimelineClip, tAbs: number) {
   return c.volume ?? 1
 }
 
-// Remove timeline range [s,e] and ripple everything after it left. Used to cut silent dead space.
-// If `transition` > 0, surviving edges get a short fade for a smoother seam.
-// Twelve milliseconds: far too short to hear as a fade, long enough that the
-// waveform reaches zero before the splice. Without it a cut lands mid-cycle and
-// the step reads as a click ("poofs" between phrases).
-const DEPOP = 0.012
-
-// Tag points ride along when time is removed: after the cut they shift left by its length, and a
-// tag inside the removed stretch lands on the join (or goes, when a whole head or tail is trimmed
-// off). Tagging first and cutting second is the documented workflow, so tags must not drift.
-function rippleMarkers(markers: Marker[], s: number, e: number, dropInside = false): Marker[] {
-  const len = e - s
-  const out: Marker[] = []
-  for (const m of markers) {
-    if (m.t < s) out.push(m)
-    else if (m.t >= e) out.push({ ...m, t: +(m.t - len).toFixed(4) })
-    else if (!dropInside) out.push({ ...m, t: s })
-  }
-  return out
-}
-
-function removeRange(clips: TimelineClip[], texts: TextClip[], s: number, e: number, transition: number, markers: Marker[] = [], dropTagsInside = false) {
-  const len = e - s
-  const td = Math.max(0, Math.min(transition, len, 0.3))
-  const outClips: TimelineClip[] = []
-  for (const c of clips) {
-    const cs = c.start, ce = c.start + c.duration
-    if (ce <= s) { outClips.push(c); continue }
-    if (cs >= e) { outClips.push({ ...c, start: cs - len }); continue }
-    const left = s - cs, right = ce - e
-    // Both halves used to sit end to end, each with its own fade. Video composites over a black
-    // base, so fading A out and B in at the very same instant dips through black: on a talking
-    // head with a hundred pause cuts that reads as the picture blinking at you all the way
-    // through. Overlap them instead and let B dissolve in ON TOP of A, which never sees black.
-    const overlap = Math.max(0, Math.min(td, left - 0.05, e - cs))
-    // The picture keeps whatever the transition setting asked for (including 0, and
-    // including the deliberate no-fadeOut under an overlap so it never dips through
-    // black). The AUDIO always gets at least DEPOP either side of the join.
-    if (left > 0.05) outClips.push({
-      ...c, duration: left,
-      fadeOut: overlap > 0 ? 0 : (td > 0 ? td : c.fadeOut),
-      aFadeOut: Math.max(DEPOP, overlap > 0 ? 0 : (td > 0 ? td : c.fadeOut)),
-    })
-    if (right > 0.05) outClips.push({
-      ...c, id: rid(),
-      start: s - overlap,
-      duration: right + overlap,
-      sourceStart: c.sourceStart + (e - cs) - overlap,   // pull the source back so motion stays continuous
-      fadeIn: overlap > 0 ? overlap : (td > 0 ? td : c.fadeIn),
-      aFadeIn: Math.max(DEPOP, overlap > 0 ? overlap : (td > 0 ? td : c.fadeIn)),
-      volumePoints: undefined,
-    })
-  }
-  const outTexts: TextClip[] = []
-  for (const t of texts) {
-    const ts = t.start, te = t.start + t.duration
-    if (te <= s) { outTexts.push(t); continue }
-    if (ts >= e) { outTexts.push({ ...t, start: ts - len }); continue }
-    const left = s - ts, right = te - e
-    if (left > 0.05) outTexts.push({ ...t, duration: left })
-    if (right > 0.05) outTexts.push({ ...t, id: rid(), start: s, duration: right })
-  }
-  return { clips: outClips, texts: outTexts, markers: rippleMarkers(markers, s, e, dropTagsInside) }
-}
+// Cutting time out of the timeline (a split, removeRange and the tags that ride along with it,
+// which pauses Cut Pauses takes, the DEPOP ramps on every new edge) lives in electron/edit.ts,
+// with its own test suite (npm run test:edit).
+const STALE_TIMELINE = 'The timeline changed while this was being worked out (an edit landed in the meantime), so nothing was cut. Run it again.'
 
 function Editor() {
   const [mediaBin, setMediaBin] = useState<MediaFile[]>([])
@@ -703,6 +659,10 @@ function Editor() {
   const [editingTextId, setEditingTextId] = useState<string | null>(null)
   const editRef = useRef<HTMLDivElement | null>(null)
   const editTextRef = useRef<string>('')   // what to seed the editable div with
+  // the caption the Inspector's Content box is typing into, as it stood before the typing began
+  const contentTyping = useRef<CaptionTyping | null>(null)
+  // the automation line the Volume slider is scaling, as it stood before the drag began
+  const volumeSlide = useRef<VolumeSlide | null>(null)
   const [showTakes, setShowTakes] = useState(false)
   const [takes, setTakes] = useState<TakeAnalysis | null>(null)
   const [takesBusy, setTakesBusy] = useState<string | null>(null)
@@ -751,6 +711,14 @@ function Editor() {
   const skipRecord = useRef(false)
   const [canUndo, setCanUndo] = useState(false)
   const [canRedo, setCanRedo] = useState(false)
+  // The timeline as last committed, for the long jobs (Cut Pauses, cut_at_phrase) that read it,
+  // wait on ffmpeg or Whisper, then write back a result built from what they read: an edit that
+  // landed in between (the human's, or another agent call's) would be quietly thrown away.
+  const liveTimeline = useRef<{ clips: TimelineClip[]; texts: TextClip[]; markers: Marker[] }>({ clips: [], texts: [], markers: [] })
+  useEffect(() => { liveTimeline.current = { clips, texts, markers } }, [clips, texts, markers])
+  /** The timeline this render sees, as a key to compare against later. */
+  const timelineKey = () => JSON.stringify([clips, texts, markers])
+  const timelineMoved = (since: string) => { const d = liveTimeline.current; return JSON.stringify([d.clips, d.texts, d.markers]) !== since }
 
   const [w, h] = frameDims(orientation, resolution)
   const totalDuration = (() => {
@@ -922,27 +890,6 @@ function Editor() {
   }
   const undo = () => { if (histIndex.current > 0) applyHistory(histIndex.current - 1) }
   const redo = () => { if (histIndex.current < history.current.length - 1) applyHistory(histIndex.current + 1) }
-
-  // Keyboard shortcuts (ignored while typing in a field)
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      // Ctrl+S saves (Ctrl+Shift+S asks where), from anywhere, including while typing in a field
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); void saveRef.current(e.shiftKey); return }
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); return }
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') { e.preventDefault(); redo(); return }
-      const tag = (e.target as HTMLElement)?.tagName
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (e.target as HTMLElement)?.isContentEditable) return
-      if (e.code === 'Space') { e.preventDefault(); if (totalDuration > 0) setIsPlaying(p => !p) }
-      else if (e.key === 'Delete' || e.key === 'Backspace') { if (selectedId) { e.preventDefault(); deleteSelected() } }
-      else if (e.key.toLowerCase() === 's') { if (selClip) { e.preventDefault(); splitAtPlayhead() } }
-      else if (e.key === 'ArrowLeft') { e.preventDefault(); setCurrentTime(t => Math.max(0, t - (e.shiftKey ? 1 : 1 / 30))) }
-      else if (e.key === 'ArrowRight') { e.preventDefault(); setCurrentTime(t => Math.min(totalDuration, t + (e.shiftKey ? 1 : 1 / 30))) }
-      else if (e.key === 'Home') { e.preventDefault(); setCurrentTime(0) }
-      else if (e.key.toLowerCase() === 'm') { e.preventDefault(); setMarkers(m => [...m, newMarker(currentTime)]) }
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [totalDuration, selectedId, selClip, currentTime])
 
   // Load persistent settings (brand kit, intro defaults, audio) once
   useEffect(() => {
@@ -1367,11 +1314,18 @@ function Editor() {
         return { ok: true, clipId: clip.id, track: trackId }
       }
       case 'update_clip': {
-        if (!clips.find(c => c.id === cmd.clipId)) return { error: `clip not found: ${cmd.clipId}` }
+        const cur = clips.find(c => c.id === cmd.clipId)
+        if (!cur) return { error: `clip not found: ${cmd.clipId}` }
         if (cmd.trackId !== undefined && !['v1', 'v2', 'a1', 'a2'].includes(cmd.trackId)) return { error: `trackId must be v1, v2, a1 or a2, not "${cmd.trackId}"` }
         const patch: Partial<TimelineClip> = {}
         for (const k of ['start', 'duration', 'sourceStart', 'volume', 'fadeIn', 'fadeOut', 'trackId'] as const) if (cmd[k] !== undefined) (patch as any)[k] = cmd[k]
-        setClips(prev => prev.map(c => c.id === cmd.clipId ? { ...c, ...patch } : c))
+        // on a clip with automation the line is what plays, so a new volume moves the whole line
+        // (as the Volume slider does); setting only the flat value would change nothing you hear
+        setClips(prev => prev.map(c => c.id !== cmd.clipId ? c
+          : { ...c, ...patch, ...(patch.volume !== undefined && c.volumePoints?.length ? rescaleAutomation(c.volumePoints, c.volume, patch.volume) : {}) }))
+        // the line moves as a whole, so it stops when its loudest point reaches the 2.0 ceiling
+        const moved = patch.volume !== undefined && cur.volumePoints?.length ? rescaleAutomation(cur.volumePoints, cur.volume, patch.volume) : null
+        if (moved && moved.volume !== patch.volume) return { ok: true, volume: moved.volume, note: `volume stopped at ${moved.volume}: the automation line's loudest point is at the 2.0 ceiling` }
         return { ok: true }
       }
       case 'delete_item':
@@ -1383,11 +1337,10 @@ function Editor() {
         const c0 = clips.find(c => c.id === cmd.clipId)
         if (!c0) return { error: `clip not found: ${cmd.clipId}` }
         const t = cmd.t
-        if (t <= c0.start || t >= c0.start + c0.duration) return { error: `t=${t} outside clip [${c0.start}, ${c0.start + c0.duration}]` }
-        const off = t - c0.start
-        // hard cut on the picture, but ramp the waveform or the join clicks
-        const a = { ...c0, id: rid(), duration: off, fadeOut: 0, aFadeOut: DEPOP }
-        const b = { ...c0, id: rid(), start: t, duration: c0.duration - off, sourceStart: c0.sourceStart + off, fadeIn: 0, aFadeIn: DEPOP }
+        // hard cut on the picture, de-pop ramps on the waveform, automation cut in two (electron/edit.ts)
+        const halves = splitClip(c0, t, rid)
+        if (!halves) return { error: `t=${t} outside clip [${c0.start}, ${c0.start + c0.duration}]` }
+        const [a, b] = halves
         setClips(prev => { const i = prev.findIndex(c => c.id === c0.id); const n = [...prev]; n.splice(i, 1, a, b); return n })
         return { ok: true, left: a.id, right: b.id }
       }
@@ -1490,7 +1443,7 @@ function Editor() {
         if (!texts.find(t => t.id === cmd.textId)) return { error: `text not found: ${cmd.textId}` }
         const patch: Partial<TextClip> = {}
         for (const k of ['text', 'start', 'duration', 'x', 'y', 'fontSize', 'color', 'fadeIn', 'fadeOut', 'box', 'boxOpacity', 'boxColor', 'font', 'outline', 'outlineColor'] as const) if (cmd[k] !== undefined) (patch as any)[k] = cmd[k]
-        setTexts(prev => prev.map(t => t.id === cmd.textId ? { ...t, ...patch } : t))
+        setTexts(prev => prev.map(t => t.id === cmd.textId ? patchTextClip(t, patch) : t))
         return { ok: true }
       }
       case 'add_tag': {
@@ -1678,6 +1631,7 @@ function Editor() {
       }
       case 'cut_at_phrase': {
         if (!cmd.text) return { error: 'text required' }
+        const atCall = timelineKey()
         const sp = await readSpeech(cmd.model)
         if (sp.error || !sp.words) return { error: sp.error || 'no speech' }
         const hit = spanForPhrase(sp.words, cmd.text, { after: cmd.after, before: cmd.before })
@@ -1686,18 +1640,19 @@ function Editor() {
         const at = mode === 'start'
           ? (cmd.refine === false ? hit.cutIn : await refine(hit.cutIn, 'before'))
           : (cmd.refine === false ? hit.cutOut : await refine(hit.cutOut, 'after'))
+        // the phrase was found in the timeline as it was when this call started; if it was edited
+        // while the speech was read, those seconds now hold other words
+        if (timelineMoved(atCall)) return { error: STALE_TIMELINE }
         if (mode === 'split') {
           const hits = clips.filter(c => at > c.start && at < c.start + c.duration)
           if (!hits.length) return { error: `nothing to split at ${at.toFixed(2)}s` }
           setClips(prev => {
             const next = [...prev]
             for (const c0 of hits) {
-              const off = at - c0.start
-              // hard cut on the picture, but ramp the waveform or the join clicks (as split_clip)
-              const a = { ...c0, id: rid(), duration: off, fadeOut: 0, aFadeOut: DEPOP }
-              const b = { ...c0, id: rid(), start: at, duration: c0.duration - off, sourceStart: c0.sourceStart + off, fadeIn: 0, aFadeIn: DEPOP }
+              // hard cut on the picture, de-pop ramps on the waveform (as split_clip)
+              const halves = splitClip(c0, at, rid)
               const i = next.findIndex(c => c.id === c0.id)
-              next.splice(i, 1, a, b)
+              if (halves && i >= 0) next.splice(i, 1, ...halves)
             }
             return next
           })
@@ -1706,7 +1661,7 @@ function Editor() {
         const range = mode === 'start' ? { start: 0, end: at } : { start: at, end: totalDuration }
         if (range.end - range.start <= 0.05) return { error: 'nothing to remove there' }
         // trimming a whole head or tail drops the tags that were in it rather than piling them on the join
-        const out = removeRange(clips, texts, range.start, range.end, 0, markers, true)
+        const out = removeRange(clips, texts, range.start, range.end, 0, markers, rid, true)
         setClips(out.clips)
         setTexts(out.texts)
         setMarkers(out.markers)
@@ -2144,13 +2099,12 @@ function Editor() {
 
   const splitAtPlayhead = () => {
     if (!selClip) return
-    if (currentTime <= selClip.start || currentTime >= selClip.start + selClip.duration) return
-    const off = currentTime - selClip.start
-    // hard cut on the picture, but ramp the waveform or the join clicks (the same DEPOP as split_clip / removeRange)
-    const a = { ...selClip, id: rid(), duration: off, fadeOut: 0, aFadeOut: DEPOP }
-    const b = { ...selClip, id: rid(), start: currentTime, duration: selClip.duration - off, sourceStart: selClip.sourceStart + off, fadeIn: 0, aFadeIn: DEPOP }
-    setClips(prev => { const i = prev.findIndex(c => c.id === selClip.id); const n = [...prev]; n.splice(i, 1, a, b); return n })
-    setSelectedId(b.id)
+    // hard cut on the picture, de-pop ramps on the waveform, the automation line cut in two (the
+    // same splitClip as split_clip and cut_at_phrase)
+    const halves = splitClip(selClip, currentTime, rid)
+    if (!halves) return
+    setClips(prev => { const i = prev.findIndex(c => c.id === selClip.id); if (i < 0) return prev; const n = [...prev]; n.splice(i, 1, ...halves); return n })
+    setSelectedId(halves[1].id)
   }
 
   // Put the caret in the text on the picture, with the placeholder selected so typing replaces it
@@ -2176,7 +2130,7 @@ function Editor() {
     const el = editRef.current
     if (el && editingTextId) {
       const v = el.innerText.replace(/\n+$/, '')
-      setTexts(prev => prev.map(x => x.id === editingTextId ? { ...x, text: v } : x))
+      setTexts(prev => prev.map(x => x.id === editingTextId ? patchTextClip(x, { text: v }) : x))
     }
     setEditingTextId(null)
   }
@@ -2349,6 +2303,7 @@ function Editor() {
     if (useMotion && !videoClips.length) return { error: 'No video clips to scan for still frames.' }
     if (!useMotion && !hasAudio) return { error: 'No audio to scan. Switch "Detect by" to Visual stillness for silent footage.' }
     setSilenceBusy(useMotion ? 'Scanning frames…' : 'Analyzing audio…')
+    const atScan = timelineKey()
     try {
       let intervals: { start: number; end: number }[] = []
       if (useMotion) {
@@ -2366,35 +2321,17 @@ function Editor() {
         if (res.error) return { error: 'Cut pauses: ' + res.error }
         intervals = res.intervals || []
       }
-      // pad, clamp to the timeline, drop slivers, then MERGE overlaps (overlapping clips / adjacent
-      // detections would otherwise double-cut and corrupt later ranges)
-      let ranges = intervals
-        .map(iv => ({ start: Math.max(0, iv.start + S.pad), end: Math.min(totalDuration, iv.end - S.pad) }))
-        .filter(r => r.end - r.start > 0.1)
-        .sort((a, b) => a.start - b.start)
-      const merged: { start: number; end: number }[] = []
-      for (const r of ranges) {
-        const last = merged[merged.length - 1]
-        if (last && r.start <= last.end + 0.01) last.end = Math.max(last.end, r.end)
-        else merged.push({ ...r })
-      }
-      ranges = merged
-      // Two pauses close together leave an orphan sliver between them: a third of a second of
-      // speech that dissolves in and straight back out, which reads as a stutter rather than an
-      // edit. When a cut would strand a fragment shorter than MIN_KEEP, leave that pause in.
-      // Rhythm beats shaving another half second, and no speech is ever thrown away.
+      // the scan measured the timeline as it was; cut what it measured, or nothing
+      if (timelineMoved(atScan)) return { error: STALE_TIMELINE }
+      // pad, merge, keep the head and tail clean, leave out cuts that would strand a stutter:
+      // planPauseCuts in electron/edit.ts. Rhythm beats shaving another half second, and no
+      // speech is ever thrown away (MIN_KEEP: the shortest fragment worth keeping between two cuts).
       const MIN_KEEP = 0.9
-      const spaced: { start: number; end: number }[] = []
-      for (const r of ranges) {
-        const prevEnd = spaced.length ? spaced[spaced.length - 1].end : 0
-        if (r.start - prevEnd < MIN_KEEP) continue
-        spaced.push(r)
-      }
-      ranges = spaced
+      const ranges = planPauseCuts(intervals, totalDuration, { pad: S.pad, minKeep: MIN_KEEP })
       if (!ranges.length) return { error: useMotion ? 'No long static stretches found (lower the min length or stillness sensitivity in settings).' : 'No long pauses found (try lowering the minimum pause length in settings).' }
       ranges.sort((a, b) => b.start - a.start) // apply last→first so earlier times stay valid
       let nc = clips, nt = texts, nm = markers, removed = 0
-      for (const r of ranges) { const out = removeRange(nc, nt, r.start, r.end, S.smooth ? S.transition : 0, nm); nc = out.clips; nt = out.texts; nm = out.markers; removed += (r.end - r.start) }
+      for (const r of ranges) { const out = removeRange(nc, nt, r.start, r.end, S.smooth ? S.transition : 0, nm, rid); nc = out.clips; nt = out.texts; nm = out.markers; removed += (r.end - r.start) }
       setClips(nc); setTexts(nt); setMarkers(nm); setSelectedId(null); setCurrentTime(0)
       return { removed: ranges.length, seconds: +removed.toFixed(1), mode: useMotion ? 'stillness' : 'silence' }
     } catch (e) { console.error(e); return { error: 'Cut pauses failed: ' + String(e) } }
@@ -2533,7 +2470,7 @@ function Editor() {
     const beforeKey = JSON.stringify({ c: baseClips, t: baseTexts, m: baseMarkers })
     let nc = baseClips, nt = baseTexts, nm = baseMarkers
     for (const r of [...ranges].sort((a, b) => b.start - a.start)) {
-      const out = removeRange(nc, nt, r.start, r.end, settings.silence.smooth ? settings.silence.transition : 0, nm)
+      const out = removeRange(nc, nt, r.start, r.end, settings.silence.smooth ? settings.silence.transition : 0, nm, rid)
       nc = out.clips; nt = out.texts; nm = out.markers
     }
     setClips(nc); setTexts(nt); setMarkers(nm); setSelectedId(null)
@@ -3151,6 +3088,44 @@ function Editor() {
     } catch (e) { console.error(e); notify(`Could not open that project: ${errText(e)}`) }
   }
 
+  // Keyboard shortcuts. Which key means what (and when a key belongs to a text field, a slider or
+  // an open dialog instead) is decided and tested in electron/shortcuts.ts; this only carries it
+  // out. The listener is registered once and reaches the latest editor through a ref: depending
+  // on currentTime, it used to be torn down and added again on every frame of playback.
+  const shortcutRef = useRef<(s: Shortcut) => void>(() => {})
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const s = shortcutFor(e, { focus: focusKind(e.target as HTMLElement | null), modalOpen: !!document.querySelector('.modal-backdrop') })
+      if (!s) return
+      e.preventDefault()
+      shortcutRef.current(s)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+  const runShortcut = (s: Shortcut) => {
+    switch (s) {
+      case 'save': case 'saveAs': void saveProject(s === 'saveAs'); return
+      case 'open': void loadProject(); return
+      case 'export': if (exportProgress === null) void handleExport(); return
+      case 'undo': undo(); return
+      case 'redo': redo(); return
+      case 'play': if (totalDuration > 0) setIsPlaying(p => !p); return
+      case 'delete': deleteSelected(); return
+      case 'split': splitAtPlayhead(); return
+      case 'tag': setMarkers(m => [...m, newMarker(currentTime)]); return
+      case 'frameBack': case 'frameForward': case 'secondBack': case 'secondForward':
+        // a step is for looking at one frame: playback would carry the playhead straight off it
+        setIsPlaying(false)
+        setCurrentTime(t => stepTime(t, s.endsWith('Back') ? -1 : 1, fps, totalDuration, s.startsWith('second') ? 'second' : 'frame'))
+        return
+      case 'start': setCurrentTime(0); return
+      case 'end': setCurrentTime(totalDuration); return
+      case 'escape': setSelectedId(null); setCtxMenu(null); setShowHelpMenu(false); setShowImportMenu(false); return
+    }
+  }
+  useEffect(() => { shortcutRef.current = runShortcut })
+
   // Unsaved work from a session that ended without saving (a crash, a power cut, Don't save):
   // offered back once, at startup. The project folder's own copy is offered again when it opens.
   // This session starts untitled and autosaves into the untitled slot, so untitled work from the
@@ -3293,7 +3268,16 @@ function Editor() {
   const scrubHandlers = { onPointerDown: startScrub, onPointerMove: moveScrub, onPointerUp: endScrub, onPointerCancel: endScrub }
 
   const patchClip = (patch: Partial<TimelineClip>) => setClips(prev => prev.map(c => c.id === selectedId ? { ...c, ...patch } : c))
-  const patchText = (patch: Partial<TextClip>) => setTexts(prev => prev.map(t => t.id === selectedId ? { ...t, ...patch } : t))
+  const patchText = (patch: Partial<TextClip>) => setTexts(prev => prev.map(t => t.id === selectedId ? patchTextClip(t, patch) : t))
+  /** The Content box, one change per keystroke. A themed caption is retimed against its words as
+   *  they were before the typing began, never against the last keystroke's result, or a typed
+   *  rewrite piles up in the last word's slot (typeCaption, retimeCaptionText). */
+  const typeContent = (t: TextClip, text: string) => {
+    if (!t.caption) { setTexts(prev => prev.map(x => x.id === t.id ? { ...x, text } : x)); return }
+    const r = typeCaption(contentTyping.current, { id: t.id, text: t.text, duration: t.duration, words: t.caption.words }, text)
+    contentTyping.current = r.session
+    setTexts(prev => prev.map(x => x.id !== t.id ? x : { ...x, text, ...(x.caption ? { caption: { ...x.caption, words: r.words } } : {}) }))
+  }
 
   /** One place that knows how to bring up each panel: Help, the tour and the help chat all use it. */
   const openPanel = (p: HelpPanel | HelpAction) => {
@@ -3377,7 +3361,7 @@ function Editor() {
           <div className="hdr-group">
             <button className={`hdr-btn ${dirty ? 'unsaved' : ''}`} onClick={e => { void saveProject(e.shiftKey) }}
               title={`${dirty ? 'Unsaved changes. ' : ''}Save project (Ctrl+S)${currentProject ? ` into ${currentProject.name}` : saveFile ? ` to ${baseName(saveFile)}` : ''}.${currentProject || saveFile ? ' Shift+click or Ctrl+Shift+S saves a copy as a file; Save keeps writing here.' : ''}`}><IcSave /><span>Save</span></button>
-            <button className="hdr-btn" onClick={loadProject} title="Open project"><IcOpen /><span>Open</span></button>
+            <button className="hdr-btn" onClick={loadProject} title="Open project (Ctrl+O)"><IcOpen /><span>Open</span></button>
             {/* Import means footage, as in every other editor; the Cloud hand-off zip is one
                 click further, under the arrow */}
             <div className="hdr-split">
@@ -3423,7 +3407,7 @@ function Editor() {
             title="Help: the chat, getting started and the tour, community links, credits" aria-haspopup="menu" aria-expanded={showHelpMenu}><IcHelp /></button>
           <button className="hdr-btn icon" onClick={() => setShowSettings(true)} title="Brand kit & settings"><IcGear /></button>
           <button className="hdr-export" onClick={handleExport} disabled={(clips.length === 0 && texts.length === 0) || exportProgress !== null}
-            title="Render the video with the settings in the Export panel">
+            title="Render the video with the settings in the Export panel (Ctrl+E)">
             <IconExport /><span>{exportProgress !== null ? `${Math.round(exportProgress)}%` : 'Export'}</span>
           </button>
           {showHelpMenu && (
@@ -3540,7 +3524,9 @@ function Editor() {
                   onInput={(e) => { const v = (e.target as HTMLElement).innerText; setTexts(prev => prev.map(x => x.id === t.id ? { ...x, text: v } : x)) }}
                   onBlur={() => endTextEdit()}
                   onKeyDown={(e) => {
-                    e.stopPropagation()   // Space and Delete belong to the caret while typing
+                    // Space and Delete belong to the caret while typing; Ctrl+S (and the other
+                    // Ctrl shortcuts, which leave a field's own undo alone) still reach the editor
+                    if (!(e.ctrlKey || e.metaKey)) e.stopPropagation()
                     if (e.key === 'Escape' || (e.key === 'Enter' && !e.shiftKey)) { e.preventDefault(); endTextEdit() }
                   }}>
                   {editingTextId === t.id ? undefined : (t.text || ' ')}
@@ -3624,7 +3610,17 @@ function Editor() {
                     {selClip.trackId === 'v2' && <p className="hint">B-roll covers the video underneath while its sound keeps playing; this clip's own sound is not used.</p>}
                   </div>
                   <div className="field"><label>Volume - {Math.round(selClip.volume * 100)}%</label>
-                    <input type="range" min="0" max="2" step="0.05" value={selClip.volume} onChange={e => patchClip({ volume: parseFloat(e.target.value), volumePoints: [] })} style={{ width: '100%', ...rangeFill(selClip.volume, 0, 2) }} />
+                    {/* with automation the slider raises or lowers the whole line; Clear is the way to drop it */}
+                    <input type="range" min="0" max="2" step="0.05" value={selClip.volume}
+                      title={selClip.volumePoints?.length ? 'Raises or lowers the whole automation line, keeping its shape (it stops when the loudest point reaches 200%)' : undefined}
+                      onChange={e => {
+                        const v = parseFloat(e.target.value)
+                        if (!selClip.volumePoints?.length) { patchClip({ volume: v }); return }
+                        const r = slideVolume(volumeSlide.current, { id: selClip.id, volume: selClip.volume, volumePoints: selClip.volumePoints }, v)
+                        volumeSlide.current = r.slide
+                        patchClip({ volume: r.volume, volumePoints: r.volumePoints })
+                      }}
+                      style={{ width: '100%', ...rangeFill(selClip.volume, 0, 2) }} />
                   </div>
                   <div className="field">
                     <label>Volume Automation {selClip.volumePoints?.length ? `(${selClip.volumePoints.length} pts)` : ''}</label>
@@ -3646,7 +3642,7 @@ function Editor() {
               {rightTab === 'inspect' && selText && (
                 <div className="panel-section">
                   <h3 className="group-title">Text</h3>
-                  <div className="field"><label>Content</label><textarea className="duration-input" rows={2} value={selText.text} onChange={e => patchText({ text: e.target.value })} /></div>
+                  <div className="field"><label>Content</label><textarea className="duration-input" rows={2} value={selText.text} onChange={e => typeContent(selText, e.target.value)} /></div>
                   <div className="field row">
                     <div><label>Size</label><input type="number" min="8" step="2" className="duration-input" value={selText.fontSize} onChange={e => patchText({ fontSize: parseFloat(e.target.value) || 12 })} /></div>
                     <div><label>Color</label><input type="color" className="color-input" value={selText.color} onChange={e => patchText({ color: e.target.value })} /></div>
@@ -3678,14 +3674,14 @@ function Editor() {
                 exactly one row. More and the zoom group sit outside the scroller and stay put,
                 which also keeps the dropdown clear of the scroll container's clipping. */}
             <div className="tool-group">
-            <button className={`tool-btn play ${isPlaying ? 'playing' : ''}`} onClick={() => setIsPlaying(p => !p)} disabled={totalDuration <= 0}>{isPlaying ? <IconPause /> : <IconPlay />} {isPlaying ? 'Pause' : 'Play'}</button>
+            <button className={`tool-btn play ${isPlaying ? 'playing' : ''}`} onClick={() => setIsPlaying(p => !p)} disabled={totalDuration <= 0} title="Play / pause (Space)">{isPlaying ? <IconPause /> : <IconPlay />} {isPlaying ? 'Pause' : 'Play'}</button>
             <span className="timecode" title="Playhead / total length"><b>{fmt(currentTime)}</b><i>/</i>{fmt(totalDuration)}</span>
             <div className="divider" />
             <button className="tool-btn compactable" onClick={undo} disabled={!canUndo} title="Undo (Ctrl+Z)"><IconUndo /> <span className="tb-label">Undo</span></button>
             <button className="tool-btn compactable" onClick={redo} disabled={!canRedo} title="Redo (Ctrl+Shift+Z)"><IconRedo /> <span className="tb-label">Redo</span></button>
             <div className="divider" />
-            <button className="tool-btn compactable" onClick={splitAtPlayhead} disabled={!selClip} title="Split the selected clip at the playhead"><IconScissors /> <span className="tb-label">Split</span></button>
-            <button className="tool-btn compactable" onClick={deleteSelected} disabled={!selectedId} title="Delete the selection"><IconTrash /> <span className="tb-label">Delete</span></button>
+            <button className="tool-btn compactable" onClick={splitAtPlayhead} disabled={!selClip} title="Split the selected clip at the playhead (S)"><IconScissors /> <span className="tb-label">Split</span></button>
+            <button className="tool-btn compactable" onClick={deleteSelected} disabled={!selectedId} title="Delete the selection (Delete)"><IconTrash /> <span className="tb-label">Delete</span></button>
             <button className="tool-btn compactable" onClick={addText} title="Add a text layer"><IconText /> <span className="tb-label">Text</span></button>
             <button className={`tool-btn compactable ${isRecording ? 'recording' : ''}`} onClick={toggleRecord} title="Record a voiceover"><IconMic /> <span className="tb-label">{isRecording ? 'Stop' : 'Voiceover'}</span></button>
             <button className="tool-btn compactable captions-btn" onClick={() => generateCaptions()} disabled={captioning !== null || totalDuration <= 0} title="Auto-caption the whole timeline (on-device Whisper)">

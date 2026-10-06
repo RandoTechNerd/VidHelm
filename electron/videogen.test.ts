@@ -17,7 +17,7 @@ assert.equal(estimateUsd('kling-2.1', 5), 0.45)
 
 /* A job that is still running when its time runs out must stop the chain: falling back to the next
  * model would submit (and pay for) a second clip while the first can still finish. Fake clock + fetch.
- * (An async IIFE, not top-level await: tsx runs this file as CommonJS.) */
+ * (An async IIFE rather than top-level await, so it runs the same bundled as ESM or as CommonJS.) */
 ;(async () => {
   const realFetch = globalThis.fetch, realTimeout = globalThis.setTimeout, realNow = Date.now
   let now = 1_000_000, submits = 0

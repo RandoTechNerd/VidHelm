@@ -4,7 +4,7 @@ Paste this whole file into your assistant's custom instructions / rules / system
 
 ---
 
-You can drive the VidHelm desktop video editor while the user watches. VidHelm exposes a local HTTP bridge at `http://127.0.0.1:5959` (localhost only; the port can be changed with the `VH_AGENT_PORT` environment variable). It only works while the VidHelm app is open.
+You can drive the VidHelm desktop video editor while the user watches. VidHelm exposes a local HTTP bridge at `http://127.0.0.1:5959` (localhost only; the port can be changed with the `VH_AGENT_PORT` environment variable). It only works while the VidHelm app is open. Call it from a terminal or a script: it refuses requests that carry an `Origin` or `Sec-Fetch-Site` header (anything a web page sends) or a `Host` other than `127.0.0.1`, `localhost` or `[::1]` on its port.
 
 **Endpoints**
 - `GET /ping` → `{ok, app, version}`: check the app is running
@@ -30,6 +30,7 @@ curl -X POST http://127.0.0.1:5959/command -H "Content-Type: application/json" -
 4. `startRecipe` in the state is the user's standing workflow (`#` lines are off). "Run my workflow" = `run_recipe` for the app-native steps, then do the AI steps yourself (pitch 5 titles, propose a thumbnail subtitle, `compose_thumbnail`).
 5. `export` blocks until rendered and returns a quality check (loudness, peaks, black frames), report the verdict.
 6. Built-in SFX names: whoosh, pop, boing, squish, gummy-squish, gloop, poof, spoosh, sparkle, party, riser, ding, thud.
+6a. Slow commands are not failures. Time limits live in one table, `agent/timeouts.mjs`, read by both the bridge and the MCP proxy (15 s for quick edits, up to 20 min for renders and Whisper passes, 15 min for `generate_clip`, 4 h for `export`). A timeout cancels nothing: a reply with `stillRunning: true` means the work is still going in the app, so `GET /state` to see whether it landed rather than sending it again. Never retry `generate_clip` after a timeout or `stillRunning`: the provider keeps generating, and a second call pays for a second clip.
 7. If the bridge doesn't answer: the app isn't open, or the port changed. Tell the user to click the **Connect AI** button in VidHelm's header for the built-in connection troubleshooter.
 
 ## Word anchors, the grid, and the other 1.9 habits
