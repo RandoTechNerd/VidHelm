@@ -676,6 +676,8 @@ function Editor() {
   // still going): each one is refused while it runs. Refs, not state, so two requests arriving in
   // the same tick both see the first one start.
   const busyRef = useRef({ aiClip: false, captions: false, score: false })
+  // transcribe runs other than Captions, told the model download's percent (null once it is over)
+  const downloadWatchers = useRef(new Set<(pct: number | null) => void>())
   const [aiPrompt, setAiPrompt] = useState('')
   const [aiFrom, setAiFrom] = useState('')
   const [aiTo, setAiTo] = useState('')
@@ -837,8 +839,11 @@ function Editor() {
     }
     window.ipcRenderer.on('export-progress', handleProgress)
     const handleTranscribe = (_e: any, p: { stage: string; pct: number; etaSec?: number }) => {
-      // Takes, the booth draft and speech analysis transcribe too. Their progress used to light up
-      // the Captions button, which only a captions run clears: it then sat disabled until a restart.
+      // The first run of a model downloads it, minutes with nothing else moving, so a Takes, speech
+      // or booth run waiting on it says so in its own status (see transcribeWatching)
+      downloadWatchers.current.forEach(f => f(p.stage === 'download' ? p.pct : null))
+      // Those runs used to light up the Captions button instead, which only a captions run clears:
+      // it then sat disabled until a restart.
       if (!busyRef.current.captions) return
       setCaptioning(p.stage === 'download' ? 'Downloading model' : 'Transcribing')
       setCaptionPct(p.pct)
@@ -2307,6 +2312,17 @@ function Editor() {
   /** The Whisper model captions, the booth draft and Takes use: Automatic is the machine tier's. */
   const captionModel = () => resolveCaptionModel(settings.caption.model, perf.speechModel)
 
+  /** Transcribe for a run other than Captions (Takes, speech analysis, the booth draft). A fresh
+   *  install's first run downloads the model, a few hundred MB, so `onDownload` hears its percent
+   *  for the run's own status, then null once Whisper is listening. */
+  const transcribeWatching = async (filePath: string, opts: { model?: string; language?: string; word?: boolean }, onDownload?: (pct: number | null) => void) => {
+    if (onDownload) downloadWatchers.current.add(onDownload)
+    try { return await window.ipcRenderer.transcribe(filePath, opts) }
+    finally { if (onDownload) downloadWatchers.current.delete(onDownload) }
+  }
+  /** Takes and speech analysis show it on the Takes button and panel. */
+  const takesDownload = (pct: number | null) => setTakesBusy(pct === null ? 'Reading speech…' : `Downloading model ${pct}%`)
+
   // Local Whisper captions for the WHOLE timeline → timed text cues styled by caption settings
   // replace: the captions already on the timeline are swapped for the new ones in one update
   const generateCaptions = async (themeOverride?: string, opts: { replace?: boolean } = {}): Promise<number> => {
@@ -2366,14 +2382,15 @@ function Editor() {
 
   // Transcribe the timeline audio into read-along lines for the karaoke booth (one per phrase).
   // Used by the booth's "Draft from timeline audio" button and the agent's booth_script flow.
-  const draftBoothScript = async (): Promise<string | null> => {
+  // onDownload: the booth's status line, told about a first-time model download (transcribeWatching)
+  const draftBoothScript = async (onDownload?: (pct: number | null) => void): Promise<string | null> => {
     const audioClips = clips.filter(c => c.trackId === 'a1' || mediaBin.find(m => m.id === c.mediaId)?.hasAudio)
     if (!audioClips.length) return null
     try {
       const payload = mixPayload()
       const mix = await window.ipcRenderer.renderMixAudio({ clips: payload })
       if (mix.error || !mix.path) return null
-      const res = await window.ipcRenderer.transcribe(mix.path, { model: captionModel(), language: settings.caption.language, word: false })
+      const res = await transcribeWatching(mix.path, { model: captionModel(), language: settings.caption.language, word: false }, onDownload)
       const lines = (res.chunks || []).map(c => (c.text || '').trim()).filter(Boolean)
       return lines.length ? lines.join('\n') : null
     } catch (e) { console.error(e); return null }
@@ -2477,7 +2494,7 @@ function Editor() {
       const mix = await window.ipcRenderer.renderMixAudio({ clips: payload })
       if (mix.error || !mix.path) return { error: mix.error || 'could not prepare audio' }
       setTakesBusy('Reading speech…')
-      const res = await window.ipcRenderer.transcribe(mix.path, { model: want, language: settings.caption.language, word: true })
+      const res = await transcribeWatching(mix.path, { model: want, language: settings.caption.language, word: true }, takesDownload)
       if (res.error) return { error: res.error }
       const words: SpeechWord[] = (res.chunks || [])
         .map(c => ({ start: c.start, end: c.end ?? c.start + 0.25, text: c.text || '' }))
@@ -2532,7 +2549,7 @@ function Editor() {
       // Word timings, not phrases: Whisper packs a false start and its retake into one segment
       // ("Say hello to VidHelm. Say hello to VidHelm, a free editor"), so we rebuild the lines
       // ourselves and split them where the speaker started over.
-      const res = await window.ipcRenderer.transcribe(mix.path, { model: captionModel(), language: settings.caption.language, word: true })
+      const res = await transcribeWatching(mix.path, { model: captionModel(), language: settings.caption.language, word: true }, takesDownload)
       if (res.error) return { error: 'Takes: ' + res.error }
       const words = (res.chunks || [])
         .map(c => ({ start: c.start, end: c.end ?? c.start + 0.3, text: (c.text || '') }))

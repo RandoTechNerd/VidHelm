@@ -398,7 +398,8 @@ export function KaraokeBooth({ open, onClose, markers, totalDuration, currentTim
   onSeek: (t: number) => void; onPlay: (p: boolean) => void
   onRecorded: (path: string, startAt: number) => void
   script: string; onScript: (s: string) => void
-  onDraft: () => Promise<string | null>
+  /** onDownload: a first-time Whisper model download's percent, then null once it is transcribing */
+  onDraft: (onDownload?: (pct: number | null) => void) => Promise<string | null>
   /** the open project folder: takes are saved into its voice sub-folder */
   projectDir?: string | null
 }) {
@@ -551,7 +552,7 @@ export function KaraokeBooth({ open, onClose, markers, totalDuration, currentTim
         <textarea className="booth-script" rows={4} placeholder={'Paste your script, one line per beat.\nLines light up as the video plays; read along in one take.'} value={script} onChange={e => setScript(e.target.value)} />
         <button className="booth-edit" disabled={drafting || totalDuration <= 0}
           title="Transcribe the timeline audio with on-device Whisper and turn it into read-along lines, perfect for cleanly re-recording a rough take"
-          onClick={async () => { setDrafting(true); setStatus('Listening to your timeline…'); const s = await onDraft(); if (s) { setScript(s); setStatus('Draft ready, tidy the lines, then record.') } else setStatus('No speech found on the timeline.'); setDrafting(false) }}>
+          onClick={async () => { setDrafting(true); setStatus('Listening to your timeline…'); const s = await onDraft(pct => setStatus(pct === null ? 'Listening to your timeline…' : `Downloading the speech model ${pct}%…`)); if (s) { setScript(s); setStatus('Draft ready, tidy the lines, then record.') } else setStatus('No speech found on the timeline.'); setDrafting(false) }}>
           {drafting ? 'Transcribing…' : '✨ Draft from timeline audio'}
         </button>
       </>)}
