@@ -60,7 +60,10 @@ export interface VideoClip {
  * measured case) against its own sound. fps=...:start_time=0 fills from the in-point instead.
  *
  * HDR footage is scaled down BEFORE the tone map: about 2x faster from 4K to 1080p, and the picture
- * differs only by rounding at sharp edges.
+ * differs only by rounding at sharp edges. That fit is held to even sizes: zscale (the tone map's
+ * first step) refuses a 4:2:0 frame with an odd side ("image dimensions must be divisible by
+ * subsampling factor") and the whole export stops. DCI 4K (4096x2160, what drones and many cameras
+ * record HLG at) fits 1920x1080 as 1920x1013; swscale and pad never minded, so only this branch did.
  * Stills go straight from their own colours to BT.709 in one scale (see TO_709).
  */
 export function clipVideoChain(input: string, c: VideoClip, o: { W: number; H: number; fps: number; stillVf?: string; hdrToSdr?: string }, out: string): string {
@@ -75,7 +78,7 @@ export function clipVideoChain(input: string, c: VideoClip, o: { W: number; H: n
   const fit = `scale=${W}:${H}:force_original_aspect_ratio=decrease`
   let v: string
   if (c.type === 'image') v = `[${input}]${o.stillVf || ''}${keyChain}${fit}:${TO_709},format=yuva420p`
-  else if (c.hdr && o.hdrToSdr) v = `[${input}]fps=${o.fps}:start_time=0,${keyChain}${fit},${o.hdrToSdr},format=yuva420p`
+  else if (c.hdr && o.hdrToSdr) v = `[${input}]fps=${o.fps}:start_time=0,${keyChain}${fit}:force_divisible_by=2,${o.hdrToSdr},format=yuva420p`
   else v = `[${input}]fps=${o.fps}:start_time=0,${keyChain}format=yuva420p,${fit}`
   v += `,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=0x00000000,setpts=PTS-STARTPTS+${c.start}/TB`
   if ((c.fadeIn ?? 0) > 0) v += `,fade=t=in:st=${c.start}:d=${c.fadeIn}:alpha=1`

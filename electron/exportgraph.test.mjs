@@ -176,7 +176,7 @@ try {
     '-color_primaries', 'bt2020', '-color_trc', 'arib-std-b67', '-colorspace', 'bt2020nc', T('hlg.mp4')])
   if (hlg.status === 0) {
     const chain = clipVideoChain('0:v', { start: 0, duration: 1, hdr: true }, { W: 640, H: 360, fps: 30, hdrToSdr: HDR_TO_SDR }, 'v')
-    ok(/fps=30:start_time=0,scale=640:360:force_original_aspect_ratio=decrease,zscale/.test(chain), 'the scale comes before the tone map')
+    ok(/fps=30:start_time=0,scale=640:360:force_original_aspect_ratio=decrease:force_divisible_by=2,zscale/.test(chain), 'the scale comes before the tone map')
     const pic = (g) => ffBuf(['-i', T('hlg.mp4'), '-filter_complex', g, '-map', '[v]', '-frames:v', '10', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'])
     const fast = pic(chain.replace('[v]', '[x]') + ';[x]format=yuv420p[v]')
     const slow = pic(`[0:v]fps=30:start_time=0,${HDR_TO_SDR},format=yuva420p,scale=640:360:force_original_aspect_ratio=decrease,format=yuv420p[v]`)
@@ -184,6 +184,16 @@ try {
     if (fast.stdout?.length && fast.stdout.length === slow.stdout?.length) { for (let i = 0; i < fast.stdout.length; i++) diff += Math.abs(fast.stdout[i] - slow.stdout[i]); diff /= fast.stdout.length }
     else diff = Infinity
     ok(fast.status === 0 && diff < 1.5, `same picture as tone mapping at full size (mean difference ${diff.toFixed(2)} of 255)`)
+    // DCI 4K (4096x2160) into 1920x1080 fits as 1920x1013, and zscale refuses an odd side of a 4:2:0
+    // frame, stopping the whole export. The same shape, small: 1024x540 into 480x270 fits as 480x253.
+    const dci = ff(['-f', 'lavfi', '-i', 'smptehdbars=s=1024x540:r=30:d=1', '-vf', 'format=yuv420p10le', '-c:v', 'libx265', '-preset', 'ultrafast', '-x265-params', 'log-level=error',
+      '-color_primaries', 'bt2020', '-color_trc', 'arib-std-b67', '-colorspace', 'bt2020nc', T('hlg-dci.mp4')])
+    const oddFit = (g) => ffBuf(['-i', T('hlg-dci.mp4'), '-filter_complex', g, '-map', '[v]', '-frames:v', '3', '-f', 'rawvideo', '-pix_fmt', 'gray', '-'])
+    const dciChain = clipVideoChain('0:v', { start: 0, duration: 1, hdr: true }, { W: 480, H: 270, fps: 30, hdrToSdr: HDR_TO_SDR }, 'v')
+    const dciRun = oddFit(dciChain)
+    ok(dci.status === 0 && dciRun.status === 0 && dciRun.stdout.length === 480 * 270 * 3, `an HDR clip whose fit has an odd side renders (exit ${dciRun.status}${dciRun.status ? ': ' + String(dciRun.stderr).trim().split('\n')[0] : ''})`)
+    const oldRun = oddFit(dciChain.replace(':force_divisible_by=2', ''))
+    ok(oldRun.status !== 0 && /divisible by subsampling/.test(String(oldRun.stderr)), '(control: without the even fit, zscale stops the render)')
   } else console.log('  skip  HDR (this ffmpeg cannot write a 10-bit HEVC clip)')
 
   console.log('\n-- text is drawn literally --')
