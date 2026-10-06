@@ -25,7 +25,7 @@
 
 export type Shortcut =
   | 'save' | 'saveAs' | 'open' | 'export' | 'undo' | 'redo'
-  | 'play' | 'delete' | 'split' | 'tag'
+  | 'play' | 'delete' | 'rippleDelete' | 'rippleTrimStart' | 'rippleTrimEnd' | 'split' | 'tag'
   | 'frameBack' | 'frameForward' | 'secondBack' | 'secondForward' | 'start' | 'end' | 'escape'
 
 /** typing: the keys belong to a caret. control: a slider, tick box or list owns arrows and Space. */
@@ -75,7 +75,7 @@ export function shortcutFor(e: KeyPress, ctx: KeyContext): Shortcut | null {
   if (ctx.focus !== 'none' || ctx.modalOpen) return null
   let hit: Shortcut | null = null
   if (e.code === 'Space' || e.key === ' ') hit = 'play'
-  else if (e.key === 'Delete' || e.key === 'Backspace') hit = 'delete'
+  else if (e.key === 'Delete' || e.key === 'Backspace') hit = e.shiftKey ? 'rippleDelete' : 'delete'
   else if (e.key === 'ArrowLeft') hit = e.shiftKey ? 'secondBack' : 'frameBack'
   else if (e.key === 'ArrowRight') hit = e.shiftKey ? 'secondForward' : 'frameForward'
   else if (e.key === 'Home') hit = 'start'
@@ -83,6 +83,9 @@ export function shortcutFor(e: KeyPress, ctx: KeyContext): Shortcut | null {
   else if (e.key === 'Escape') hit = 'escape'
   else if (letter === 's') hit = 'split'
   else if (letter === 'm') hit = 'tag'
+  // Q and W as in Premiere and Resolve: trim the selected clip's head or tail to the playhead, gap closed
+  else if (letter === 'q') hit = 'rippleTrimStart'
+  else if (letter === 'w') hit = 'rippleTrimEnd'
   if (hit && e.repeat && !/Back$|Forward$/.test(hit)) return null
   return hit
 }

@@ -73,5 +73,15 @@ ok(near(K.stepTime(2, 1, 30, 10, 'second'), 3) && near(K.stepTime(2.01, -1, 30, 
 ok(K.stepTime(0, -1, 30, 10) === 0 && near(K.stepTime(9.99, 1, 30, 10), 10), 'never before 0 or past the end')
 ok(near(K.stepTime(1, 1, 0, 10), 1 + 1 / 30) && K.stepTime(NaN, 1, 30, 10) === 1 / 30, 'a bad fps or time falls back sanely')
 
+// ---- ripple keys ----
+{
+  const free = { focus: 'none', modalOpen: false }
+  ok(K.shortcutFor({ key: 'Delete', shiftKey: true }, free) === 'rippleDelete' && K.shortcutFor({ key: 'Backspace', shiftKey: true }, free) === 'rippleDelete', 'Shift+Delete / Shift+Backspace ripple-delete')
+  ok(K.shortcutFor({ key: 'Delete' }, free) === 'delete', 'plain Delete still leaves the gap')
+  ok(K.shortcutFor({ key: 'q' }, free) === 'rippleTrimStart' && K.shortcutFor({ key: 'w' }, free) === 'rippleTrimEnd', 'Q and W ripple-trim')
+  ok(K.shortcutFor({ key: 'q' }, { focus: 'typing', modalOpen: false }) === null && K.shortcutFor({ key: 'w', ctrlKey: true }, free) === null, 'Q/W never fire in a text field or with Ctrl')
+  ok(K.shortcutFor({ key: 'q', repeat: true }, free) === null, 'a held Q does not repeat')
+}
+
 console.log(`\n${fail ? 'FAILED' : 'ALL PASSED'} - ${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

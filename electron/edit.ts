@@ -250,6 +250,47 @@ export function removeRange<C extends EditClip, T extends EditText, M extends Ed
 }
 
 /**
+ * Ripple edits, the way Premiere and Resolve mean them: take time out and close the gap.
+ *
+ * What moves depends on where the clip lives. The video track is the spine of the edit, so taking
+ * time out of it takes that time out of everything (b-roll, music, captions and tags stay in sync,
+ * exactly like Cut Pauses). A clip on any other track only closes the gap on its own track: deleting
+ * a sound effect must not shorten the video under it.
+ */
+export type RippleKind = 'delete' | 'trimStart' | 'trimEnd'
+
+/** The stretch a ripple edit takes out of one clip, or null when the playhead is not inside it. */
+export function rippleRange(c: { start: number; duration: number }, kind: RippleKind, playhead: number): { start: number; end: number } | null {
+  const s = c.start, e = c.start + c.duration
+  if (kind === 'delete') return { start: s, end: e }
+  const inside = playhead > s + 0.01 && playhead < e - 0.01
+  if (!inside) return null
+  return kind === 'trimStart' ? { start: s, end: playhead } : { start: playhead, end: e }
+}
+
+/** Close a gap on one track only: the time [s, e) comes out of the clips on `track`, later ones move left. */
+export function rippleTrack<C extends EditClip & { trackId: string }>(clips: C[], track: string, s: number, e: number): C[] {
+  const len = e - s
+  if (!(len > 0)) return clips
+  const out: C[] = []
+  for (const c of clips) {
+    if (c.trackId !== track) { out.push(c); continue }
+    const cs = c.start, ce = c.start + c.duration
+    if (ce <= s + 1e-9) { out.push(c); continue }
+    if (cs >= e - 1e-9) { out.push({ ...c, start: cs - len }); continue }
+    // the edited clip itself: keep what lies outside [s, e), joined up
+    const left = Math.max(0, s - cs), right = Math.max(0, ce - e)
+    if (left > 0.01) out.push({ ...c, duration: left, aFadeOut: Math.max(DEPOP, c.aFadeOut ?? 0), volumePoints: rebasePoints(c.volumePoints, 0, left) })
+    if (right > 0.01) {
+      const from = e - cs
+      out.push({ ...c, ...(left > 0.01 ? { id: c.id + '_r' } : {}), start: s, duration: right, sourceStart: c.sourceStart + from,
+        aFadeIn: Math.max(DEPOP, c.aFadeIn ?? 0), volumePoints: rebasePoints(c.volumePoints, from, c.duration) })
+    }
+  }
+  return out
+}
+
+/**
  * Which stretches Cut Pauses removes, from the quiet (or still) intervals it measured.
  *
  * - Each interval is padded inward by `pad`, so a breath stays either side of the speech. Not at

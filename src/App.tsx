@@ -28,7 +28,7 @@ import { planBroll, snapToWords, describePlan, type BrollAsset, type Placement }
 import { looksLikeThumbPhoto } from '../electron/thumbpick'
 import { resolveProfile, describeProfile, type PerfProfile, type Tier, type TierPreference } from '../electron/capability'
 import { shortcutFor, focusKind, stepTime, type Shortcut } from '../electron/shortcuts'
-import { splitClip, removeRange, planPauseCuts, rescaleAutomation, slideVolume, type VolumeSlide } from '../electron/edit'
+import { splitClip, removeRange, planPauseCuts, rescaleAutomation, slideVolume, rippleRange, rippleTrack, type RippleKind, type VolumeSlide } from '../electron/edit'
 import { tickStepFor, contentWidth, collectSnapTargets, nearestTarget, snapMove, trimTo, clampToSource, maxDurationFrom, footageLength, moveReadout, trimReadout, stripTiles, stripFits, shiftWords, offSpeechNote, timecode, followScroll, type TimecodeMode } from '../electron/timeline'
 import { TimeRuler } from './ruler'
 import { ClipWave, type Peaks } from './clipwave'
@@ -87,7 +87,9 @@ interface MediaAudio {
    *  (a video's copy of its picture with the bake, absent until one is made for it; previewError when it could not be) */
   bake?: { want: string; path?: string; previewPath?: string; previewError?: string; segments?: [number, number][]; summary?: string; effective?: Preset }
   baking?: { want: string; pct: number; line: string }
-  bakeError?: { want: string; error: string }
+  /** tries: how many times this exact bake has failed; one automatic retry follows the first */
+  bakeError?: { want: string; error: string; tries?: number }
+  bakeRetry?: { want: string; tries: number }
 }
 /** Only the user's choices: what a project file keeps, and what survives a relink. */
 const userAudio = (a?: MediaAudio): MediaAudio | undefined => {
@@ -168,6 +170,10 @@ const lufsText = (x: number) => `${x < 0 ? '\u2212' : ''}${Math.abs(x).toFixed(1
  * measured linear gain to the target, so the slider is an exact offset from it (electron/audiomix.ts
  * planMaster) and this line is what Watch & Verify will measure.
  */
+/** The Watch & Verify pass badge names what the export was mastered for, not always YouTube. */
+const READY_FOR: Record<string, string> = { youtube: 'YouTube-ready', podcast: 'Podcast-ready', broadcast: 'Broadcast-ready', audiobook: 'Audiobook-ready' }
+const readyLabel = (audio: AppSettings['audio']) => audio.optimize ? (READY_FOR[platformTarget(audio.target).id] || 'Upload-ready') : 'Upload-ready'
+
 const masterVolumeHint = (audio: AppSettings['audio'], masterVolume: number) => {
   const mvDb = masterVolume > 0 ? 20 * Math.log10(masterVolume) : -Infinity
   const off = Math.abs(mvDb) >= 0.05 ? `${mvDb > 0 ? '+' : '\u2212'}${Math.abs(mvDb).toFixed(1)} dB` : ''
@@ -1194,17 +1200,28 @@ function Editor() {
       if (a.bake?.want === want || a.bakeError?.want === want) continue
       const k = `b|${m.path}|${want}`
       if (soundJobs.current.has(k)) continue
+      const tries = a.bakeRetry?.want === want ? a.bakeRetry.tries : 0
       soundJobs.current.add(k)
       const path = m.path, name = m.name
       // a video asked without a picture is told the FLAC, which its <video> must never be given
       const previewOf = (r: VoiceBakeResult) => m.type === 'video' && !picture ? undefined : r.previewPath
       setMediaBin(prev => prev.map(x => x.path === path ? { ...x, audio: { ...x.audio, baking: { want, pct: 0, line: 'Waiting its turn' } } } : x))
+      // A bake can fail for a passing reason (the file still being written, the disk busy with a
+      // proxy), so the first failure is retried once after a short wait; a second one sticks until
+      // Fix voice changes or the app restarts, rather than looping on a file that cannot be read.
+      const failed = (error: string) => {
+        setMediaBin(prev => prev.map(x => x.path !== path ? x : { ...x, audio: { ...x.audio, baking: undefined, bakeError: { want, error, tries: tries + 1 } } }))
+        if (tries === 0) {
+          notify(`Fix voice could not run on ${name} (${error}). Trying once more in 15 seconds.`, 7000)
+          setTimeout(() => setMediaBin(prev => prev.map(x => x.path === path && x.audio?.bakeError?.want === want
+            ? { ...x, audio: { ...x.audio, bakeError: undefined, bakeRetry: { want, tries: 1 } } } : x)), 15000)
+        } else notify(`Fix voice could not run on ${name} (${error}). It plays and exports as recorded.`, 9000)
+      }
       void window.ipcRenderer.bakeVoice({ filePath: path, preset: fix, picture }).then(r => {
+        if (r?.error) { failed(r.error); return }
         setMediaBin(prev => prev.map(x => x.path !== path ? x : { ...x, audio: { ...x.audio, baking: undefined,
-          ...(r?.error ? { bakeError: { want, error: r.error } }
-            : { bake: { want, path: r.path, previewPath: previewOf(r), previewError: r.previewError, segments: r.segments, summary: r.summary, effective: r.effective }, bakeError: undefined }) } }))
-        if (r?.error) notify(`Fix voice could not run on ${name} (${r.error}). It plays and exports as recorded.`, 9000)
-      }).catch(e => setMediaBin(prev => prev.map(x => x.path === path ? { ...x, audio: { ...x.audio, baking: undefined, bakeError: { want, error: errText(e) } } } : x)))
+          bake: { want, path: r.path, previewPath: previewOf(r), previewError: r.previewError, segments: r.segments, summary: r.summary, effective: r.effective }, bakeError: undefined, bakeRetry: undefined } }))
+      }).catch(e => failed(errText(e)))
         .finally(() => soundJobs.current.delete(k))
     }
   }, [mediaBin, clips, previewMix])
@@ -1681,7 +1698,7 @@ function Editor() {
           format: { orientation, resolution, fps, width: w, height: h },
           duration: totalDuration, currentTime, isPlaying,
           mediaBin: mediaBin.map(m => ({ id: m.id, name: m.name, type: m.type, duration: m.duration, path: m.path, chromaKey: m.chromaKey, ...(m.offline ? { offline: true } : {}), ...(userAudio(m.audio) ? { sound: userAudio(m.audio) } : {}) })),
-          unsaved: isDirty(), project: currentProject?.name || (saveFile ? baseName(saveFile) : null),
+          unsaved: docKeyOf(projectData()) !== savedKeyRef.current, project: currentProject?.name || (saveFile ? baseName(saveFile) : null),
           clips: clips.map(c => ({ id: c.id, track: c.trackId, media: mediaBin.find(m => m.id === c.mediaId)?.name, start: +c.start.toFixed(3), duration: +c.duration.toFixed(3), sourceStart: +c.sourceStart.toFixed(3), volume: c.volume, fadeIn: c.fadeIn, fadeOut: c.fadeOut, automationPoints: c.volumePoints?.length || 0, ...(previewMix.clips.has(c.id) ? { audio: clipSoundState(c) } : {}) })),
           // the mix: the loudness target, the ducking, and where the export will land (measured in the background)
           sound: (() => {
@@ -2662,6 +2679,27 @@ function Editor() {
     setClips(c => c.filter(x => x.id !== selectedId))
     setTexts(t => t.filter(x => x.id !== selectedId))
     setSelectedId(null)
+  }
+
+  /** Shift+Delete, Q and W: take time out and close the gap (electron/edit.ts says what moves). */
+  const rippleEdit = (kind: RippleKind) => {
+    if (selText && kind === 'delete') {
+      // a title leaves a gap only on the text row: later titles move up to fill it
+      const len = selText.duration, end = selText.start + selText.duration
+      setTexts(prev => prev.filter(x => x.id !== selText.id).map(x => x.start >= end - 1e-6 ? { ...x, start: x.start - len } : x))
+      setSelectedId(null)
+      return
+    }
+    if (!selClip) return
+    const range = rippleRange(selClip, kind, currentTime)
+    if (!range) { notify('Put the playhead inside the selected clip first: Q trims its start to the playhead, W its end.', 4000); return }
+    if (selClip.trackId === 'v1') {
+      // the spine: the same cut Cut Pauses makes, so b-roll, music, captions and tags stay in sync
+      const out = removeRange(clips, texts, range.start, range.end, 0, markers, rid, true)
+      setClips(out.clips); setTexts(out.texts); setMarkers(out.markers)
+    } else setClips(prev => rippleTrack(prev, selClip.trackId, range.start, range.end))
+    if (kind === 'delete') setSelectedId(null)
+    setCurrentTime(range.start)
   }
 
   const splitAtPlayhead = () => {
@@ -3816,6 +3854,9 @@ function Editor() {
       case 'redo': redo(); return
       case 'play': if (totalDuration > 0) setIsPlaying(p => !p); return
       case 'delete': deleteSelected(); return
+      case 'rippleDelete': rippleEdit('delete'); return
+      case 'rippleTrimStart': rippleEdit('trimStart'); return
+      case 'rippleTrimEnd': rippleEdit('trimEnd'); return
       case 'split': splitAtPlayhead(); return
       case 'tag': setMarkers(m => [...m, newMarker(currentTime)]); return
       case 'frameBack': case 'frameForward': case 'secondBack': case 'secondForward':
@@ -4617,7 +4658,7 @@ function Editor() {
             <button className="tool-btn compactable" onClick={redo} disabled={!canRedo} title="Redo (Ctrl+Shift+Z)"><IconRedo /> <span className="tb-label">Redo</span></button>
             <div className="divider" />
             <button className="tool-btn compactable" onClick={splitAtPlayhead} disabled={!selClip} title="Split the selected clip at the playhead (S)"><IconScissors /> <span className="tb-label">Split</span></button>
-            <button className="tool-btn compactable" onClick={deleteSelected} disabled={!selectedId} title="Delete the selection (Delete)"><IconTrash /> <span className="tb-label">Delete</span></button>
+            <button className="tool-btn compactable" onClick={deleteSelected} disabled={!selectedId} title="Delete the selection (Delete). Shift+Delete also closes the gap; Q / W trim the clip's start / end to the playhead and close it"><IconTrash /> <span className="tb-label">Delete</span></button>
             <button className="tool-btn compactable" onClick={addText} title="Add a text layer"><IconText /> <span className="tb-label">Text</span></button>
             <button className={`tool-btn compactable ${isRecording ? 'recording' : ''}`} onClick={toggleRecord} title="Record a voiceover"><IconMic /> <span className="tb-label">{isRecording ? 'Stop' : 'Voiceover'}</span></button>
             <button className="tool-btn compactable captions-btn" onClick={() => generateCaptions()} disabled={captioning !== null || totalDuration <= 0} title="Auto-caption the whole timeline (on-device Whisper)">
@@ -5071,7 +5112,7 @@ function Editor() {
         <div className="modal-backdrop" onClick={() => setShowQC(false)}>
           <div className="modal qc" onClick={e => e.stopPropagation()}>
             <div className="modal-head">
-              <h2>Watch &amp; Verify {qcReport && !qcReport.error && <span className={`verdict ${qcReport.verdict}`}>{qcReport.verdict === 'pass' ? 'YouTube-ready' : qcReport.verdict === 'warn' ? 'Minor warnings' : 'Issues found'}</span>}</h2>
+              <h2>Watch &amp; Verify {qcReport && !qcReport.error && <span className={`verdict ${qcReport.verdict}`}>{qcReport.verdict === 'pass' ? readyLabel(settings.audio) : qcReport.verdict === 'warn' ? 'Minor warnings' : 'Issues found'}</span>}</h2>
               <button className="modal-close" aria-label="Close" onClick={() => setShowQC(false)}><IcClose /></button>
             </div>
             <div className="modal-body">

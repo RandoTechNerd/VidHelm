@@ -171,5 +171,27 @@ console.log('slideVolume (one drag of the Volume slider)')
   ok(other.slide.id === 'a' && other.volumePoints[1].v === 0.9, 'a slide on another clip is never applied to this one')
 }
 
+// ---- ripple edits ----
+{
+  const c = { start: 10, duration: 5 }
+  ok(JSON.stringify(E.rippleRange(c, 'delete', 0)) === '{"start":10,"end":15}', 'ripple delete takes the whole clip, wherever the playhead is')
+  ok(JSON.stringify(E.rippleRange(c, 'trimStart', 12)) === '{"start":10,"end":12}', 'Q takes head to playhead')
+  ok(JSON.stringify(E.rippleRange(c, 'trimEnd', 12)) === '{"start":12,"end":15}', 'W takes playhead to tail')
+  ok(E.rippleRange(c, 'trimStart', 9) === null && E.rippleRange(c, 'trimEnd', 15) === null, 'Q/W refuse when the playhead is outside the clip')
+  const mk = (id, track, start, duration, sourceStart = 0) => ({ id, trackId: track, start, duration, sourceStart, fadeIn: 0, fadeOut: 0 })
+  const sfx = [mk('a', 'a2', 0, 1), mk('b', 'a2', 2, 1), mk('c', 'a2', 5, 1), mk('v', 'v1', 0, 10)]
+  const del = E.rippleTrack(sfx, 'a2', 2, 3)
+  ok(!del.find(x => x.id === 'b') && del.find(x => x.id === 'c').start === 4, 'ripple delete on a2 removes b and pulls c left by its length')
+  ok(del.find(x => x.id === 'a').start === 0 && del.find(x => x.id === 'v').start === 0 && del.find(x => x.id === 'v').duration === 10, 'earlier clips and other tracks never move')
+  const head = E.rippleTrack([mk('m', 'a1', 4, 6, 100), mk('n', 'a1', 12, 2)], 'a1', 4, 6)
+  const m = head.find(x => x.id === 'm')
+  ok(m.start === 4 && m.duration === 4 && m.sourceStart === 102, 'Q on a music clip: start stays put, source advances by the trimmed amount')
+  ok(m.aFadeIn >= E.DEPOP, 'the new head gets a de-pop ramp')
+  ok(head.find(x => x.id === 'n').start === 10, 'the next clip on the track closes up')
+  const tail = E.rippleTrack([mk('m', 'a1', 4, 6, 100)], 'a1', 7, 10)
+  ok(tail[0].duration === 3 && tail[0].sourceStart === 100 && tail[0].aFadeOut >= E.DEPOP, 'W keeps the head and ramps the new tail')
+  ok(E.rippleTrack(sfx, 'a2', 3, 3) === sfx, 'an empty range changes nothing')
+}
+
 console.log(`\n${fail ? 'FAILED' : 'ALL PASSED'} - ${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)
