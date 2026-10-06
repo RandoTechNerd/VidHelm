@@ -3,8 +3,11 @@ import { restoreDragOffset, plainDragOffset, shouldSnapMaximize } from './dragMa
 import { findModelInHtml } from './modelSniff'
 import { buildAss, chooseTheme, THEME_FONTS, type ThemeFont } from './styletheme'
 import { scoreFrame, rankFrames, sampleTimes, thumbTextLayout, photoNudge, type FrameScore } from './thumbpick'
-import { planProxy, proxyFilter, proxyFits, proxyKey, quarterTurn, HDR_TO_SDR, type ProbeInfo } from './playable'
+import { planProxy, proxyFits, proxyKey, proxyAttempts, proxyArgs, quarterTurn, isRealVideo, isStillFormat, probeDuration, lastStatsTime, HDR_TO_SDR, type ProbeInfo } from './playable'
 import { refineFromEnvelope } from './speech'
+import { energyEnvelope, transcribeWindows, mergeWordPieces } from './asrwindows'
+import { cleanTranscript } from './asrclean'
+import { resolveCaptionModel, migrateCaptionModel, etaSeconds, blendRate, DEFAULT_SEC_PER_MIN, type AsrModel, type CaptionModelSetting } from './asrmodel'
 import { planCrop, cropExpr, type Frame as GrayFrame } from './framing'
 import { classify, profileFor, benchmark, type MachineSpecs } from './capability'
 import { REALISTIC_RECIPES, REALISTIC_REV } from './sfxrecipes'
@@ -486,10 +489,16 @@ const decodePCM = (file: string) => new Promise<Float32Array>((resolve, reject) 
 
 // Local Whisper captioning (Transformers.js + onnxruntime-node, fully on-device)
 const asrPipes: Record<string, any> = {} // cache one pipeline per model id
+// How fast each model really runs here (seconds of work per minute of audio), kept between runs so
+// the progress pill can say how long is left before the first window is even back
+const asrSpeedPath = () => path.join(app.getPath('userData'), 'asr-speed.json')
+const readAsrSpeed = (): Record<string, number> => { try { return JSON.parse(fs.readFileSync(asrSpeedPath(), 'utf8')) || {} } catch { return {} } }
+// 'auto' (or nothing) from a caller that did not resolve it: the machine's own tier decides
+const tierSpeechModel = (): AsrModel => machineSpecs ? profileFor(classify(machineSpecs).tier).speechModel : 'base'
 ipcMain.handle('transcribe', async (_event, filePath: string, opts: any = {}) => {
   try {
     if (!filePath || !fs.existsSync(filePath)) return { error: 'File not found' }
-    const size = ['tiny', 'base', 'small'].includes(opts.model) ? opts.model : 'tiny'
+    const size = resolveCaptionModel(opts.model, tierSpeechModel())
     const lang = opts.language || 'en'
     const useEn = lang === 'en' // English-only models are faster + more accurate for English
     const modelId = `Xenova/whisper-${size}${useEn ? '.en' : ''}`
@@ -504,40 +513,39 @@ ipcMain.handle('transcribe', async (_event, filePath: string, opts: any = {}) =>
     const audio = await decodePCM(filePath)
     if (!audio.length) return { error: 'No audio found' }
 
-    // Process in 30s segments (Whisper's window) so we can report real progress.
-    //
-    // The windows OVERLAP. Slicing on an exact 30s boundary lands mid-word roughly every time,
-    // and a word cut in half is either transcribed wrong or lost from both sides, which is
-    // exactly the sort of hole that later makes a cut land in the wrong place. The overlap is
-    // then de-duplicated: the same word spoken once must not come back twice.
-    const sr = 16000, chunkSec = 30
-    const overlap = Math.max(0, Math.min(5, opts.overlap ?? 1.5))
-    const stride = chunkSec - overlap
-    const nChunks = Math.max(1, Math.ceil(Math.max(0, audio.length / sr - overlap) / stride))
+    // Whisper hears 30 s at a time, so long audio goes in windows, each ending in a pause (see
+    // electron/asrwindows.ts: cutting every 30 s exactly garbled or doubled the word on each seam).
+    // The loudness envelope that finds the pauses also feeds the ghost filter at the end.
+    const sr = 16000, total = audio.length / sr
+    const env = energyEnvelope(audio, sr)
     const genOpts: any = { return_timestamps: opts.word ? 'word' : true }
     if (!useEn) { genOpts.task = 'transcribe'; if (lang !== 'auto') genOpts.language = lang }
-    const results: { start: number; end: number; text: string }[] = []
-    const norm = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '')
-    for (let i = 0; i < nChunks; i++) {
-      const from = Math.round(i * stride * sr)
-      const seg = audio.subarray(from, Math.min(audio.length, from + chunkSec * sr))
-      if (seg.length < sr * 0.2) break
-      const out = await asr(seg, genOpts)
-      const offset = from / sr
-      for (const c of (out.chunks || [])) {
-        const text = (c.text || '').trim()
-        if (!text) continue
-        const start = (c.timestamp?.[0] ?? 0) + offset
-        const end = (c.timestamp?.[1] ?? c.timestamp?.[0] ?? 0) + offset
-        // already heard, in the overlap: same words at nearly the same time
-        const dupe = results.some(r => norm(r.text) === norm(text) && Math.abs(r.start - start) < Math.max(0.8, overlap * 0.6))
-        if (dupe) continue
-        results.push({ start, end, text })
-      }
-      if (win) win.webContents.send('transcribe-progress', { stage: 'transcribe', pct: Math.round(((i + 1) / nChunks) * 100) })
+    const speedKey = `${size}${useEn ? '.en' : ''}`
+    const speeds = readAsrSpeed()
+    // the multilingual models are a little slower than the English-only ones
+    const secPerMin = speeds[speedKey] || DEFAULT_SEC_PER_MIN[size] * (useEn ? 1 : 1.15)
+    const t0 = Date.now()
+    const progress = (doneSec: number) => {
+      if (win) win.webContents.send('transcribe-progress', { stage: 'transcribe', pct: Math.round((doneSec / total) * 100),
+        etaSec: etaSeconds({ audioSec: total, doneSec, elapsedSec: (Date.now() - t0) / 1000, secPerMin }) })
     }
-    results.sort((a, b) => a.start - b.start)
-    return { chunks: results }
+    progress(0)
+    // the seams between windows are settled in transcribeWindows (asrwindows.ts), where they are tested
+    const results = await transcribeWindows(env, total, async w => {
+      const out = await asr(audio.subarray(Math.round(w.start * sr), Math.round(w.end * sr)), genOpts)
+      const chunks: { text?: string; timestamp?: (number | null)[] }[] = out?.chunks || []
+      // nothing heard can end after the audio this window was given (Whisper stretches its last word)
+      const pieces = chunks.map(c => ({
+        start: Math.min((c.timestamp?.[0] ?? 0) + w.start, w.end), end: Math.min((c.timestamp?.[1] ?? c.timestamp?.[0] ?? 0) + w.start, w.end), raw: String(c.text || ''),
+      }))
+      // word mode: pieces back into whole words, inside this window only
+      return opts.word ? mergeWordPieces(pieces, lang) : pieces.map(p => ({ start: p.start, end: p.end, text: p.raw.trim() })).filter(p => p.text)
+    }, progress)
+    const { kept, dropped } = cleanTranscript(results, { total, word: !!opts.word, env })
+    if (dropped.length) console.log('transcribe: left out what nobody said:', dropped.map(d => `"${d.text}" at ${d.start.toFixed(2)}s (${d.why})`).join('; '))
+    const rate = blendRate(speeds[speedKey], total, (Date.now() - t0) / 1000)
+    if (rate && rate !== speeds[speedKey]) { try { fs.writeFileSync(asrSpeedPath(), JSON.stringify({ ...speeds, [speedKey]: rate })) } catch { /* only an estimate */ } }
+    return { chunks: kept }
   } catch (e: any) {
     console.error('transcribe error', e)
     return { error: e?.message || 'Transcription failed' }
@@ -1245,7 +1253,7 @@ type ProxyDims = { width: number; height: number; fps: number; duration: number 
 const probeProxy = (file: string, expectDuration?: number) => new Promise<ProxyDims | null>(resolve => {
   ffmpeg.ffprobe(file, (err, d) => {
     if (err || !d) return resolve(null)
-    const v: any = d.streams.find((s: any) => s.codec_type === 'video')
+    const v: any = d.streams.find(isRealVideo)
     if (!v) return resolve(null)
     const dur = Number(d.format?.duration) || 0
     if (!(dur > 0)) return resolve(null)
@@ -1281,7 +1289,7 @@ const writeProxyMeta = (outPath: string, dims: ProxyDims) => {
 // is the right way round, and whether a Quick Sync build turns its frames, both hang on it.
 const probeShape = (file: string) => new Promise<{ width: number; height: number; rotation: number } | null>(resolve => {
   ffmpeg.ffprobe(file, (err, d) => {
-    const v: any = !err && d ? d.streams.find((s: any) => s.codec_type === 'video') : null
+    const v: any = !err && d ? d.streams.find(isRealVideo) : null
     resolve(v && v.width > 0 && v.height > 0 ? displaySize(v) : null)
   })
 })
@@ -1374,21 +1382,13 @@ const buildProxy = async (sender: Electron.WebContents, filePath: string, info: 
       if (dims && proxyFits(dims, info || {}, { ...plan, long: 0, fps: 0 })) keep = dims
     }
 
-    const { video, hwDecode } = await pickEncoder()
+    const { video: encoder } = await pickEncoder()
     // Written to a temp name and renamed only after ffmpeg exits cleanly. Written straight to the
     // cache path, a build cut off part way (app closed, crash) left a file with no moov atom that was
     // then served as "cached" forever: blank preview, failed filmstrip, broken export.
     // (.part.mp4, not .part: ffmpeg picks the container from the extension.)
     const tmp = outPath.replace(/\.mp4$/i, '.part.mp4')
-    const args = ['-y', '-v', 'error', '-stats']
-    if (hwDecode && video === 'h264_qsv') args.push('-hwaccel', 'qsv')
-    else if (hwDecode && video === 'h264_nvenc') args.push('-hwaccel', 'cuda')
-    args.push('-i', filePath, '-vf', proxyFilter(plan, hwDecode && video === 'h264_qsv'))
-    args.push('-c:v', video)
-    args.push(...(video === 'libx264' ? ['-preset', 'veryfast', '-crf', '24'] : ['-global_quality', '24']))
-    args.push('-c:a', 'aac', '-b:a', '160k', '-movflags', '+faststart', tmp)
-
-    await new Promise<void>((resolve, reject) => {
+    const encodeOnce = (args: string[]) => new Promise<void>((resolve, reject) => {
       const p = spawn(paths.ffmpeg, args)
       proxyChildren.add(p)
       const fail = (e: Error) => { proxyChildren.delete(p); try { fs.rmSync(tmp, { force: true }) } catch { /* locked */ } reject(e) }
@@ -1397,20 +1397,39 @@ const buildProxy = async (sender: Electron.WebContents, filePath: string, info: 
         const line = d.toString()
         err += line
         // ffmpeg -stats prints "time=00:01:23.45"; turn that into a percentage of the clip
-        const m = /time=(\d+):(\d+):(\d+\.?\d*)/.exec(line)
-        if (m && info?.duration) {
-          const secs = (+m[1]) * 3600 + (+m[2]) * 60 + (+m[3])
+        const secs = lastStatsTime(line)
+        if (secs !== null && info?.duration) {
           const pct = Math.max(0, Math.min(99, Math.round((secs / info.duration) * 100)))
           if (!sender.isDestroyed()) sender.send('proxy-progress', { filePath, pct })
         }
       })
       p.on('close', code => {
-        if (code !== 0 || !fs.existsSync(tmp)) return fail(new Error(err.slice(-400) || 'proxy failed'))
+        // -stats lines end in \r, so they are split off before picking the line that says why
+        if (code !== 0 || !fs.existsSync(tmp)) return fail(new Error(stderrTail(err.replace(/\r/g, '\n'), 1, 200) || 'ffmpeg stopped'))
         proxyChildren.delete(p)
         resolve()
       })
       p.on('error', fail)
     })
+
+    // One try used to be all a clip got: ProRes, DNxHR, 4:2:2 and 10-bit SDR footage failed on the
+    // Quick Sync path and kept a 0 byte proxy with no second chance. Now each rung drops the part
+    // most likely at fault (GPU decode, then the GPU encoder), and a copy that comes out the wrong
+    // shape counts as a failure too: a sideways proxy is worse than none, since exports can read it.
+    const failed: string[] = []
+    let built = ''
+    for (const attempt of proxyAttempts(encoder, info || {}, plan)) {
+      try { await encodeOnce(proxyArgs(filePath, tmp, plan, attempt)) } catch (e) {
+        failed.push(`${attempt.label}: ${String((e as Error)?.message || e)}`)
+        continue
+      }
+      const got = await probeProxy(tmp, info?.duration)
+      if (got && proxyFits(got, info || {}, { ...plan, long: 0, fps: 0 })) { built = attempt.video; break }
+      failed.push(`${attempt.label}: the copy came out ${got ? `${got.width}x${got.height}, the wrong shape` : 'unreadable or short'}`)
+      try { fs.rmSync(tmp, { force: true }) } catch { /* locked */ }
+    }
+    if (!built) throw new Error(`every way of making it failed (${failed.join('; ')})`)
+    if (failed.length) console.warn('proxy: built after a fallback:', filePath, failed)
     // Swap it in. The copy being replaced may be open in the preview, and Windows will not replace an
     // open file: then a sound old copy (only too small for the new tier) stays in use rather than
     // the clip losing its preview, and the bigger one is built again next time.
@@ -1428,28 +1447,56 @@ const buildProxy = async (sender: Electron.WebContents, filePath: string, info: 
     if (!dims) { try { fs.rmSync(outPath, { force: true }) } catch { /* locked */ } return { error: 'the preview copy came out unreadable' } }
     writeProxyMeta(outPath, dims)
     if (!sender.isDestroyed()) sender.send('proxy-progress', { filePath, pct: 100 })
-    return { ok: true, path: outPath, reason: plan.reason, encoder: video, ...dims }
+    return { ok: true, path: outPath, reason: plan.reason, encoder: built, ...dims }
   } catch (e) { return { error: String((e as Error)?.message || e) } }
 }
+
+/**
+ * How long a file really is, found by copying every packet to nowhere and reading the last time=.
+ * Only for files whose container never says (see get-metadata); null if it cannot be read in time.
+ */
+const measureDuration = (file: string, timeoutMs = 60_000) => new Promise<number | null>(resolve => {
+  let err = '', done = false
+  const finish = (v: number | null) => { if (!done) { done = true; clearTimeout(timer); resolve(v) } }
+  const p = spawn(paths.ffmpeg, ['-nostdin', '-v', 'error', '-stats', '-i', file, '-c', 'copy', '-f', 'null', '-'])
+  const timer = setTimeout(() => { try { p.kill() } catch { /* gone */ } finish(null) }, timeoutMs)
+  p.stderr.on('data', d => { err = (err + d.toString()).slice(-4000) })
+  p.on('close', () => { const t = lastStatsTime(err); finish(t !== null && t > 0 ? +t.toFixed(3) : null) })
+  p.on('error', () => finish(null))
+})
 
 ipcMain.handle('get-metadata', async (event, filePath: string) => {
   return new Promise((resolve, reject) => {
     if (!filePath) return reject(new Error('No file path provided'))
-    ffmpeg.ffprobe(filePath, (err, metadata) => {
+    ffmpeg.ffprobe(filePath, async (err, metadata) => {
       if (err) {
         // `ok: false` lets the importer tell the user *why* a file was skipped instead of
         // silently adding a 5-second placeholder. Callers that only read duration/hasVideo
         // still get the old fallback shape.
         resolve({ duration: 5, hasVideo: false, hasAudio: false, ok: false, error: String((err as Error)?.message || err).split('\n')[0] })
       } else {
-        const hasVideo = metadata.streams.some((s: any) => s.codec_type === 'video')
-        const hasAudio = metadata.streams.some((s: any) => s.codec_type === 'audio')
-        const v = metadata.streams.find((s: any) => s.codec_type === 'video')
+        // album art is a still, not a picture track: a song with a cover is audio
+        const v: any = metadata.streams.find(isRealVideo)
+        const audio: any[] = metadata.streams.filter((s: any) => s.codec_type === 'audio')
+        const hasVideo = !!v, hasAudio = audio.length > 0
+        const hasCoverArt = metadata.streams.some((s: any) => s.codec_type === 'video' && !isRealVideo(s))
+        let duration = probeDuration(metadata.format, [v, ...audio])
+        // A recording cut off before its length was written: read it through for the real length
+        // (a copy pass, about half a second for a minute of OBS footage) and let the proxy planner
+        // give it a playable copy. A still picture has no length either, and that is fine.
+        let needsRemux = false
+        if (duration === null && (hasVideo || hasAudio) && !isStillFormat(metadata.format.format_name)) {
+          duration = await measureDuration(filePath)
+          needsRemux = true
+        }
         resolve({
-          duration: metadata.format.duration || 5,
+          duration: duration ?? 5,
           hasVideo,
           hasAudio,
           ok: hasVideo || hasAudio,
+          ...(hasCoverArt ? { hasCoverArt } : {}),
+          ...(needsRemux ? { needsRemux } : {}),
+          ...(hasAudio && Number(audio[0].channels) > 0 ? { audioChannels: Number(audio[0].channels) } : {}),
           // still images probe as image2/png_pipe/mjpeg_pipe, used to tell photos from video
           format: metadata.format.format_name || '',
           videoCodec: v?.codec_name || '',
@@ -1822,7 +1869,7 @@ const DEFAULT_SETTINGS = {
   brand: { enabled: false, logoPath: null as string | null, position: 'br', sizePct: 16, margin: 40, opacity: 0.85, showMode: 'whole' as 'whole' | 'intro' | 'outro', windowSec: 5, fade: 0.5 },
   intro: { segment: 'first' as 'first' | 'last', seconds: 5, fade: 0.6, treatment: 'ripple' as 'ripple' | 'overlay' },
   audio: { optimize: true, noiseReduction: false },
-  caption: { fontSize: 44, color: '#ffffff', position: 'lower' as 'lower' | 'top' | 'center', box: true, boxOpacity: 0.5, model: 'tiny' as 'tiny' | 'base' | 'small', language: 'en', mode: 'phrase' as 'phrase' | 'word', theme: 'creator', tweak: '' },
+  caption: { fontSize: 44, color: '#ffffff', position: 'lower' as 'lower' | 'top' | 'center', box: true, boxOpacity: 0.5, model: 'auto' as CaptionModelSetting, language: 'en', mode: 'phrase' as 'phrase' | 'word', theme: 'creator', tweak: '' },
   silence: { minPause: 0.8, thresholdDb: -30, pad: 0.12, smooth: true, transition: 0.12, detectBy: 'auto' as 'auto' | 'audio' | 'motion', freezeDb: -50 },
 }
 
@@ -1837,7 +1884,8 @@ ipcMain.handle('get-settings', async () => {
       brand: { ...DEFAULT_SETTINGS.brand, ...raw.brand },
       intro: { ...DEFAULT_SETTINGS.intro, ...raw.intro },
       audio: { ...DEFAULT_SETTINGS.audio, ...raw.audio },
-      caption: { ...DEFAULT_SETTINGS.caption, ...raw.caption },
+      // a saved "tiny" is usually the old default, not a choice: it becomes Automatic (asrmodel.ts)
+      caption: { ...DEFAULT_SETTINGS.caption, ...raw.caption, model: migrateCaptionModel(raw.caption) },
       silence: { ...DEFAULT_SETTINGS.silence, ...raw.silence },
     }
   } catch { return DEFAULT_SETTINGS }

@@ -22,7 +22,7 @@ import { snapToGrid, describeSnap } from '../electron/grid'
 import { fitBpm } from '../electron/score'
 import { layoutReport, presetFor, fitFontSize, cleanText, wrapText, TITLE_FONT, BOX_PAD, WRAP_WIDTH } from '../electron/textlayout'
 import { THEMES, THEME_FONTS, CAPTION_Y as THEME_CAP_Y, chooseTheme, phrasesFromWords, retimeCaptionText, typeCaption, captionFrame, captionCss, captionPx, fontFaceCss, type CaptionSpec, type CapWord, type ThemeFont, type CapCue, type CaptionTyping } from '../electron/styletheme'
-import { planProxy, isHdr } from '../electron/playable'
+import { planProxy, isHdr, isCurrentProxy, needsReprobe } from '../electron/playable'
 import { spanForPhrase, sentenceSpans, type Word as SpeechWord, type Span } from '../electron/speech'
 import { planBroll, snapToWords, describePlan, type BrollAsset, type Placement } from '../electron/broll'
 import { looksLikeThumbPhoto } from '../electron/thumbpick'
@@ -33,6 +33,7 @@ import { tickStepFor, contentWidth, collectSnapTargets, nearestTarget, snapMove,
 import { TimeRuler } from './ruler'
 import { ClipWave, type Peaks } from './clipwave'
 import { etaStep, type EtaState } from '../electron/exportjob'
+import { resolveCaptionModel, modelLabel, MODEL_NAMES, type CaptionModelSetting } from '../electron/asrmodel'
 
 interface MediaFile {
   id: string
@@ -54,6 +55,9 @@ interface MediaFile {
   proxyNote?: string   // why it needed one, shown in the bin
   hdr?: boolean        // HLG/PQ source: export tone-maps it, or the colour comes out flat
   fps?: number         // the source's own frame rate (a 30 fps copy of 30 fps footage loses nothing)
+  width?: number       // the picture as DISPLAYED (a phone's portrait clip is taller than wide)
+  height?: number
+  audioChannels?: number // channels in its first audio stream (1 = a mono mic)
   relPath?: string     // where it sat inside the project folder when saved, so a moved folder relinks
   offline?: boolean    // the file is not where the project says and nothing matched: relink or remove it
   durationGuess?: boolean   // duration is a stand-in (a cloud clip with no length yet): no trim wall until a probe measures it
@@ -83,7 +87,8 @@ interface AppSettings {
   intro: { segment: 'first' | 'last'; seconds: number; fade: number; treatment: 'ripple' | 'overlay' }
   audio: { optimize: boolean; noiseReduction: boolean }
   /** theme: a theme id or the creator's words ("futuristic tech"); 'classic' = the plain style below. tweak: words on top ("but blue") */
-  caption: { fontSize: number; color: string; position: 'lower' | 'top' | 'center'; box: boolean; boxOpacity: number; model: 'tiny' | 'base' | 'small'; language: string; mode: 'phrase' | 'word'; theme: string; tweak: string }
+  /** model 'auto' follows the machine tier (perf.speechModel); modelPicked: chosen in the menu, so a saved tiny is a choice, not the old default */
+  caption: { fontSize: number; color: string; position: 'lower' | 'top' | 'center'; box: boolean; boxOpacity: number; model: CaptionModelSetting; modelPicked?: boolean; language: string; mode: 'phrase' | 'word'; theme: string; tweak: string }
   silence: { minPause: number; thresholdDb: number; pad: number; smooth: boolean; transition: number; detectBy: 'auto' | 'audio' | 'motion'; freezeDb: number }
   narration: { command: string }
   sfxGen: { command: string; freesoundToken?: string; favorites?: string[] }
@@ -99,7 +104,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   brand: { enabled: false, logoPath: null, position: 'br', sizePct: 16, margin: 40, opacity: 0.85, showMode: 'whole', windowSec: 5, fade: 0.5 },
   intro: { segment: 'first', seconds: 5, fade: 0.6, treatment: 'ripple' },
   audio: { optimize: true, noiseReduction: false },
-  caption: { fontSize: 44, color: '#ffffff', position: 'lower', box: true, boxOpacity: 0.5, model: 'tiny', language: 'en', mode: 'phrase', theme: 'creator', tweak: '' },
+  caption: { fontSize: 44, color: '#ffffff', position: 'lower', box: true, boxOpacity: 0.5, model: 'auto', language: 'en', mode: 'phrase', theme: 'creator', tweak: '' },
   silence: { minPause: 0.8, thresholdDb: -30, pad: 0.12, smooth: true, transition: 0.12, detectBy: 'auto', freezeDb: -50 },
   narration: { command: '' },
   sfxGen: { command: '' },
@@ -114,6 +119,8 @@ const DEFAULT_SETTINGS: AppSettings = {
 // several times (two tags from a single add_tag). The guard hangs off window so it is shared
 // by every module instance that survives a reload, not just the current one.
 const handledAgentCmds: Set<number> = ((window as any).__vhHandledCmds ??= new Set<number>())
+// Timelines (clips arrays) the "switch to portrait?" toast was already shown for; see offerPortrait
+const portraitOfferedFor = new WeakSet<object>()
 
 // Preview-side chroma key. The export does the real thing with FFmpeg's colorkey; this is
 // the same idea as an SVG filter so what you see on the stage matches what you render.
@@ -179,7 +186,9 @@ const WRONG_TYPE: Record<string, string> = {
 // out here so a stray .txt can't land on the timeline as a 0.04s clip.
 // width/height are as DISPLAYED (a rotated phone clip comes back upright) and rotation is the
 // clockwise turn that took; the whole probe goes to makeProxy, which needs it to keep the copy upright.
-type Probe = { duration: number; hasVideo: boolean; hasAudio: boolean; ok?: boolean; error?: string; format?: string; videoCodec?: string; pixFmt?: string; colorTransfer?: string; width?: number; height?: number; fps?: number; rotation?: number }
+// hasVideo ignores a song's album art (hasCoverArt), and needsRemux marks a recording that was cut off
+// before its length was written (the duration was measured instead; the preview gets a fixed copy).
+type Probe = { duration: number; hasVideo: boolean; hasAudio: boolean; ok?: boolean; error?: string; format?: string; videoCodec?: string; pixFmt?: string; colorTransfer?: string; width?: number; height?: number; fps?: number; rotation?: number; audioChannels?: number; hasCoverArt?: boolean; needsRemux?: boolean }
 const JUNK_FORMAT = /(^|,)(tty|ansi|image2pipe|srt|ass|ssa|webvtt|lrc|microdvd|subviewer|jacosub|mpsub|pjs|realtext|sami|vplayer)(,|$)/
 // iPhone photos. The preview could show some, but the exporter cannot decode them, so a HEIC on
 // the timeline only failed at the end of an export. Refused at the door instead, with the way out.
@@ -387,6 +396,8 @@ const mediaFromProbe = (name: string, path: string, type: MediaFile['type'], m: 
   hasAudio: m.hasAudio,
   hdr: isHdr({ colorTransfer: m.colorTransfer }),
   ...(m.fps ? { fps: m.fps } : {}),
+  ...(m.width && m.height ? { width: m.width, height: m.height } : {}),
+  ...(m.audioChannels ? { audioChannels: m.audioChannels } : {}),
   ...extra,
 })
 
@@ -597,6 +608,8 @@ function Editor() {
   // still going): each one is refused while it runs. Refs, not state, so two requests arriving in
   // the same tick both see the first one start.
   const busyRef = useRef({ aiClip: false, captions: false, score: false })
+  // transcribe runs other than Captions, told the model download's percent (null once it is over)
+  const downloadWatchers = useRef(new Set<(pct: number | null) => void>())
   const [aiPrompt, setAiPrompt] = useState('')
   const [aiFrom, setAiFrom] = useState('')
   const [aiTo, setAiTo] = useState('')
@@ -651,6 +664,7 @@ function Editor() {
   const [qcRunning, setQcRunning] = useState(false)
   const [showQC, setShowQC] = useState(false)
   const [captioning, setCaptioning] = useState<string | null>(null) // status text while transcribing
+  const [captionEta, setCaptionEta] = useState<number | null>(null) // seconds left, from main's measured pace
   const [captionPct, setCaptionPct] = useState<number | null>(null)
   const [thumbs, setThumbs] = useState<Record<string, { sig: string; n: number; path: string }>>({})
   const thumbsRef = useRef<Record<string, { sig: string; n: number; path: string }>>({})
@@ -663,8 +677,9 @@ function Editor() {
   const [showBooth, setShowBooth] = useState(false)
   const [showNarration, setShowNarration] = useState(false)
   const [showThumbnail, setShowThumbnail] = useState(false)
-  const [toasts, setToasts] = useState<{ id: string; text: string }[]>([])
-  const notify = (text: string, ms = 7000) => { const id = rid(); setToasts(t => [...t, { id, text }]); setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), ms) }
+  const [toasts, setToasts] = useState<{ id: string; text: string; action?: { label: string; run: () => void } }[]>([])
+  /** A toast; `action` adds one button that does the thing the toast suggests (and closes it). */
+  const notify = (text: string, ms = 7000, action?: { label: string; run: () => void }) => { const id = rid(); setToasts(t => [...t, { id, text, action }]); setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), ms) }
   const [sidebarTab, setSidebarTab] = useState<'media' | 'sfx'>('media')
   const [silenceBusy, setSilenceBusy] = useState<string | null>(null)
   // Takes & history: the transcript, the repeat groups, and enough snapshots to let the user
@@ -802,9 +817,16 @@ function Editor() {
       setEta(secondsLeft)
     }
     window.ipcRenderer.on('export-progress', handleProgress)
-    const handleTranscribe = (_e: any, p: { stage: string; pct: number }) => {
+    const handleTranscribe = (_e: any, p: { stage: string; pct: number; etaSec?: number }) => {
+      // The first run of a model downloads it, minutes with nothing else moving, so a Takes, speech
+      // or booth run waiting on it says so in its own status (see transcribeWatching)
+      downloadWatchers.current.forEach(f => f(p.stage === 'download' ? p.pct : null))
+      // Those runs used to light up the Captions button instead, which only a captions run clears:
+      // it then sat disabled until a restart.
+      if (!busyRef.current.captions) return
       setCaptioning(p.stage === 'download' ? 'Downloading model' : 'Transcribing')
       setCaptionPct(p.pct)
+      setCaptionEta(p.stage === 'transcribe' && typeof p.etaSec === 'number' && p.pct < 100 ? p.etaSec : null)
     }
     window.ipcRenderer.on('transcribe-progress', handleTranscribe)
     const handleProxy = (_e: unknown, d: { filePath: string; pct: number }) =>
@@ -1136,12 +1158,18 @@ function Editor() {
       if (!plan.needed) continue
       setMediaBin(prev => prev.map(x => x.id === m.id ? { ...x, proxyPct: 0, proxyNote: plan.reason } : x))
       const r = await window.ipcRenderer.makeProxy({ filePath: m.path, info: { ...info, hasVideo: true }, maxWidth: perf.proxyMaxWidth, maxFps: perf.proxyMaxFps })
+      // a copy from an older VidHelm: it keeps playing while the new one builds, and stays if that fails
+      const older = !!m.proxyPath && !isCurrentProxy(m.proxyPath)
       if (r.path) {
         // width/height/fps arrive from newer main processes; without them the copy is preview-only
         const dims = r as { width?: number; height?: number; fps?: number }
         const num = (v: unknown) => typeof v === 'number' && v > 0 ? v : undefined
         setMediaBin(prev => prev.map(x => x.id === m.id ? { ...x, proxyPath: r.path, proxyWidth: num(dims.width), proxyHeight: num(dims.height), proxyFps: num(dims.fps), proxyPct: undefined } : x))
-        if (!r.cached) notify(`${m.name}: ${plan.reason}, so VidHelm made a preview copy to edit with. High quality exports read the original; Standard ones use the copy only when it already matches the export's size and frame rate.`, 9000)
+        if (!r.cached) notify(older ? `${m.name}: rebuilt its preview copy with a keyframe every second, so scrubbing keeps up.`
+          : `${m.name}: ${plan.reason}, so VidHelm made a preview copy to edit with. High quality exports read the original; Standard ones use the copy only when it already matches the export's size and frame rate.`, older ? 6000 : 9000)
+      } else if (older) {
+        setMediaBin(prev => prev.map(x => x.id === m.id ? { ...x, proxyPct: undefined } : x))
+        console.warn(`proxy: could not rebuild ${m.name}, keeping the older copy:`, r.error)
       } else {
         setMediaBin(prev => prev.map(x => x.id === m.id ? { ...x, proxyPath: undefined, proxyWidth: undefined, proxyHeight: undefined, proxyFps: undefined, proxyPct: undefined, proxyNote: 'preview unavailable' } : x))
         notify(`${m.name}: ${plan.reason}, and the preview copy could not be made (${r.error || 'unknown error'}). Editing still works, the preview will stay blank.`, 11000)
@@ -1172,8 +1200,18 @@ function Editor() {
     if (want && (isAudio ? want === 'a1' || want === 'a2' : want === 'v1' || want === 'v2')) return want
     return isAudio ? 'a1' : 'v1'
   }
+  // A phone clip filmed upright dropped into the default 16:9 frame plays as a thin strip between
+  // two black bars, and nothing says the frame can turn. So the first clip on an empty video track
+  // offers it once. Keyed on the clips array the drop saw, so a drop of several files asks once.
+  const offerPortrait = (media: MediaFile, trackId: TimelineClip['trackId']) => {
+    if (trackId !== 'v1' || orientation !== 'landscape' || portraitOfferedFor.has(clips)) return
+    if (clips.some(c => c.trackId === 'v1') || !(media.width && media.height && media.height > media.width * 1.2)) return
+    portraitOfferedFor.add(clips)
+    notify('This clip is vertical. Switch to Portrait 9:16?', 12000, { label: 'Switch to Portrait 9:16', run: () => setOrientation('portrait') })
+  }
   const placeOnTimeline = (media: MediaFile, at: number, track?: TimelineClip['trackId']) => {
     const trackId = trackFor(media, track)
+    offerPortrait(media, trackId)
     setClips(prev => [...prev, {
       id: rid(), mediaId: media.id, type: media.type,
       trackId,
@@ -2361,6 +2399,20 @@ function Editor() {
     return JSON.stringify([settings.caption.language, merged.map(x => [x.p, +x.s.toFixed(3), +x.d.toFixed(3), +x.ss.toFixed(3), x.v])])
   }
 
+  /** The Whisper model captions, the booth draft and Takes use: Automatic is the machine tier's. */
+  const captionModel = () => resolveCaptionModel(settings.caption.model, perf.speechModel)
+
+  /** Transcribe for a run other than Captions (Takes, speech analysis, the booth draft). A fresh
+   *  install's first run downloads the model, a few hundred MB, so `onDownload` hears its percent
+   *  for the run's own status, then null once Whisper is listening. */
+  const transcribeWatching = async (filePath: string, opts: { model?: string; language?: string; word?: boolean }, onDownload?: (pct: number | null) => void) => {
+    if (onDownload) downloadWatchers.current.add(onDownload)
+    try { return await window.ipcRenderer.transcribe(filePath, opts) }
+    finally { if (onDownload) downloadWatchers.current.delete(onDownload) }
+  }
+  /** Takes and speech analysis show it on the Takes button and panel. */
+  const takesDownload = (pct: number | null) => setTakesBusy(pct === null ? 'Reading speech…' : `Downloading model ${pct}%`)
+
   // Local Whisper captions for the WHOLE timeline → timed text cues styled by caption settings
   // replace: the captions already on the timeline are swapped for the new ones in one update
   const generateCaptions = async (themeOverride?: string, opts: { replace?: boolean } = {}): Promise<number> => {
@@ -2377,7 +2429,7 @@ function Editor() {
       const payload = mixPayload()
       const mix = await window.ipcRenderer.renderMixAudio({ clips: payload })
       if (mix.error || !mix.path) { notify('Captions: ' + (mix.error || 'could not prepare audio')); return 0 }
-      const res = await window.ipcRenderer.transcribe(mix.path, { model: cs.model, language: cs.language, word: themed || cs.mode === 'word' })
+      const res = await window.ipcRenderer.transcribe(mix.path, { model: captionModel(), language: cs.language, word: themed || cs.mode === 'word' })
       if (res.error) { notify('Captions: ' + res.error); return 0 }
       const cues: TextClip[] = []
       if (themed) {
@@ -2389,8 +2441,9 @@ function Editor() {
       }
       else for (const c of res.chunks || []) {
         const text = (c.text || '').trim()
-        if (!text) continue
-        const dur = Math.max(cs.mode === 'word' ? 0.2 : 0.4, (c.end || c.start + (cs.mode === 'word' ? 0.4 : 2)) - c.start)
+        // the same end clamp as the themed path: a cue may not start, or run, past the timeline
+        if (!text || c.start >= totalDuration) continue
+        const dur = Math.min(totalDuration - c.start, Math.max(cs.mode === 'word' ? 0.2 : 0.4, (c.end || c.start + (cs.mode === 'word' ? 0.4 : 2)) - c.start))
         cues.push({ id: rid(), text, start: c.start, duration: dur, x: 0.5, y: CAPTION_Y[cs.position], fontSize: cs.fontSize, color: cs.color, fadeIn: cs.mode === 'word' ? 0 : 0.08, fadeOut: cs.mode === 'word' ? 0 : 0.08, box: cs.box, boxOpacity: cs.boxOpacity })
       }
       if (cues.length) { setTexts(prev => [...(opts.replace ? prev.filter(t => !t.caption) : prev), ...cues]); made = cues.length }
@@ -2398,7 +2451,7 @@ function Editor() {
     } catch (e) { console.error(e); notify('Captioning failed.') }
     // in finally: an early return above (no audio mix, a Whisper error) used to leave the status up
     // and the Captions button disabled until a restart
-    finally { busyRef.current.captions = false; setCaptioning(null); setCaptionPct(null) }
+    finally { busyRef.current.captions = false; setCaptioning(null); setCaptionPct(null); setCaptionEta(null) }
     return made
   }
 
@@ -2419,14 +2472,15 @@ function Editor() {
 
   // Transcribe the timeline audio into read-along lines for the karaoke booth (one per phrase).
   // Used by the booth's "Draft from timeline audio" button and the agent's booth_script flow.
-  const draftBoothScript = async (): Promise<string | null> => {
+  // onDownload: the booth's status line, told about a first-time model download (transcribeWatching)
+  const draftBoothScript = async (onDownload?: (pct: number | null) => void): Promise<string | null> => {
     const audioClips = clips.filter(c => c.trackId === 'a1' || mediaBin.find(m => m.id === c.mediaId)?.hasAudio)
     if (!audioClips.length) return null
     try {
       const payload = mixPayload()
       const mix = await window.ipcRenderer.renderMixAudio({ clips: payload })
       if (mix.error || !mix.path) return null
-      const res = await window.ipcRenderer.transcribe(mix.path, { model: settings.caption.model, language: settings.caption.language, word: false })
+      const res = await transcribeWatching(mix.path, { model: captionModel(), language: settings.caption.language, word: false }, onDownload)
       const lines = (res.chunks || []).map(c => (c.text || '').trim()).filter(Boolean)
       return lines.length ? lines.join('\n') : null
     } catch (e) { console.error(e); return null }
@@ -2513,7 +2567,7 @@ function Editor() {
       const mix = await window.ipcRenderer.renderMixAudio({ clips: payload })
       if (mix.error || !mix.path) return { error: mix.error || 'could not prepare audio' }
       setTakesBusy('Reading speech…')
-      const res = await window.ipcRenderer.transcribe(mix.path, { model: want, language: settings.caption.language, word: true })
+      const res = await transcribeWatching(mix.path, { model: want, language: settings.caption.language, word: true }, takesDownload)
       if (res.error) return { error: res.error }
       const words: SpeechWord[] = (res.chunks || [])
         .map(c => ({ start: c.start, end: c.end ?? c.start + 0.25, text: c.text || '' }))
@@ -2568,7 +2622,7 @@ function Editor() {
       // Word timings, not phrases: Whisper packs a false start and its retake into one segment
       // ("Say hello to VidHelm. Say hello to VidHelm, a free editor"), so we rebuild the lines
       // ourselves and split them where the speaker started over.
-      const res = await window.ipcRenderer.transcribe(mix.path, { model: settings.caption.model, language: settings.caption.language, word: true })
+      const res = await transcribeWatching(mix.path, { model: captionModel(), language: settings.caption.language, word: true }, takesDownload)
       if (res.error) return { error: 'Takes: ' + res.error }
       const words = (res.chunks || [])
         .map(c => ({ start: c.start, end: c.end ?? c.start + 0.3, text: (c.text || '') }))
@@ -2951,30 +3005,30 @@ function Editor() {
     return added
   }
 
-  /** Restored footage: re-probe only what is missing something (the HDR flag or frame rate an older
-   *  save lacks, a preview copy with no size, or a copy that was needed and is gone) and hand it to
-   *  ensureProxies, which re-finds a cached copy with its real size or rebuilds a lost one. Ordinary
-   *  footage that never needed a copy is not probed again on every open. `recheck` names entries
-   *  that now point at a different file (relinked), which are always looked at afresh. */
+  /** Restored media: re-probe only what is missing something (needsReprobe: a fact an older save
+   *  lacks, such as the HDR flag, frame size or a sound file's channel count, a preview copy with no
+   *  size, or a copy that was needed and is gone) and hand the footage to ensureProxies, which
+   *  re-finds a cached copy with its real size or rebuilds a lost one. Ordinary media that has
+   *  everything is not probed again on every open. `recheck` names entries that now point at a
+   *  different file (relinked), which are always looked at afresh. A stand-in length
+   *  (durationGuess) is replaced by the file's own here too. */
   const backfillMedia = async (items: MediaFile[], recheck: Set<string> | 'all' = new Set()) => {
-    const needs = (m: MediaFile) => recheck === 'all' || recheck.has(m.id) || m.hdr === undefined || m.fps === undefined || !!m.durationGuess
-      || (m.proxyPath ? !(m.proxyWidth && m.proxyHeight && m.proxyFps) : !!m.proxyNote)   // proxyNote without a copy: it was needed (lost, or the build failed)
-    // sound is only looked at for a stand-in length; everything else here is about pictures
-    const look = items.filter(m => !m.offline && (m.type === 'video' ? needs(m) : m.type === 'audio' && !!m.durationGuess))
-    if (!look.length) return
+    const todo = items.filter(m => m.type !== 'image' && !m.offline && (recheck === 'all' || recheck.has(m.id) || needsReprobe(m) || !!m.durationGuess))
+    if (!todo.length) return
     const probes = new Map<string, Probe>()
     const fill: Record<string, Partial<MediaFile>> = {}
     const measured = new Map<string, number>()   // stand-in lengths replaced by the file's own
-    for (const m of look) {
+    for (const m of todo) {
       const meta = await window.ipcRenderer.getMetadata(m.path).catch(() => null)
       if (!meta || meta.ok === false) continue
       probes.set(m.id, meta as Probe)
       const len = m.durationGuess && Number(meta.duration) > 0 ? Number(meta.duration) : 0
       if (len) measured.set(m.id, len)
-      fill[m.id] = {
-        ...(m.type === 'video' ? { hdr: isHdr({ colorTransfer: meta.colorTransfer }), ...(meta.fps ? { fps: meta.fps } : {}) } : {}),
-        ...(len ? { duration: len, durationGuess: undefined } : {}),
-      }
+      const length = len ? { duration: len, durationGuess: undefined } : {}
+      const channels = meta.audioChannels ? { audioChannels: meta.audioChannels } : {}
+      // a sound file has only its channel count (and a stand-in length) to add; the rest is about pictures
+      fill[m.id] = m.type !== 'video' ? { ...channels, ...length } : { hdr: isHdr({ colorTransfer: meta.colorTransfer }), ...(meta.fps ? { fps: meta.fps } : {}),
+        ...(meta.width && meta.height ? { width: meta.width, height: meta.height } : {}), ...channels, ...length }
     }
     if (Object.keys(fill).length) setMediaBin(prev => prev.map(x => fill[x.id] ? { ...x, ...fill[x.id] } : x))
     // The open skipped the pull-back inside the footage for these (a guess is not an edge); now the
@@ -2983,7 +3037,7 @@ function Editor() {
       const next = prev.map(c => c.type !== 'image' && measured.has(c.mediaId) ? clampToSource(c, measured.get(c.mediaId)) : c)
       return next.some((c, i) => c !== prev[i]) ? next : prev
     })
-    await ensureProxies(look.filter(m => m.type === 'video' && probes.has(m.id)), probes)
+    await ensureProxies(todo.filter(m => m.type === 'video' && probes.has(m.id)), probes)
   }
 
   const refreshProjects = async (root: string | null) => {
@@ -3963,7 +4017,7 @@ function Editor() {
             <button className="tool-btn compactable" onClick={addText} title="Add a text layer"><IconText /> <span className="tb-label">Text</span></button>
             <button className={`tool-btn compactable ${isRecording ? 'recording' : ''}`} onClick={toggleRecord} title="Record a voiceover"><IconMic /> <span className="tb-label">{isRecording ? 'Stop' : 'Voiceover'}</span></button>
             <button className="tool-btn compactable captions-btn" onClick={() => generateCaptions()} disabled={captioning !== null || totalDuration <= 0} title="Auto-caption the whole timeline (on-device Whisper)">
-              <IconCaptions /> <span className="tb-label">{captioning ? `${captioning}${captionPct !== null ? ` ${captionPct}%` : '…'}` : 'Captions'}</span>
+              <IconCaptions /> <span className="tb-label">{captioning ? `${captioning}${captionPct !== null ? ` ${captionPct}%` : '…'}${captionEta !== null && captionEta >= 1 ? `, ${fmtEta(captionEta)} left` : ''}` : 'Captions'}</span>
               {captioning && captionPct !== null && <span className="cap-bar"><span className="cap-fill" style={{ width: `${captionPct}%` }} /></span>}
             </button>
             <div className="divider" />
@@ -4058,7 +4112,8 @@ function Editor() {
       <HelpChat open={showChat} onClose={() => setShowChat(false)} onAction={openPanel}
         context={{ version: appVersion, clips: clips.length + texts.length, duration: totalDuration, format: ORIENTATIONS[orientation].label, aiKeys: !!(settings.aiGen?.falKey || settings.aiGen?.geminiKey) }} />
       {dragFiles && <DropOverlay startsTimeline={clips.length === 0 && texts.length === 0} />}
-      <div className="toasts">{toasts.map(t => <div key={t.id} className="toast" onClick={() => setToasts(x => x.filter(y => y.id !== t.id))}>{t.text}</div>)}</div>
+      <div className="toasts">{toasts.map(t => <div key={t.id} className="toast" onClick={() => setToasts(x => x.filter(y => y.id !== t.id))}>{t.text}
+        {t.action && <button className="toast-action" onClick={() => t.action!.run()}>{t.action.label}</button>}</div>)}</div>
       {drag && <div className="drag-hud" style={{ left: drag.hud.x, top: drag.hud.y }}>{drag.hud.text}</div>}
       {ask && (
         <div className="modal-backdrop ask-backdrop">
@@ -4325,8 +4380,10 @@ function Editor() {
                 </>}
                 <div className="grid2">
                   <label>Accuracy / speed
-                    <select value={settings.caption.model} onChange={e => setSettings(s => ({ ...s, caption: { ...s.caption, model: e.target.value as any } }))}>
-                      <option value="tiny">Tiny, fastest</option><option value="base">Base, balanced</option><option value="small">Small, most accurate, slower</option>
+                    {/* modelPicked: a choice made here is kept, even Fast (see migrateCaptionModel) */}
+                    <select value={settings.caption.model} onChange={e => setSettings(s => ({ ...s, caption: { ...s.caption, model: e.target.value as CaptionModelSetting, modelPicked: true } }))}>
+                      <option value="auto">Automatic (this PC: {MODEL_NAMES[perf.speechModel]})</option>
+                      <option value="tiny">{modelLabel('tiny')}</option><option value="base">{modelLabel('base')}</option><option value="small">{modelLabel('small')}</option>
                     </select>
                   </label>
                   <label>Language
