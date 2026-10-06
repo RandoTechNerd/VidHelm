@@ -26,7 +26,11 @@ import {
   type ChannelFacts, type Preset, type SourceAnalysis,
 } from './audiochain'
 
-export interface MediaProbe { durationS: number; hasVideo: boolean; hasAudio: boolean }
+export interface MediaProbe {
+  durationS: number; hasVideo: boolean; hasAudio: boolean
+  /** channels of the first audio stream (0 when there is none): a mono source is mixed at full level on both sides */
+  audioChannels: number
+}
 
 export interface BakeOptions {
   ffmpeg: string
@@ -86,15 +90,16 @@ export function readFfmpegVersion(ffmpeg: string): Promise<string> {
 
 export function probeMedia(ffprobe: string, file: string): Promise<MediaProbe | null> {
   return new Promise((resolve) => {
-    const p = spawn(ffprobe, ['-v', 'error', '-show_entries', 'format=duration:stream=codec_type', '-of', 'json', file], { windowsHide: true })
+    const p = spawn(ffprobe, ['-v', 'error', '-show_entries', 'format=duration:stream=codec_type,channels', '-of', 'json', file], { windowsHide: true })
     let out = ''
     p.stdout.on('data', (d) => { out += d.toString() })
     p.on('error', () => resolve(null))
     p.on('close', () => {
       try {
         const j = JSON.parse(out)
-        const st = (j.streams || []) as { codec_type?: string }[]
-        resolve({ durationS: Number(j.format?.duration) || 0, hasVideo: st.some((s) => s.codec_type === 'video'), hasAudio: st.some((s) => s.codec_type === 'audio') })
+        const st = (j.streams || []) as { codec_type?: string; channels?: number }[]
+        const audio = st.find((s) => s.codec_type === 'audio')
+        resolve({ durationS: Number(j.format?.duration) || 0, hasVideo: st.some((s) => s.codec_type === 'video'), hasAudio: !!audio, audioChannels: Number(audio?.channels) || 0 })
       } catch { resolve(null) }
     })
   })
@@ -104,7 +109,7 @@ export function probeMedia(ffprobe: string, file: string): Promise<MediaProbe | 
  * Raw float PCM from a pipe or file arrives in arbitrary byte chunks (and Node's pooled buffers are
  * not 4-byte aligned): carry the partial frame over and copy into aligned Float32Arrays.
  */
-function pcmFeeder(push: (x: Float32Array) => void) {
+export function pcmFeeder(push: (x: Float32Array) => void) {
   let carry = new Uint8Array(0)
   return (chunk: Uint8Array) => {
     const total = carry.length + chunk.length, whole = total - (total % 8)
@@ -121,7 +126,7 @@ function pcmFeeder(push: (x: Float32Array) => void) {
 const timeOf = (s: string) => { const m = /time=(\d+):(\d+):(\d+(?:\.\d+)?)/g; let last: RegExpExecArray | null = null, x; while ((x = m.exec(s))) last = x; return last ? +last[1] * 3600 + +last[2] * 60 + +last[3] : null }
 
 /** Run ffmpeg; stdout (if any) goes to onPcm, `time=` progress to onTime. Rejects with the end of the log on failure. */
-function runFF(ffmpeg: string, args: string[], o: { onPcm?: (x: Float32Array) => void; onTime?: (s: number) => void; onChild?: BakeOptions['onChild'] } = {}): Promise<string> {
+export function runFF(ffmpeg: string, args: string[], o: { onPcm?: (x: Float32Array) => void; onTime?: (s: number) => void; onChild?: BakeOptions['onChild'] } = {}): Promise<string> {
   return new Promise((resolve, reject) => {
     const p = spawn(ffmpeg, args, { windowsHide: true })
     o.onChild?.(p, false)
@@ -142,13 +147,17 @@ function runFF(ffmpeg: string, args: string[], o: { onPcm?: (x: Float32Array) =>
   })
 }
 
-/** One decode of the first audio stream through the analyzer, on the same clock as pass A (headFilter). */
-export async function analyzeMedia(ffmpeg: string, filePath: string, o: { durationS?: number; onFraction?: (f: number) => void; onChild?: BakeOptions['onChild']; channelTest?: boolean } = {}): Promise<SourceAnalysis> {
+/**
+ * One decode of the first audio stream through the analyzer, on the same clock as pass A (headFilter).
+ * `head` replaces that head when the level must be read the way another graph plays the file (the
+ * export mixes a mono source at full level on both sides; headFilter's upmix puts it 3 dB lower).
+ */
+export async function analyzeMedia(ffmpeg: string, filePath: string, o: { durationS?: number; onFraction?: (f: number) => void; onChild?: BakeOptions['onChild']; channelTest?: boolean; head?: string } = {}): Promise<SourceAnalysis> {
   const an = createAnalyzer(SR, { channelTest: o.channelTest })
   const total = (o.durationS || 0) * SR
   let next = 0
   try {
-    await runFF(ffmpeg, ['-hide_banner', '-nostdin', '-v', 'error', '-i', filePath, '-vn', '-map', '0:a:0', '-af', headFilter(), '-c:a', 'pcm_f32le', '-f', 'f32le', 'pipe:1'], {
+    await runFF(ffmpeg, ['-hide_banner', '-nostdin', '-v', 'error', '-i', filePath, '-vn', '-map', '0:a:0', '-af', o.head || headFilter(), '-c:a', 'pcm_f32le', '-f', 'f32le', 'pipe:1'], {
       onChild: o.onChild,
       onPcm: (x) => {
         an.push(x)

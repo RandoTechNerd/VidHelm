@@ -48,6 +48,20 @@ interface VoiceBakeResult {
   output?: { I: number; TP: number | null; makeupDb: number; passes: number; compI: number }
   seconds?: number
 }
+/**
+ * Where the export will land (scan-timeline-loudness): the export's own bus graph rendered to nothing
+ * and measured. I and TP are the bus sum before the master; plannedLufs is after it. unbaked > 0: some
+ * voices have no bake yet and played as recorded here (the export bakes them first), so the number is
+ * provisional.
+ */
+interface TimelineLoudnessScan {
+  ok?: boolean; error?: string; silent?: boolean; cached?: boolean; hash: string
+  I: number | null; TP: number | null; gainDb?: number | null; plannedLufs: number | null; targetLufs: number | null
+  limiterLikely?: boolean; unbaked: number; baked?: number
+  buses?: { voice: number; music: number; sfx: number }; ducks?: number
+  roles?: { start: number; trackId?: string; role: string; why: string; fixed?: string; file: string }[]
+  notes: string[]; seconds: number
+}
 
 interface Window {
   ipcRenderer: {
@@ -81,6 +95,7 @@ interface Window {
     bakeVoice: (data: { filePath: string; preset?: FixVoicePreset; picture?: string | null }) => Promise<VoiceBakeResult>
     /** rejects with an Error whose message is "Export failed: <reason>" plus the end of ffmpeg's log on following lines */
     exportVideo: (data: { clips: any[], texts: any[], brand: any, audio: any, outputPath: string, settings: any }) => Promise<{ success: boolean }>
+    scanTimelineLoudness: (data: { clips: any[]; texts?: any[]; audio?: any; settings?: any; bake?: boolean }) => Promise<TimelineLoudnessScan>
     sfxLibrary: () => Promise<{ dir: string; items: { name: string; path: string; duration: number; builtin: boolean }[] }>
     pickAudio: () => Promise<string | null>
     openExternal: (url: string) => Promise<void>

@@ -65,7 +65,9 @@ interface TimelineClip {
 interface AppSettings {
   brand: { enabled: boolean; logoPath: string | null; position: 'tl' | 'tr' | 'bl' | 'br' | 'center'; sizePct: number; margin: number; opacity: number; showMode: 'whole' | 'intro' | 'outro'; windowSec: number; fade: number }
   intro: { segment: 'first' | 'last'; seconds: number; fade: number; treatment: 'ripple' | 'overlay' }
-  audio: { optimize: boolean; noiseReduction: boolean }
+  /** optimize: land the export on `target` (a platform id, electron/audiochain.ts); duck: music and SFX dip under speech.
+   *  Noise reduction is no longer a switch: Fix voice measures and cleans each voice on its own. */
+  audio: { optimize: boolean; target: string; duck: boolean }
   /** theme: a theme id or the creator's words ("futuristic tech"); 'classic' = the plain style below. tweak: words on top ("but blue") */
   caption: { fontSize: number; color: string; position: 'lower' | 'top' | 'center'; box: boolean; boxOpacity: number; model: 'tiny' | 'base' | 'small'; language: string; mode: 'phrase' | 'word'; theme: string; tweak: string }
   silence: { minPause: number; thresholdDb: number; pad: number; smooth: boolean; transition: number; detectBy: 'auto' | 'audio' | 'motion'; freezeDb: number }
@@ -82,7 +84,7 @@ interface AppSettings {
 const DEFAULT_SETTINGS: AppSettings = {
   brand: { enabled: false, logoPath: null, position: 'br', sizePct: 16, margin: 40, opacity: 0.85, showMode: 'whole', windowSec: 5, fade: 0.5 },
   intro: { segment: 'first', seconds: 5, fade: 0.6, treatment: 'ripple' },
-  audio: { optimize: true, noiseReduction: false },
+  audio: { optimize: true, target: 'youtube', duck: true },
   caption: { fontSize: 44, color: '#ffffff', position: 'lower', box: true, boxOpacity: 0.5, model: 'tiny', language: 'en', mode: 'phrase', theme: 'creator', tweak: '' },
   silence: { minPause: 0.8, thresholdDb: -30, pad: 0.12, smooth: true, transition: 0.12, detectBy: 'auto', freezeDb: -50 },
   narration: { command: '' },
@@ -2192,7 +2194,8 @@ function Editor() {
     .map(c => {
       const media = mediaBin.find(m => m.id === c.mediaId)
       const src = exportSource(media, W, H, FPS, quality)
-      return { ...c, path: src.path, hdr: src.hdr, hasVideo: media?.hasVideo, hasAudio: c.trackId === 'v2' ? false : media?.hasAudio, chromaKey: media?.chromaKey }
+      // mediaPath: the original, which a voice's bake and the sound measurements belong to (path may be the proxy)
+      return { ...c, path: src.path, mediaPath: media?.path, hdr: src.hdr, hasVideo: media?.hasVideo, hasAudio: c.trackId === 'v2' ? false : media?.hasAudio, chromaKey: media?.chromaKey }
     })
 
   // The exporter opens the source once per clip, and on a long cut of 4K HEVC HDR that is a lot of
@@ -3571,7 +3574,6 @@ function Editor() {
                   <input type="range" min="0" max="1.5" step="0.05" value={masterVolume} onChange={e => setMasterVolume(parseFloat(e.target.value))} style={{ width: '100%', accentColor: 'var(--accent-primary)' }} />
                 </div>
                 <div className="field chk" onClick={() => setSettings(s => ({ ...s, audio: { ...s.audio, optimize: !s.audio.optimize } }))}><input type="checkbox" checked={settings.audio.optimize} readOnly id="norm" /><label htmlFor="norm" style={{ cursor: 'pointer', marginBottom: 0 }}>Optimize loudness (−14 LUFS)</label></div>
-                <div className="field chk" onClick={() => setSettings(s => ({ ...s, audio: { ...s.audio, noiseReduction: !s.audio.noiseReduction } }))}><input type="checkbox" checked={settings.audio.noiseReduction} readOnly id="nr" /><label htmlFor="nr" style={{ cursor: 'pointer', marginBottom: 0 }}>Noise reduction</label></div>
                 <div className="field"><label>Save To</label><div className="path-box" onClick={pickExportPath}><IconFolder /><span>{customExportPath ? customExportPath.split(/[\\/]/).pop() : 'Choose on export…'}</span></div></div>
                 <div className={`progress-line ${exportProgress !== null ? 'show' : ''}`}><div className="fill" style={{ width: `${exportProgress || 0}%` }} /></div>
                 <button className="action-btn export" onClick={handleExport} disabled={(clips.length === 0 && texts.length === 0) || exportProgress !== null}><IconExport /> <span>{exportProgress !== null ? `Rendering ${Math.round(exportProgress)}%${eta && eta > 0 ? ` • ${fmtEta(eta)} left` : ''}` : 'Export Video'}</span></button>
@@ -3959,7 +3961,6 @@ function Editor() {
               <section>
                 <h3>Audio</h3>
                 <label className="switch"><input type="checkbox" checked={settings.audio.optimize} onChange={e => setSettings(s => ({ ...s, audio: { ...s.audio, optimize: e.target.checked } }))} /> Auto optimize loudness (−14 LUFS, YouTube target)</label>
-                <label className="switch"><input type="checkbox" checked={settings.audio.noiseReduction} onChange={e => setSettings(s => ({ ...s, audio: { ...s.audio, noiseReduction: e.target.checked } }))} /> Noise reduction (FFT denoise + rumble filter)</label>
               </section>
 
               <section>

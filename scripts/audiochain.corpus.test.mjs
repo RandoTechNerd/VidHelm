@@ -37,7 +37,7 @@ const ok = (c, l) => { if (c) { pass++; console.log('  PASS ', l) } else { fail+
 const skipped = (l) => { skip++; console.log('  SKIP ', l) }
 const near = (a, b, e) => Math.abs(a - b) <= e
 const has = (f) => fs.existsSync(path.join(DIR, f))
-// VIDHELM_AUDIO_ONLY=voice,preview,... runs only those sections (voice, match, cache, preview, mix, robustness, nosound)
+// VIDHELM_AUDIO_ONLY=voice,preview,... runs only those sections (voice, match, cache, preview, mix, robustness, timeline, nosound)
 const ONLY = (process.env.VIDHELM_AUDIO_ONLY || '').split(',').map((x) => x.trim()).filter(Boolean)
 const want = (section) => !ONLY.length || ONLY.includes(section)
 const C = (f) => path.join(DIR, f)
@@ -287,6 +287,46 @@ console.log(JSON.stringify({ r, peak, wall: (Date.now() - t0) / 1000 }))`)
     ok(peak < 300 * 2 ** 20, `streamed: the bake process peaked at ${(peak / 2 ** 20).toFixed(0)} MB (< 300)`)
   } else skipped('long10min.wav')
 }
+
+console.log('a timeline through the export\'s own sound path')
+if (!want('timeline')) skipped('not asked for')
+else if (has('stems/voice_music_voice.wav') && has('stems/voice_music_music.wav')) {
+  // The stems as an edit leaves them: the voice split in two (the second clip starts mid-file), the bed
+  // under all of it, no role set anywhere. electron/mixrender.ts guesses the roles, bakes the voice,
+  // builds the buses and the master; the encode below is the export's audio half (the premaster as
+  // input 1, the master filter, AAC 384k in an mp4).
+  const R = await load('mixrender.ts'), M = await load('audiomix.ts')
+  const vs = C('stems/voice_music_voice.wav'), msF = C('stems/voice_music_music.wav')
+  const dur = +JSON.parse(execFileSync(FP, ['-v', 'error', '-show_entries', 'format=duration', '-of', 'json', vs], { encoding: 'utf8' })).format.duration
+  const cut = Math.round(dur * 0.45 * 100) / 100
+  const clip = (o) => ({ hasAudio: true, trackId: 'a1', type: 'audio', volume: 1, fadeIn: 0, fadeOut: 0, sourceStart: 0, ...o })
+  const clips = [
+    clip({ start: 0, duration: cut, path: vs, mediaPath: vs, aFadeOut: 0.012 }),
+    clip({ start: cut, duration: dur - cut, sourceStart: cut, path: vs, mediaPath: vs, aFadeIn: 0.012 }),
+    clip({ start: 0, duration: dur, path: msF, mediaPath: msF }),
+  ]
+  const env = { ffmpeg: FF, ffprobe: FP, cacheDir: cache, ffmpegVersion: ver, workDir: work, bakeMissing: true }
+  const t0 = Date.now()
+  const ex = await R.prepareExportAudio(clips, { totalS: dur, optimize: true, target: 'youtube', duck: true, masterVolume: 1 }, env)
+  ok(ex.mix.roles.map((r) => r.role).join() === 'voice,voice,music' && ex.mix.baked === 2 && ex.plan.ducks > 0, `roles ${ex.mix.roles.map((r) => `${r.role}${r.fixed ? ` (${r.fixed})` : ''}`).join(', ')}; ${ex.plan.ducks} ducks; ready in ${((Date.now() - t0) / 1000).toFixed(1)} s`)
+  const mp4 = path.join(work, 'timeline.mp4'), wav = path.join(work, 'timeline.master.wav')
+  ff(['-f', 'lavfi', '-i', `color=c=black:s=320x180:r=30:d=${dur}`, '-i', ex.premaster, '-filter_complex', `[1:a]${ex.master.filter}[aout]`,
+    '-map', '0:v', '-map', '[aout]', '-c:v', 'libx264', '-preset', 'ultrafast', '-c:a', 'aac', '-b:a', '384k', '-ar', '48000', '-ac', '2', '-t', String(dur), mp4])
+  ff(['-i', ex.premaster, '-af', ex.master.filter, '-c:a', 'pcm_f32le', wav])
+  const enc = loud(mp4)
+  ok(near(enc.I, -14, 0.15) && enc.TP <= -1.2, `the export lands at ${enc.I.toFixed(2)} LUFS, ${enc.TP} dBTP after AAC (planned ${ex.master.plannedLufs.toFixed(2)}, premaster ${ex.pre.I.toFixed(2)} LUFS / ${ex.pre.TP} dBTP, master ${ex.master.gainDb.toFixed(2)} dB)`)
+  // the voice and the bed as they sit in that master: each bus alone, through the same gain
+  const mixClips = (await R.resolveMix(clips, env)).clips   // all cached by now: the same decisions
+  const stem = async (bus) => {
+    const pre = path.join(work, `stem.${bus}.wav`), out = path.join(work, `stem.${bus}.m.wav`)
+    await R.renderPremaster(M.planMix(mixClips, { totalS: dur, duck: true, solo: bus }), env, pre)
+    ff(['-i', pre, '-af', `volume=${ex.master.gainDb.toFixed(3)}dB`, '-c:a', 'pcm_f32le', out])
+    return out
+  }
+  const b = measure(wav, '--voice', await stem('voice'), '--music', await stem('music')).balance
+  ok(b.voiceMinusMusicLu >= 15 && b.voiceMinusMusicWorstSegmentLu >= 14.5, `voice over bed ${b.voiceMinusMusicLu} LU, worst segment ${b.voiceMinusMusicWorstSegmentLu}`)
+  ex.cleanup()
+} else skipped('needs stems/voice_music_voice.wav and stems/voice_music_music.wav')
 
 console.log('a file with no sound')
 if (want('nosound')) {

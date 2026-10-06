@@ -67,29 +67,6 @@ export function clipAudioChain(input: string, c: AudioClip, volume: number | str
 }
 
 /**
- * The master bus, `[amaster]` to `[aout]`.
- *
- * optimize ("Loud for YouTube"): compress dynamics for higher perceived loudness, then land at
- * -13 LUFS (the loud end of YouTube's window; the tighter LRA=7 is denser and punchier). loudnorm runs
- * single-pass here, and its internal true-peak limiter only approximates the ceiling: it measured
- * -0.9 dBTP against the -1 dBTP target, i.e. the export failed our own quality check. Asking loudnorm
- * for -1.5 and following it with a hard ceiling leaves enough room for inter-sample peaks to still
- * land under -1 dBTP. level=disabled matters: without it alimiter re-normalises the level and undoes
- * loudnorm.
- *
- * loudnorm (ffmpeg 6.1) also works in 100 ms steps, and when it flushes its last ~3 s it stamps that
- * audio at its NEXT step. Unless the mix is a whole number of tenths of a second long, everything
- * from there on played up to 0.1 s late (a gap mid-stream, out of sync with the picture) and the
- * output's -t then cut the end of the sound off. Back to 48 kHz (loudnorm runs at 192 kHz) and the
- * samples renumbered from zero, the audio is continuous and exactly as long as the mix.
- */
-export function masterChain(optimize: boolean): string {
-  return optimize
-    ? '[amaster]acompressor=threshold=-18dB:ratio=3:attack=20:release=250:makeup=3,loudnorm=I=-13:LRA=7:TP=-1.5,aresample=48000,asetpts=N/SR/TB,alimiter=limit=0.85:level=disabled[aout]'
-    : '[amaster]alimiter=limit=0.891:level=disabled[aout]'
-}
-
-/**
  * A short reason a person can act on, for an ffmpeg failure. The raw tail still goes after it, but
  * "Export failed: a source file is missing" beats a progress bar that just disappears.
  *

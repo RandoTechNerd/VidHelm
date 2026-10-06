@@ -13,7 +13,7 @@ const load = async f => {
   const out = await build({ entryPoints: [path.join(here, f)], bundle: false, write: false, format: 'esm', target: 'node18' })
   return import('data:text/javascript;base64,' + Buffer.from(out.outputFiles[0].text).toString('base64'))
 }
-const { stillInput, clipAudioChain, masterChain, friendlyExportError, stderrTail, DEPOP_S, UNREADABLE_STILL } = await load('exportgraph.ts')
+const { stillInput, clipAudioChain, friendlyExportError, stderrTail, DEPOP_S, UNREADABLE_STILL } = await load('exportgraph.ts')
 const { planProxy, proxyFilter, proxyFits } = await load('playable.ts')
 
 const FF = path.join(here, '..', 'node_modules', 'ffmpeg-static', 'ffmpeg.exe')
@@ -57,28 +57,6 @@ try {
   ok(chainA.includes('afade=t=out') && !chainA.includes('afade=t=in'), 'a clip from the top of its file keeps its attack, its splice end is ramped')
   ok(chainB.includes(`afade=t=in:st=1:d=${DEPOP_S}`), 'a clip starting mid-file (a split, a trim) is ramped in so the join cannot click')
   ok(clipAudioChain('2:a', { start: 0, duration: 2, fadeIn: 0.5, fadeOut: 0.5, aFadeIn: 0.02 }, 'if(lt(t\\,1)\\,1\\,0.5)', 'z').includes("volume='if(lt(t\\,1)\\,1\\,0.5)':eval=frame"), 'volume automation passes through as an expression')
-
-  console.log('\n-- the loud master keeps the sound continuous to the end --')
-  // loudnorm flushes its last ~3 s on its own 100 ms grid: a mix that was not a whole number of tenths
-  // long came out with a gap in the middle (one AAC packet of 5234 samples) and lost its last ~90 ms
-  // to the output's -t. Mirrors export-video's master bus and encoder settings.
-  const FP = path.join(here, '..', 'node_modules', 'ffprobe-static', 'bin', 'win32', 'x64', 'ffprobe.exe')
-  const len = 5.0123
-  const mastered = (optimize, out) => ff(['-f', 'lavfi', '-i', `sine=f=330:r=48000:d=${len}`, '-filter_complex', `[0:a]aformat=channel_layouts=stereo,volume=1[amaster];${masterChain(optimize)}`,
-    '-map', '[aout]', '-c:a', 'aac', '-b:a', '384k', '-ar', '48000', '-ac', '2', '-t', String(len), out])
-  const packets = (file) => spawnSync(FP, ['-v', 'error', '-select_streams', 'a', '-show_entries', 'packet=pts,duration', '-of', 'csv=p=0', file], { encoding: 'utf8' })
-    .stdout.split(/\r?\n/).filter(l => /^-?\d+,\d+/.test(l)).map(l => l.split(',').map(Number))
-  for (const optimize of [true, false]) {
-    const out = T(`master-${optimize}.m4a`)
-    r = mastered(optimize, out)
-    const pk = packets(out)
-    const odd = pk.slice(0, -1).filter(([, d]) => d !== 1024)
-    const jumps = pk.slice(1).filter(([p], i) => p !== pk[i][0] + pk[i][1])
-    const want = Math.ceil(len * 48000 / 1024)   // whole AAC frames needed for the full length
-    ok(r.status === 0 && pk.length >= want && !odd.length && !jumps.length,
-      `${optimize ? 'Loud for YouTube' : 'plain'} master: ${pk.length} packets (need ${want}), every one 1024 samples and back to back${odd.length ? ` (odd: ${odd.slice(0, 3).map(([p, d]) => d + ' at ' + p).join(', ')})` : ''}${r.status ? ': ' + r.stderr : ''}`)
-  }
-  ok(/loudnorm=[^,]*,aresample=48000,asetpts=N\/SR\/TB,alimiter/.test(masterChain(true)), 'the loudnorm output is renumbered before the ceiling')
 
   console.log('\n-- stills of every kind make it into the export --')
   const stillTest = (file, label, mustMove = false) => {

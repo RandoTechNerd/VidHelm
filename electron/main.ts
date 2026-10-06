@@ -17,10 +17,11 @@ import { planVisualIndex, timecode, stackLayout } from './visual'
 import { readZip, parseHandoff, downloadList, buildProject, entriesToWrite, isCloudMediaUrl, CLOUD_ORIGINS } from './cloudimport'
 import { generateClip, videoGenAvailable, estimateUsd, VIDEO_MODELS, GenTimeout } from './videogen'
 import { bridgeTimeoutMs, QUICK_MS } from '../agent/timeouts.mjs'
-import { stillInput, clipAudioChain, masterChain, friendlyExportError, stderrTail, UNREADABLE_STILL } from './exportgraph'
+import { stillInput, friendlyExportError, stderrTail, UNREADABLE_STILL } from './exportgraph'
 import { bridgeRefusal, commandForEditor, replyAlias, replyKey, type PendingReply } from './bridgeguard'
 import { decide, decideChannel, decisionsJson, summaryLine, speechSegments, analysisSummary, roleGuess, bedDb, sfxDb, type Preset, type Provenance } from './audiochain'
 import { analyzeMedia, bakeVoice, cachedBake, readFfmpegVersion, sweepVoiceTemp, voiceCacheKey, type BakeResult } from './voicebake'
+import { prepareExportAudio, scanTimelineLoudness, type ExportAudio, type MixEnv } from './mixrender'
 import path from 'node:path'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -1731,7 +1732,7 @@ const settingsPath = () => path.join(app.getPath('userData'), 'vidhelm-settings.
 const DEFAULT_SETTINGS = {
   brand: { enabled: false, logoPath: null as string | null, position: 'br', sizePct: 16, margin: 40, opacity: 0.85, showMode: 'whole' as 'whole' | 'intro' | 'outro', windowSec: 5, fade: 0.5 },
   intro: { segment: 'first' as 'first' | 'last', seconds: 5, fade: 0.6, treatment: 'ripple' as 'ripple' | 'overlay' },
-  audio: { optimize: true, noiseReduction: false },
+  audio: { optimize: true, target: 'youtube', duck: true },
   caption: { fontSize: 44, color: '#ffffff', position: 'lower' as 'lower' | 'top' | 'center', box: true, boxOpacity: 0.5, model: 'tiny' as 'tiny' | 'base' | 'small', language: 'en', mode: 'phrase' as 'phrase' | 'word', theme: 'creator', tweak: '' },
   silence: { minPause: 0.8, thresholdDb: -30, pad: 0.12, smooth: true, transition: 0.12, detectBy: 'auto' as 'auto' | 'audio' | 'motion', freezeDb: -50 },
 }
@@ -1746,7 +1747,8 @@ ipcMain.handle('get-settings', async () => {
       ...raw,
       brand: { ...DEFAULT_SETTINGS.brand, ...raw.brand },
       intro: { ...DEFAULT_SETTINGS.intro, ...raw.intro },
-      audio: { ...DEFAULT_SETTINGS.audio, ...raw.audio },
+      // noiseReduction was the old whole-mix switch; Fix voice now cleans each voice by measurement
+      audio: { ...DEFAULT_SETTINGS.audio, ...raw.audio, noiseReduction: undefined },
       caption: { ...DEFAULT_SETTINGS.caption, ...raw.caption },
       silence: { ...DEFAULT_SETTINGS.silence, ...raw.silence },
     }
@@ -2041,21 +2043,6 @@ ipcMain.handle('sfx-generate', async (_event, { command, prompt }: { command: st
 
 // Escape a path or string for use inside an ffmpeg filtergraph option
 const escFilter = (s: string) => s.replace(/\\/g, '/').replace(/:/g, '\\:').replace(/'/g, "\\'")
-// Build a piecewise-linear volume expression (eval=frame) from automation points.
-// pts: [{t: secondsFromClipStart, v: gain}], clipStart shifts to absolute timeline time.
-const volumeExpr = (pts: { t: number; v: number }[], clipStart: number, clipVol: number) => {
-  if (!pts || pts.length === 0) return null
-  const P = pts.slice().sort((a, b) => a.t - b.t).map(p => ({ a: clipStart + p.t, v: p.v }))
-  let expr = `${P[P.length - 1].v}`
-  for (let i = P.length - 1; i > 0; i--) {
-    const p0 = P[i - 1], p1 = P[i]
-    const span = (p1.a - p0.a) || 0.0001
-    const seg = `(${p0.v}+(${p1.v}-${p0.v})*(t-${p0.a})/${span})`
-    expr = `if(lt(t\\,${p1.a})\\,${seg}\\,${expr})`
-  }
-  expr = `if(lt(t\\,${P[0].a})\\,${P[0].v}\\,${expr})`
-  return expr
-}
 // Build a 0..1 alpha expression with optional fade in/out for drawtext
 const alphaExpr = (start: number, end: number, fi: number, fo: number) => {
   if (fi <= 0 && fo <= 0) return '1'
@@ -2553,30 +2540,69 @@ ipcMain.handle('analyze-audio-media', async (_event, { filePath, preset = 'studi
 // bake answers at once; the same bake asked for twice shares one run.
 const voiceBakes = new Map<string, Promise<BakeResult>>()
 let bakeTail: Promise<unknown> = Promise.resolve()
+/**
+ * Bake (or return the cached bake). `urgent` is an export waiting on it: it starts now instead of
+ * queueing behind background bakes and proxies, which would leave the export sitting at 0 percent.
+ */
+async function runVoiceBake(filePath: string, preset: Preset, picture: string | null, o: { send?: (pct: number, line: string) => void; urgent?: boolean } = {}): Promise<BakeResult> {
+  if (!filePath || !fs.existsSync(filePath)) return { error: 'file not found' }
+  if (!['off', 'light', 'studio'].includes(preset)) return { error: `unknown Fix voice preset "${preset}"` }
+  const cacheDir = voiceDir()
+  if (!voiceSwept) { voiceSwept = true; sweepVoiceTemp(cacheDir) }
+  const opts = { ffmpeg: paths.ffmpeg, ffprobe: paths.ffprobe, cacheDir, filePath, preset, ffmpegVersion: await ffmpegVersion(), picture: picture && fs.existsSync(picture) ? picture : null }
+  const hit = cachedBake(opts)
+  if (hit) return hit
+  const st = fs.statSync(filePath)
+  const id = `${voiceCacheKey(filePath, st.size, st.mtimeMs, preset, opts.ffmpegVersion)}|${opts.picture || ''}`
+  const running = voiceBakes.get(id)
+  if (running) return await running
+  o.send?.(0, 'Waiting its turn')
+  const run = async () => {
+    if (!o.urgent) while (proxyBuilds.size) await Promise.allSettled([...proxyBuilds.values()])
+    return bakeVoice({ ...opts, onProgress: o.send, onChild: trackVoiceChild })
+  }
+  const job = (o.urgent ? run() : bakeTail.then(run)).finally(() => voiceBakes.delete(id))
+  if (!o.urgent) bakeTail = job.catch(() => undefined)
+  voiceBakes.set(id, job)
+  return await job
+}
 ipcMain.handle('bake-voice', async (event, { filePath, preset = 'studio', picture }: { filePath: string; preset?: Preset; picture?: string | null }) => {
   try {
-    if (!filePath || !fs.existsSync(filePath)) return { error: 'file not found' }
-    if (!['off', 'light', 'studio'].includes(preset)) return { error: `unknown Fix voice preset "${preset}"` }
-    const cacheDir = voiceDir()
-    if (!voiceSwept) { voiceSwept = true; sweepVoiceTemp(cacheDir) }
-    const opts = { ffmpeg: paths.ffmpeg, ffprobe: paths.ffprobe, cacheDir, filePath, preset, ffmpegVersion: await ffmpegVersion(), picture: picture && fs.existsSync(picture) ? picture : null }
-    const hit = cachedBake(opts)
-    if (hit) return hit
-    const st = fs.statSync(filePath)
-    const id = `${voiceCacheKey(filePath, st.size, st.mtimeMs, preset, opts.ffmpegVersion)}|${opts.picture || ''}`
-    const running = voiceBakes.get(id)
-    if (running) return await running
     const sender = event.sender
     const send = (pct: number, line: string) => { if (!sender.isDestroyed()) sender.send('voice-progress', { filePath, preset, pct, line }) }
-    send(0, 'Waiting its turn')
-    const run = async () => {
-      while (proxyBuilds.size) await Promise.allSettled([...proxyBuilds.values()])
-      return bakeVoice({ ...opts, onProgress: send, onChild: trackVoiceChild })
-    }
-    const job = bakeTail.then(run).finally(() => voiceBakes.delete(id))
-    bakeTail = job.catch(() => undefined)
-    voiceBakes.set(id, job)
-    return await job
+    return await runVoiceBake(filePath, preset, picture ?? null, { send })
+  } catch (e) { return { error: String((e as Error)?.message || e) } }
+})
+
+// ---------------- The export's sound: buses, ducking, the measured master ----------------
+// Planned in electron/audiomix.ts, run by electron/mixrender.ts. What is here: the folders that say
+// where a file came from, the bake runner, and the scan the loudness readout asks for.
+const mixEnv = async (o: { bakeMissing: boolean }): Promise<MixEnv> => ({
+  ffmpeg: paths.ffmpeg, ffprobe: paths.ffprobe, cacheDir: voiceDir(), ffmpegVersion: await ffmpegVersion(),
+  workDir: app.getPath('temp'), bakeMissing: o.bakeMissing, onChild: trackVoiceChild,
+  dirs: { score: path.join(sfxDir(), 'score'), sfx: sfxDir(), narration: path.join(app.getPath('userData'), 'narration') },
+  bake: ({ filePath, preset }) => runVoiceBake(filePath, preset, null, {
+    urgent: true,
+    send: (pct, line) => { if (win && !win.webContents.isDestroyed()) win.webContents.send('voice-progress', { filePath, preset, pct, line }) },
+  }),
+  onStage: (line) => console.log('[export sound]', line),
+})
+/** The timeline's end, as the export computes it (clips and text). */
+const timelineEnd = (clips: any[], texts: any[] = []) => {
+  const ends = [...clips.map(c => Number(c.start) + Number(c.duration)), ...texts.map(t => Number(t.start) + Number(t.duration))].filter(Number.isFinite)
+  return ends.length ? Math.max(...ends) : 1
+}
+
+// Where the export will land, without exporting: the export's own audio graph rendered to nothing and
+// measured. Voices without a bake play as recorded here and are counted (`unbaked`); pass bake:true to
+// make them first, as the export does. The same timeline answers from memory.
+ipcMain.handle('scan-timeline-loudness', async (_event, { clips, texts, audio, settings, bake }: { clips: any[]; texts?: any[]; audio?: any; settings?: any; bake?: boolean }) => {
+  try {
+    const a = audio || {}
+    return await scanTimelineLoudness(clips || [], {
+      totalS: timelineEnd(clips || [], texts || []), optimize: a.optimize !== false, target: a.target, duck: a.duck !== false,
+      masterVolume: typeof settings?.masterVolume === 'number' ? settings.masterVolume : 1,
+    }, await mixEnv({ bakeMissing: !!bake }))
   } catch (e) { return { error: String((e as Error)?.message || e) } }
 })
 
@@ -2714,6 +2740,24 @@ ipcMain.handle('voice-clone', async (_event, { command, scriptText, pronounce }:
 // Exports in flight, by output file: two renders writing one file produce garbage (an agent retrying
 // after a timeout while the first export still runs is exactly how that happens).
 const exportsRunning = new Set<string>()
+/**
+ * What each export's sound was planned to be, by output file, so Watch & Verify can say "planned
+ * -14.0, measured -14.0" and judge the loudness against the target that was asked for (a podcast
+ * export at -16 is not a failed YouTube export). Only this run's exports; a file from elsewhere is
+ * judged against the default target.
+ */
+interface ExportPlan { targetLufs: number | null; plannedLufs: number | null; ceilingDbtp: number; gainDb: number; masterPasses: number; notes: string[]; roles: Record<string, number>; baked: number; at: number }
+const exportPlans = new Map<string, ExportPlan>()
+const rememberExportPlan = (outKey: string, s: ExportAudio) => {
+  const m = s.master, roles: Record<string, number> = {}
+  for (const r of s.mix.roles) roles[r.role] = (roles[r.role] || 0) + 1
+  exportPlans.set(outKey, {
+    targetLufs: m.targetLufs, plannedLufs: m.plannedLufs, ceilingDbtp: m.ceilingDbtp, gainDb: +m.gainDb.toFixed(2),
+    masterPasses: m.passes, notes: s.mix.notes, roles, baked: s.mix.baked, at: Date.now(),
+  })
+  if (exportPlans.size > 50) exportPlans.delete(exportPlans.keys().next().value!)
+  console.log(`[export sound] ${Object.entries(roles).map(([k, v]) => `${v} ${k}`).join(', ') || 'silent'}; ${s.mix.baked} baked; pre ${s.pre.I.toFixed(2)} LUFS / ${s.pre.TP ?? '?'} dBTP; master ${m.gainDb.toFixed(2)} dB -> ${m.plannedLufs?.toFixed(2) ?? '-'} LUFS (${m.passes} check passes) in ${s.seconds.toFixed(1)} s`)
+}
 // A failure must say WHY, in words, with the end of ffmpeg's log after it: the renderer shows the
 // message in a toast (it used to just make the progress bar disappear).
 const exportError = (reason: string, detail = '') => new Error(`Export failed: ${reason}${detail ? `\n${detail}` : ''}`)
@@ -2740,13 +2784,27 @@ ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outp
   const outKey = path.resolve(outputPath).toLowerCase()
   if (exportsRunning.has(outKey)) throw exportError('an export to that file is already running')
   exportsRunning.add(outKey)
+  audio = audio || { optimize: settings?.normalizeAudio !== false }
+  // The sound is made first, on its own: every audible clip on its bus (voices from their Fix voice
+  // bake, made now if missing), the music ducked under the speech, the sum rendered once and
+  // measured, and the master gain settled on that measurement. The video pass then reads that one
+  // file as its sound. An analysis render takes the bakes that exist and does not wait for new ones.
+  let sound: ExportAudio
+  try {
+    sound = await prepareExportAudio(clips, {
+      totalS: timelineEnd(clips, texts), optimize: audio.optimize !== false, target: audio.target, duck: audio.duck !== false,
+      masterVolume: typeof settings?.masterVolume === 'number' ? settings.masterVolume : 1,
+    }, await mixEnv({ bakeMissing: settings?.quality !== 'analysis' }))
+  } catch (e) {
+    exportsRunning.delete(outKey)
+    const msg = String((e as Error)?.message || e)
+    throw exportError(`the sound could not be mixed (${friendlyExportError(msg)})`, stderrTail(msg))
+  }
+  rememberExportPlan(outKey, sound)
   return new Promise((resolve, reject) => {
-    audio = audio || { optimize: settings?.normalizeAudio !== false, noiseReduction: false }
-
     const W = Math.round(settings?.width) || 1920
     const H = Math.round(settings?.height) || 1080
     const FPS = [24, 30, 60].includes(settings?.fps) ? settings.fps : 30
-    const master = typeof settings?.masterVolume === 'number' ? settings.masterVolume : 1
     const fontFile = escFilter(path.join(process.env.WINDIR || 'C:/Windows', 'Fonts', 'arial.ttf'))
     const ends = [...clips.map(c => c.start + c.duration), ...texts.map(t => t.start + t.duration)]
     const totalDuration = ends.length ? Math.max(...ends) : 1
@@ -2757,13 +2815,14 @@ ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outp
     // what was at the output path before this run, so a failure only removes a file THIS run wrote
     const before = (() => { try { const st = fs.statSync(outputPath); return `${st.mtimeMs}|${st.size}` } catch { return null } })()
     let command = ffmpeg()
-    // 0: black base video at target resolution/fps, 1: silent base audio at 48kHz (YouTube spec)
+    // 0: black base video at target resolution/fps, 1: the mixed sound (48 kHz, exactly the timeline's
+    // length), or silence when nothing on the timeline is heard
     command.input(`color=c=black:s=${W}x${H}:r=${FPS}:d=${totalDuration}`).inputFormat('lavfi')
-    command.input(`anullsrc=channel_layout=stereo:sample_rate=48000:d=${totalDuration}`).inputFormat('lavfi')
+    if (sound.premaster) command.input(sound.premaster)
+    else command.input(`anullsrc=channel_layout=stereo:sample_rate=48000:d=${totalDuration}`).inputFormat('lavfi')
 
     const filterComplex: string[] = []
     let currentVOut = '0:v'
-    const audioMixInputs: string[] = ['1:a']
     // One decoder per clip, and each decoder sizes its thread pool to the whole CPU: a long pause-cut
     // of 4K phone footage opened 90 of those at once and took the machine down. Past a handful of
     // video inputs, cap each one; the encoder is the bottleneck by then anyway.
@@ -2815,16 +2874,6 @@ ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outp
         filterComplex.push(`${v}[v_scaled_${idx}]`)
         filterComplex.push(`[${currentVOut}][v_scaled_${idx}]overlay=enable='between(t,${clip.start},${end})':eof_action=pass[v_out_${idx}]`)
         currentVOut = `v_out_${idx}`
-      }
-
-      if (clip.hasAudio) {
-        const vExpr = volumeExpr(clip.volumePoints, clip.start, clip.volume ?? 1.0)
-        // Trimmed to exactly the clip (the input carries a 0.2 s tail for the picture fades, which
-        // used to play on under the next clip), and every splice ramped by a few milliseconds so the
-        // picture can cut hard without the join clicking. See electron/exportgraph.ts.
-        // Volume automation (graph) takes precedence over the flat per-clip volume.
-        filterComplex.push(clipAudioChain(`${idx}:a`, clip, vExpr ?? (clip.volume ?? 1.0), `a_delayed_${idx}`))
-        audioMixInputs.push(`a_delayed_${idx}`)
       }
     })
 
@@ -2899,18 +2948,9 @@ ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outp
       currentVOut = 'v_brand'
     }
 
-    // Audio: mix (normalize=0 so per-clip volumes are honored) → denoise → master gain → loudness optimize
-    if (audioMixInputs.length > 1) {
-      filterComplex.push(`${audioMixInputs.map(a => `[${a}]`).join('')}amix=inputs=${audioMixInputs.length}:duration=first:dropout_transition=0:normalize=0[amixed]`)
-      let chain = '[amixed]'
-      if (audio.noiseReduction) { filterComplex.push(`${chain}highpass=f=80,afftdn=nf=-25[aclean]`); chain = '[aclean]' }
-      filterComplex.push(`${chain}volume=${master}[amaster]`)
-      // "Loud for YouTube" (compressor, loudnorm to -13 LUFS, hard ceiling) or just the ceiling. The
-      // loudnorm branch also mends loudnorm's own timestamp jump near the end; see electron/exportgraph.ts.
-      filterComplex.push(masterChain(!!audio.optimize))
-    } else {
-      filterComplex.push(`[1:a]volume=${master}[aout]`)
-    }
+    // Sound: the premaster (input 1) through the master, which was settled on its measurement: a
+    // linear gain to the target, the 20 kHz low-pass and a 4x oversampled ceiling (electron/audiomix.ts)
+    filterComplex.push(`[1:a]${sound.premaster ? sound.master.filter : 'anull'}[aout]`)
 
     // Windows caps a command line at 32767 characters. A ninety-clip cut builds a filtergraph of
     // roughly 25k on its own, which on top of the inputs blows straight past that and the process
@@ -2959,5 +2999,5 @@ ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outp
         reject(exportError(friendlyExportError(raw, outputPath), stderrTail(stderr || String(err?.message || ''))))
       })
       .save(outputPath)
-  }).finally(() => exportsRunning.delete(outKey))
+  }).finally(() => { exportsRunning.delete(outKey); sound.cleanup() })
 })

@@ -27,7 +27,7 @@ All editing state lives in `App.tsx` React state, no store library:
 - `Marker[]`: tag points `{ t, label, color }` (see `extras.tsx`)
 - `AppSettings`: brand kit, intro defaults, audio, captions, silence detection, narration command; persisted via `get/set-settings` IPC
 
-**Preview playback** is DOM-based: a rAF clock advances `currentTime`; `<video>` elements for active video clips and hidden `Audio` elements for `a1`/`a2` clips are seeked/played to follow the clock, with per-frame gain from `gainAt()` (automation) × fades × master. The preview intentionally mirrors the export math (`fadeFactor`, `gainAt` ↔ `volumeExpr`, `alphaExpr` in main.ts).
+**Preview playback** is DOM-based: a rAF clock advances `currentTime`; `<video>` elements for active video clips and hidden `Audio` elements for `a1`/`a2` clips are seeked/played to follow the clock, with per-frame gain from `gainAt()` (automation) × fades × master. The preview intentionally mirrors the export math (`fadeFactor`, `gainAt` ↔ `volumeExpr` in electron/audiomix.ts, `alphaExpr` in main.ts). It does not yet play the export's bus levels, ducks or master gain (that needs the WebAudio mixer in AUDIO design step c), so music sounds louder in the preview than in the export.
 
 **Undo/redo**: debounced JSON snapshots of `{clips, texts}` (~450 ms coalescing) with a 100-step ring.
 
@@ -35,12 +35,12 @@ All editing state lives in `App.tsx` React state, no store library:
 
 One FFmpeg process, one filtergraph:
 
-1. Base layers: `color=black` video + `anullsrc` audio at target size/fps/48 kHz.
+1. Base layers: `color=black` video at target size/fps, and the timeline's sound as input 1 (`anullsrc` when nothing is heard).
 2. Every clip becomes an input; video clips are scaled/padded into frame with alpha, shifted by `setpts`, alpha-faded, then chained through `overlay` (so overlapping fades crossfade for real).
-3. Audio clips get `adelay` + volume (flat or piecewise-linear automation expression) + `afade`, then a single `amix` with `normalize=0`.
+3. The sound is made before the video pass, by `electron/mixrender.ts` from the plan in `electron/audiomix.ts`. Each audible clip gets a role (set on the clip, else from where the file came from and one cached measurement of it); voices read their Fix voice bake (made now if missing), everything else its own file; every clip keeps `clipAudioChain` (exact trim, `adelay`, volume or automation, de-pop ramps), with a mono source copied to both sides at full level. Three buses: voice (bakes and As is, no compressor), music (set 5 LU under the voice, ducked 10 dB by keyframes drawn from the voices' speech), SFX (loudest moment at the voice level, ducked 6 dB). The sum gets the 20 kHz low-pass and is rendered once to a float premaster while it is measured.
 4. Texts are `drawtext` (textfile-based, so quoting is safe) with alpha expressions.
 5. Brand logo is a final overlay with its own window/fade logic.
-6. Mastering: optional FFT denoise → master gain → `acompressor` + `loudnorm` (YouTube target) or a plain safety limiter.
+6. Mastering, on input 1: the measured linear gain to the loudness target times the Master volume, then a 4x oversampled -1.5 dBTP ceiling. No compressor and no dynamic loudnorm (both re-pump the ducked bed); when the ceiling may act, the master is measured on the premaster and the residual folded back in before the video pass starts. Optimize off: the Master volume and a -1 dBTP ceiling. `scan-timeline-loudness` runs the same graph to nothing, for a readout of where the export will land.
 7. x264 High profile, closed 2 s GOP, BT.709 tags, `+faststart`.
 
 Progress streams to the renderer; a **quality check** pass (`quality-check`) then measures loudness/true peak, scans for black frames, and samples stills.
