@@ -14,7 +14,7 @@ const load = async (file) => {
   const out = await build({ entryPoints: [path.join(here, '..', 'electron', file)], bundle: true, write: false, format: 'esm', platform: 'node', target: 'node18' })
   return import('data:text/javascript;base64,' + Buffer.from(out.outputFiles[0].text).toString('base64'))
 }
-const M = await load('audiomix.ts'), R = await load('mixrender.ts'), A = await load('audiochain.ts')
+const M = await load('audiomix.ts'), R = await load('mixrender.ts'), A = await load('audiochain.ts'), V = await load('voicebake.ts')
 const FF = path.join(here, '..', 'node_modules', 'ffmpeg-static', 'ffmpeg.exe')
 const FP = path.join(here, '..', 'node_modules', 'ffprobe-static', 'bin', 'win32', 'x64', 'ffprobe.exe')
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vh-audiomix-'))
@@ -284,6 +284,23 @@ try {
     ok(stale.premaster && stale.mix.roles.length === 2, 'a clip marked as having sound whose file has none is left out instead of stopping the mix')
     stale.cleanup()
     void full
+  }
+
+  console.log('\n-- the import measures a file once, and the export reads that measurement --')
+  {
+    // analyze-audio-media decodes through the head the mix uses and stores the result where measureSound looks
+    const cache = { ...env, cacheDir: path.join(tmp, 'voice-import') }
+    ok(R.cachedSound(T('mono.wav'), cache) === null, 'nothing measured yet')
+    const an = await V.analyzeMedia(FF, T('mono.wav'), { head: R.soundHead(1) })
+    const stored = R.storeSound(T('mono.wav'), an, 1, cache)
+    const fresh = await R.measureSound(T('mono.wav'), env)
+    ok(near(stored.I, fresh.I, 0.01) && stored.channels === 1, `the import's numbers are the export's (${stored.I} vs ${fresh.I} LUFS)`)
+    // an ffmpeg that does not exist proves nothing is decoded again
+    const again = await R.measureSound(T('mono.wav'), { ...cache, ffmpeg: path.join(tmp, 'no-ffmpeg.exe'), ffprobe: path.join(tmp, 'no-ffprobe.exe') })
+    ok(again.I === stored.I && again.key === stored.key, 'the export answers from that measurement without decoding')
+    const later = new Date(Date.now() + 5000)
+    fs.utimesSync(T('mono.wav'), later, later)
+    ok(R.cachedSound(T('mono.wav'), cache) === null, 'a file changed since is measured again')
   }
 } finally {
   if (!process.env.VIDHELM_KEEP) fs.rmSync(tmp, { recursive: true, force: true })
