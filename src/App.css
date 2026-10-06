@@ -1172,7 +1172,7 @@ textarea.duration-input { height: auto; padding: 7px 9px; resize: vertical; line
 .recipe-toggles { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
 .recipe-chip { background: rgb(var(--ink) / 0.05); border: 1px solid rgb(var(--ink) / 0.14); color: var(--text-secondary, #9aa3af); border-radius: 999px; padding: 5px 12px; font-size: 12.5px; cursor: pointer; }
 .recipe-chip.on { background: var(--accent-soft); border-color: var(--accent-primary); color: var(--text-main); }
-/* a recipe step's on/off is a drawn dot, not a â—/â—‹ glyph that changes size from font to font */
+/* a recipe step's on/off is a drawn dot, not a ●/○ glyph that changes size from font to font */
 .recipe-toggles .recipe-chip { display: inline-flex; align-items: center; gap: 7px; }
 .recipe-toggles .recipe-chip::before { content: ''; width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid currentColor; box-sizing: border-box; flex: none; }
 .recipe-toggles .recipe-chip.on::before { background: var(--accent-primary); border-color: var(--accent-primary); }
