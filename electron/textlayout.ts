@@ -208,20 +208,36 @@ export function cleanText<T extends TextFields>(t: T): T & { text: string; start
 }
 
 /**
- * Line breaks where the preview wraps: greedy, at spaces, the author's own newlines kept, a word
- * longer than the line left whole (as CSS does). The export has no wrapping of its own, so a title
- * that took two lines in the preview ran off both edges of the frame. `measure` is the width of a
- * string in the export's pixels, from a canvas in the renderer.
+ * A paragraph cut where a line may break, as CSS breaks a title: at a space (the space goes with the
+ * break), and after a hyphen inside a word ("step-|by-|step", the hyphen stays at the line's end),
+ * but not between a hyphen and a digit ("-5", "COVID-19") and not between two hyphens.
+ */
+function breakPieces(par: string): { glue: string; piece: string }[] {
+  const out: { glue: string; piece: string }[] = []
+  par.split(' ').forEach((word, i) => {
+    const glue = i === 0 ? '' : ' '
+    const parts = word.split(/(?<=[^\s-]-)(?=[^\s\d-])/)
+    parts.forEach((piece, j) => out.push({ glue: j === 0 ? glue : '', piece }))
+  })
+  return out
+}
+
+/**
+ * Line breaks for a title: greedy, at spaces and after a word's hyphens, the author's own newlines
+ * kept, a word longer than the line left whole (as CSS does). The export has no wrapping of its own,
+ * so a title that took two lines in the preview ran off both edges of the frame. The preview shows
+ * these same lines (it no longer wraps by itself), so both break in the same places and the box hugs
+ * the same widest line. `measure` is the width of a string in the export's pixels, from a canvas in
+ * the renderer.
  */
 export function wrapText(text: string, maxWidth: number, measure: (s: string) => number): string {
   return String(text ?? '').split('\n').map(par => {
-    const words = par.split(' ')
     const lines: string[] = []
     let line = ''
-    for (const w of words) {
-      const next = line ? `${line} ${w}` : w
-      if (line && measure(next) > maxWidth) { lines.push(line); line = w } else line = next
-    }
+    breakPieces(par).forEach(({ glue, piece }, i) => {
+      const next = i === 0 ? piece : `${line}${glue}${piece}`
+      if (i > 0 && line && measure(next) > maxWidth) { lines.push(line); line = piece } else line = next
+    })
     lines.push(line)
     return lines.join('\n')
   }).join('\n')

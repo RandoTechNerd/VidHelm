@@ -83,6 +83,11 @@ console.log('wrapText')
   ok(T.wrapText('short', 105, m) === 'short', 'short text is untouched')
   ok(T.wrapText('kept\nbreak here please', 105, m) === 'kept\nbreak here\nplease', "the author's own line breaks stay")
   ok(T.wrapText('supercalifragilistic word', 105, m) === 'supercalifragilistic\nword', 'a word longer than the line stays whole, as CSS leaves it')
+  // the reviewer's case: Chromium breaks after a hyphen inside a word, and the export used to carry
+  // the whole "step-by-step" over, giving the two renders different first lines
+  ok(T.wrapText('The complete step-by-step guide', 190, m) === 'The complete step-\nby-step guide', 'a hyphenated compound breaks after a hyphen, which stays at the end of the line')
+  ok(T.wrapText('COVID-19 cases', 60, m) === 'COVID-19\ncases' && T.wrapText('it is -5 out', 60, m) === 'it is\n-5 out', 'never between a hyphen and a number')
+  ok(T.wrapText('a--b c', 30, m) === 'a--b\nc' && T.wrapText('well-known', 1000, m) === 'well-known', 'not between two hyphens, and a line that fits is untouched')
 }
 
 console.log(`\n${fail === 0 ? '✓ ALL CHECKS PASSED' : '✗ FAILURES'} - ${pass} passed, ${fail} failed`)
