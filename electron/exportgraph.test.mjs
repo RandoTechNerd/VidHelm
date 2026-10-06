@@ -239,6 +239,27 @@ try {
   ok(/shadowy=\d+/.test(plain.opts) && !/shadow/.test(title({ ...base, box: true }).opts), 'a boxed title has no shadow, as in the preview')
   const boxed = title({ ...base, text: 'BOX', box: true, boxColor: '#000000', boxOpacity: 1 })
   ok(boxed.px !== null && /boxborderw=6\|16:/.test(boxed.opts), `the box is padded 0.15em top and bottom, 0.4em at the sides (${/boxborderw=[^:]+/.exec(boxed.opts)?.[0]})` + (boxed.px ? '' : ': ' + boxed.err.slice(-300)))
+  // The box's HEIGHT: the preview's is the CSS line box (line-height: normal, the font's ascender +
+  // descender + line gap per line) plus the padding, whatever the letters. drawtext's default box hugs
+  // the ink: "HHHH" at 100 px drew a 102 px bar against the preview's 151.
+  const fontBuf = fs.readFileSync(titleFont)
+  const tableAt = (tag) => { for (let i = 0, n = fontBuf.readUInt16BE(4); i < n; i++) if (fontBuf.toString('latin1', 12 + i * 16, 16 + i * 16) === tag) return fontBuf.readUInt32BE(12 + i * 16 + 8); return -1 }
+  const upm = fontBuf.readUInt16BE(tableAt('head') + 18), hh = tableAt('hhea'), os2 = tableAt('OS/2')
+  const [asc, desc, gap] = [4, 6, 8].map(o => fontBuf.readInt16BE(hh + o) / upm)
+  const typoSame = !!(fontBuf.readUInt16BE(os2 + 62) & 128) && [68, 70, 72].every((o, i) => fontBuf.readInt16BE(os2 + o) / upm === [asc, desc, gap][i])
+  ok(typoSame, 'the title font says USE_TYPO_METRICS and its typo metrics are its hhea metrics (so Chromium and FreeType agree on its line height)')
+  /** rows of the black box: [top, bottom], or null */
+  const boxRows = (px) => { let top = -1, bot = -1; for (let y = 0; y < 360; y++) for (let x = 0; x < 640; x += 2) if (px[y * 640 + x] < 20) { if (top < 0) top = y; bot = y; break } return top < 0 ? null : [top, bot] }
+  const size = 100   // fontSize 300 at 1080p is 100 px on the 360-high test frame
+  const lineBox = Math.round(asc * size) + Math.round(-desc * size) + Math.round(gap * size)
+  for (const text of ['HHHH', 'gjpq', 'TWO\nLINES']) {
+    const r = title({ ...base, fontSize: 300, text, box: true, boxColor: '#000000', boxOpacity: 1 })
+    const rows = r.px && boxRows(r.px)
+    const lines = text.split('\n').length, want = lines * lineBox + 2 * Math.round(size * 0.15)
+    const h = rows ? rows[1] - rows[0] + 1 : NaN, mid = rows ? (rows[0] + rows[1] + 1) / 2 : NaN
+    ok(Math.abs(h - want) <= lines && Math.abs(mid - 180) <= 1,
+      `a boxed ${JSON.stringify(text)} gets the preview's box: ${h} px tall (preview ${want}: ${lines} x ${lineBox} line box + 2 x 15 padding), centred at ${mid} (y 180)` + (r.px ? '' : ': ' + r.err.slice(-300)))
+  }
   // the injection: a colour that smuggles a second textfile in (measured: it drew that file into the video)
   fs.writeFileSync(T('secret.txt'), 'SECRET SECRET SECRET', 'utf8')
   const sneaky = title({ ...base, text: 'Hi', box: true, color: `white:textfile='${esc(T('secret.txt'))}'`, boxColor: 'red:x=0', start: "0,1)':textfile=x:enable='1" })

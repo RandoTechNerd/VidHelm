@@ -92,6 +92,13 @@ export function clipVideoChain(input: string, c: VideoClip, o: { W: number; H: n
  * cannot blur, so the preview's shadow is hard too), a square box padded BOX_PAD em. The export used
  * to left-align every line of a multi-line title, draw no shadow and pad the box evenly.
  *
+ * Lines are laid out on the font's own line metrics (y_align=font), as CSS lays out a line box: by
+ * default drawtext's text_h, and so its box, is the INK of the glyphs actually drawn, so a boxed
+ * "HHHH" at 100 px got a 102 px bar where the preview drew 151 (and "gjpq" 128): every lower third
+ * came out a third thinner than it previewed, and text with descenders sat 0.12 em higher. On the
+ * font's metrics the box is lines x line height + padding whatever the letters, and text_h/2 is the
+ * middle of the line box, which is what the preview centres on y.
+ *
  * `t` must have been through cleanText: its colours and numbers go into the filter as they are.
  * `fontFile` and `textFile` arrive escaped for a filtergraph; `alpha` is the fade expression.
  */
@@ -115,6 +122,7 @@ export function titleDrawtext(t: ReturnType<typeof cleanText>, o: { H: number; W
     // made drawtext draw NOTHING for the whole overlay (exit 0, no error), and backslashes vanished
     'expansion=none',
     'text_align=C',
+    'y_align=font',
     `fontcolor=${ff(t.color)}`,
     `fontsize=${size}`,
     `x=${Math.round(t.x * o.W)}-text_w/2`,
