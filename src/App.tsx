@@ -2807,8 +2807,11 @@ function Editor() {
       return
     }
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      const rec = new MediaRecorder(stream)
+      // What the mic really heard, and nothing else: Chromium's call processing (echo cancellation,
+      // noise suppression, automatic gain) pumps and gates a voice, and none of it can be undone
+      // afterwards. Fix voice cleans the take instead, measured on the take itself.
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1, sampleRate: 48000 } })
+      const rec = new MediaRecorder(stream, { audioBitsPerSecond: 192000 })
       const chunks: Blob[] = []
       const startTime = currentTime
       rec.ondataavailable = e => { if (e.data.size) chunks.push(e.data) }
