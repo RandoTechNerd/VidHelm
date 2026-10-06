@@ -4,6 +4,7 @@
 // Detection lives in electron/takes.ts (pure, tested). This file is the panel only; App.tsx owns
 // the state and does the timeline surgery.
 import type { Chunk, TakeGroup } from '../electron/takes'
+import { IcCheck, IcClose, IcRefresh, IcUndo } from './icons'
 
 export interface TakeAnalysis {
   chunks: Chunk[]
@@ -64,7 +65,7 @@ export function TakesModal({ open, onClose, analysis, busy, canReapply, onScan, 
                 <span className="tk-text">{analysis.chunks[m].text}</span>
                 <button className={`tk-pick ${hit.g.keep === m ? 'on' : ''}`} onClick={() => onSetKeep(hit.gi, m)}
                   title={hit.g.keep === m ? 'This is the take being kept' : 'Keep this take instead'}>
-                  {hit.g.keep === m ? '✓ keeping' : `use take ${n + 1}`}
+                  {hit.g.keep === m ? <><IcCheck /> Keeping</> : `Use take ${n + 1}`}
                 </button>
               </div>
             ))}
@@ -81,7 +82,7 @@ export function TakesModal({ open, onClose, analysis, busy, canReapply, onScan, 
           <button className="tk-time" title="Jump the playhead here" onClick={() => onSeek(c.start)}>{fmt(c.start)}</button>
           <span className="tk-text">{c.text}</span>
           <button className="tk-drop" onClick={() => onToggleDrop(idx)} title={cut ? 'Put this line back' : 'Cut this line too'}>
-            {cut ? '↺ keep' : '✕ cut'}
+            {cut ? <><IcUndo size={12} /> Keep</> : <><IcClose /> Cut</>}
           </button>
         </div>
       )
@@ -93,8 +94,8 @@ export function TakesModal({ open, onClose, analysis, busy, canReapply, onScan, 
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal tk-modal" onClick={e => e.stopPropagation()}>
         <div className="modal-head">
-          <h2>📋 Takes &amp; history</h2>
-          <button className="modal-close" onClick={onClose}>✕</button>
+          <h2>Takes &amp; history</h2>
+          <button className="modal-close" aria-label="Close" onClick={onClose}><IcClose /></button>
         </div>
         <div className="modal-body">
           {!analysis && (
@@ -143,7 +144,7 @@ export function TakesModal({ open, onClose, analysis, busy, canReapply, onScan, 
           <div className="modal-foot tk-foot">
             <span>{analysis.applied ? (canReapply ? 'Choices can still be changed' : 'Re-scan to change takes') : 'Nothing has been cut yet'}</span>
             <div className="conn-actions" style={{ margin: 0 }}>
-              <button onClick={onScan} disabled={!!busy}>{busy || '↻ Re-scan'}</button>
+              <button onClick={onScan} disabled={!!busy}>{busy || <><IcRefresh /> Re-scan</>}</button>
               <button className="primary" disabled={!!busy || cuts === 0 || (analysis.applied && !canReapply)}
                 onClick={onApply}>
                 {analysis.applied ? 'Apply these choices' : `Cut ${cuts} ${cuts === 1 ? 'line' : 'lines'}`}

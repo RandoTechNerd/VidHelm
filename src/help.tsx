@@ -1,8 +1,70 @@
-// Help: a guided first-run tour, plus the credits and the third-party licences that ship
-// inside VidHelm. Opened from the "?" in the header (or by an agent via open_panel help).
-import { useState } from 'react'
+// Help: the header's Help menu, a getting-started page, plus the credits and the third-party
+// licences that ship inside VidHelm. Opened from the "?" in the header (or by an agent via
+// open_panel help).
+import { useEffect, useState, type ReactNode } from 'react'
+import { IcChat, IcChevron, IcClose, IcCoffee, IcDiscord, IcExternal, IcGithub, IcGlobe, IcInfo, IcInstagram, IcMail, IcPlay, IcYoutube } from './icons'
 
 export type HelpPanel = 'media' | 'sfx' | 'booth' | 'narration' | 'thumbnail' | 'settings' | 'connect' | 'model3d'
+export type HelpTab = 'start' | 'credits'
+
+// Where to find the people behind VidHelm. These used to be a row of bare icons in the header,
+// then sat behind an (i) right next to a look-alike (?); now they are one entry in the Help menu.
+const LINKS: { label: string; sub: string; url: string; icon: ReactNode; note?: string }[] = [
+  { label: 'vidhelm.com', sub: 'downloads and news', url: 'https://vidhelm.com', icon: <IcGlobe size={15} /> },
+  { label: 'GitHub', sub: 'star the repo, report a bug', url: 'https://github.com/RandoTechNerd/VidHelm', icon: <IcGithub /> },
+  { label: 'YouTube', sub: '@randotechnerd', url: 'https://www.youtube.com/@randotechnerd', icon: <IcYoutube /> },
+  { label: 'Instagram', sub: '@randotechnerd', url: 'https://www.instagram.com/randotechnerd/', icon: <IcInstagram /> },
+  { label: 'Buy me a coffee', sub: 'keeps the updates coming', url: 'https://buymeacoffee.com/randotechnerd', icon: <IcCoffee />,
+    note: 'Please put "VidHelm" in the comment, there are a few projects on that page, plus any feature you want next. Requests that arrive with a coffee tend to jump the queue.' },
+  { label: 'Discord', sub: 'help, ideas and show-and-tell', url: 'https://discord.gg/8fjQHDX8PQ', icon: <IcDiscord /> },
+  { label: 'Email', sub: 'randotechnerd@gmail.com', url: 'mailto:randotechnerd@gmail.com', icon: <IcMail /> },
+]
+
+/** The one Help menu in the header: the chat, getting started, the community links and the
+ *  credits. Mounted only while open, so it always opens on its first page. */
+export function HelpMenu({ onClose, version, onChat, onStart, onCredits }: {
+  onClose: () => void
+  version: string
+  onChat: () => void; onStart: () => void; onCredits: () => void
+}) {
+  const [view, setView] = useState<'menu' | 'links'>('menu')
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); onClose() } }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+  const go = (fn: () => void) => () => { onClose(); fn() }
+  const item = (icon: ReactNode, label: string, sub: string, onClick: () => void, more = false) => (
+    <button role="menuitem" onClick={onClick}>
+      <span className="links-ico">{icon}</span>
+      <span className="links-txt"><b>{label}</b><i>{sub}</i></span>
+      {more && <span className="links-more"><IcChevron /></span>}
+    </button>
+  )
+
+  return (
+    <div className="pop-menu help-menu" role="menu" aria-label="Help" onClick={e => e.stopPropagation()}>
+      {view === 'menu' ? <>
+        {item(<IcChat />, 'Ask the help chat', 'questions in plain words, and the FAQ', go(onChat))}
+        {item(<IcPlay size={14} />, 'Getting started and tour', 'a first video in five moves', go(onStart))}
+        {item(<IcGlobe size={15} />, 'Community and links', 'Discord, GitHub, YouTube, email', () => setView('links'), true)}
+        {item(<IcInfo size={15} />, 'Credits and licences', 'who built it, and what it runs on', go(onCredits))}
+      </> : <>
+        <button className="pop-back" onClick={() => setView('menu')}><span className="links-back"><IcChevron /></span>Community and links</button>
+        {LINKS.map(l => (
+          <button key={l.url} role="menuitem" onClick={() => { window.ipcRenderer.openExternal(l.url); onClose() }}>
+            <span className="links-ico">{l.icon}</span>
+            <span className="links-txt">
+              <b>{l.label}</b><i>{l.sub}</i>
+              {l.note && <em className="links-note">{l.note}</em>}
+            </span>
+          </button>
+        ))}
+      </>}
+      <div className="links-foot">VidHelm {version} · built by RandoTechNerd</div>
+    </div>
+  )
+}
 
 // Everything VidHelm ships or downloads, with the licence it arrives under. FFmpeg is first
 // because it is the one with real obligations attached.
@@ -25,13 +87,15 @@ const OPTIONAL = [
   { name: 'Adversal', licence: 'third-party service', note: 'Optional video analysis for your assistant. Not bundled.' },
 ]
 
-export function HelpModal({ open, onClose, onOpenPanel, onTour, onChat, version }: {
+export function HelpModal({ open, onClose, onOpenPanel, onTour, onChat, version, startTab = 'start' }: {
   open: boolean; onClose: () => void
   onOpenPanel: (panel: HelpPanel) => void
   onTour: () => void; onChat: () => void
   version: string
+  /** the page it opens on; give the modal a key that changes with it to reopen there */
+  startTab?: HelpTab
 }) {
-  const [tab, setTab] = useState<'start' | 'credits'>('start')
+  const [tab, setTab] = useState<HelpTab>(startTab)
   if (!open) return null
   const go = (fn: () => void) => () => { onClose(); fn() }
 
@@ -40,7 +104,7 @@ export function HelpModal({ open, onClose, onOpenPanel, onTour, onChat, version 
       <div className="modal help-modal" onClick={e => e.stopPropagation()}>
         <div className="modal-head">
           <h2>Welcome aboard</h2>
-          <button className="modal-close" onClick={onClose}>✕</button>
+          <button className="modal-close" aria-label="Close" onClick={onClose}><IcClose /></button>
         </div>
         <div className="modal-body">
           <div className="conn-clients">
@@ -105,9 +169,9 @@ export function HelpModal({ open, onClose, onOpenPanel, onTour, onChat, version 
                 <h3>VidHelm itself</h3>
                 <p className="hint">MIT licensed, use it, change it, ship it. The full text, the third-party notices and FFmpeg's GPL licence also ship with the app, in the <code>licences</code> folder next to the program.</p>
                 <div className="conn-actions">
-                  <button onClick={() => window.ipcRenderer.openExternal('https://github.com/RandoTechNerd/VidHelm/blob/main/LICENSE')}>VidHelm licence ↗</button>
-                  <button onClick={() => window.ipcRenderer.openExternal('https://github.com/RandoTechNerd/VidHelm/blob/main/THIRD-PARTY-NOTICES.md')}>Third-party notices ↗</button>
-                  <button onClick={() => window.ipcRenderer.openExternal('https://github.com/RandoTechNerd/VidHelm')}>GitHub ↗</button>
+                  <button onClick={() => window.ipcRenderer.openExternal('https://github.com/RandoTechNerd/VidHelm/blob/main/LICENSE')}>VidHelm licence <IcExternal /></button>
+                  <button onClick={() => window.ipcRenderer.openExternal('https://github.com/RandoTechNerd/VidHelm/blob/main/THIRD-PARTY-NOTICES.md')}>Third-party notices <IcExternal /></button>
+                  <button onClick={() => window.ipcRenderer.openExternal('https://github.com/RandoTechNerd/VidHelm')}>GitHub <IcExternal /></button>
                 </div>
               </section>
             </>
@@ -120,12 +184,12 @@ export function HelpModal({ open, onClose, onOpenPanel, onTour, onChat, version 
 }
 
 /** A verbose hint collapsed behind a small (i), click to expand, click again to tuck away. */
-export function InfoNote({ children, label = 'What can I put here?' }: { children: React.ReactNode; label?: string }) {
+export function InfoNote({ children, label = 'What can I put here?' }: { children: ReactNode; label?: string }) {
   const [open, setOpen] = useState(false)
   return (
     <div className="info-note">
       <button className={`info-toggle ${open ? 'on' : ''}`} onClick={() => setOpen(o => !o)} title={open ? 'Hide' : label}>
-        <span aria-hidden>ⓘ</span> {open ? 'Hide' : label}
+        <IcInfo /> {open ? 'Hide' : label}
       </button>
       {open && <div className="info-body">{children}</div>}
     </div>

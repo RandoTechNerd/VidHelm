@@ -19,8 +19,8 @@ export interface HelpEntry { id: string; topic: string; keys: string[]; answer: 
 export const HELP_ENTRIES: HelpEntry[] = [
   { id: 'layout', topic: 'Finding your way around', keys: ['layout', 'where', 'find', 'start', 'begin', 'new', 'overview', 'how do i use'],
     answer: 'Left: your Media and Sound FX. Middle: the preview, with the timeline across the bottom. Right: Export, Tags and Inspector tabs. The top bar has Save, Open, Import, Recipe, 3D, AI clip, the frame format (Landscape, Portrait, Square), Connect AI and Export.', action: 'tour' },
-  { id: 'import', topic: 'Bringing in footage', keys: ['import', 'add footage', 'add a video', 'add video', 'file', 'footage', 'drag', 'drop', 'media', 'bin', 'audio', 'image', 'photo', 'mp4', 'mov', 'heic', 'iphone photo'],
-    answer: 'Drag files onto the timeline, or onto the Media panel and double-click them to add. The + button at the top of the Media panel opens a file picker. Video, audio, images and 3D models (STL, 3MF, OBJ, GLB) all work; anything VidHelm cannot read is refused with a reason. iPhone HEIC photos cannot be exported yet, so save them as JPG or PNG first.', action: 'media' },
+  { id: 'import', topic: 'Bringing in footage', keys: ['import', 'add footage', 'add a video', 'add video', 'file', 'footage', 'drag', 'drop', 'media', 'bin', 'audio', 'image', 'photo', 'mp4', 'mov', 'heic', 'iphone photo', 'cloud', 'zip', 'hand-off'],
+    answer: 'Drop files anywhere in the window, or press Import at the top left. On an empty timeline the first video goes straight onto it; everything else waits in the Media panel, where a double-click adds it. Drop a file on a timeline row to place it right there. Video, audio, images and 3D models (STL, 3MF, OBJ, GLB) all work; anything VidHelm cannot read is refused with a reason. iPhone HEIC photos cannot be exported yet, so save them as JPG or PNG first. A VidHelm Cloud hand-off (.zip) comes in through the arrow next to Import.', action: 'media' },
   { id: 'project-folder', topic: 'Project folders', keys: ['project', 'folder', 'workspace', 'organise', 'organize', 'save', 'open', 'backup'],
     answer: 'Set a project folder in Settings and every sub-folder becomes a project: open one from the dropdown in the Media panel and its footage loads. Drop more files into the folder and press the refresh button next to the dropdown to bring them in; your timeline stays as it is. Save (Ctrl+S) writes back to that same folder, so a project is just a folder you can copy, move or back up. Save and Open in the top bar also work with single project files. VidHelm keeps a recovery copy of unsaved work and asks before anything would throw it away.', action: 'settings' },
   { id: 'edit', topic: 'Cutting and arranging', keys: ['cut', 'split', 'trim', 'delete', 'move', 'arrange', 'clip', 'shorten', 'undo', 'redo', 'razor'],
@@ -66,7 +66,7 @@ export const HELP_ENTRIES: HelpEntry[] = [
   { id: 'slow', topic: 'Slow or choppy playback', keys: ['slow', 'lag', 'choppy', 'stutter', 'proxy', 'preview copy', 'hdr', '4k', 'freeze'],
     answer: 'Heavy files (4K, HDR, some phone formats) get a lighter preview copy built in the background; the Media panel shows its progress. Editing uses the copy. A High quality export always reads your original files. A Standard export uses the copy only when it is at least as big and as smooth as the export (a small analysis render always does), so the picture is never smaller or choppier than the export needs.' },
   { id: 'bug', topic: 'Reporting a problem', keys: ['bug', 'broken', 'crash', 'error', 'not working', 'report', 'issue', 'feature'],
-    answer: 'Sorry about that. Report it on GitHub (the (i) button at the top lists the link) with what you clicked and what happened, and include the VidHelm version shown there.' },
+    answer: 'Sorry about that. Report it on GitHub (the Help menu, the ? at the top right, has the link under Community and links) with what you clicked and what happened, and include the VidHelm version shown at the bottom of that menu.' },
 ]
 
 /** Where people get a human. Shown in the chat's FAQ and handed to the model. */
@@ -102,7 +102,7 @@ export const FAQ: FaqSection[] = [
     { q: 'The AI connected but no VidHelm tools show up', a: 'Fully restart the AI app: most only read their setup when they start. Check the config pasted cleanly (no stray commas). In Claude Code, type /mcp to see the server.', action: 'connect' },
     { q: 'Tools show up but every call fails', a: 'Open Connect AI and press Test connection. If the bridge is green, the assistant cannot start the server: usually Node.js is missing or the path in the config is old. Copy a fresh config from Connect AI.', action: 'connect' },
     { q: 'Playback is slow or choppy', a: 'Heavy files (4K, HDR, some phone formats) get a lighter preview copy built in the background, and the Media panel shows its progress. High quality exports read your original files; Standard exports use the copy only when it already matches the export size and frame rate.' },
-    { q: 'Something is broken or I want a feature', a: 'Tell us on Discord or open a GitHub issue with what you clicked, what happened and your VidHelm version (shown under the (i) button at the top).' },
+    { q: 'Something is broken or I want a feature', a: 'Tell us on Discord or open a GitHub issue with what you clicked, what happened and your VidHelm version (shown at the bottom of the Help menu, the ? at the top right).' },
   ] },
 ]
 
