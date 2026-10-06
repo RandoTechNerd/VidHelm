@@ -119,10 +119,56 @@ console.log('rescaleAutomation')
 {
   const pts = [{ t: 0, v: 1 }, { t: 1, v: 0.5 }, { t: 2, v: 0 }]
   const up = E.rescaleAutomation(pts, 1, 1.5)
-  ok(up[0].v === 1.5 && up[1].v === 0.75 && up[2].v === 0, 'the line moves as a whole, a silenced point stays silent')
-  ok(E.rescaleAutomation([{ t: 0, v: 1.8 }], 1, 2)[0].v === 2, 'never past the slider top')
-  ok(E.rescaleAutomation(pts, 0, 0.5)[1].v === 1, 'from silence it shifts instead of scaling')
-  ok(up.length === 3 && up.every((p, i) => p.t === pts[i].t), 'point times untouched')
+  ok(up.volume === 1.5 && up.volumePoints[0].v === 1.5 && up.volumePoints[1].v === 0.75 && up.volumePoints[2].v === 0, 'the line moves as a whole, a silenced point stays silent')
+  ok(up.volumePoints.length === 3 && up.volumePoints.every((p, i) => p.t === pts[i].t), 'point times untouched')
+  ok(E.rescaleAutomation(pts, 1, 0.5).volumePoints[0].v === 0.5, 'and down the same way')
+  // the review's case: a drawn 1.8 peak, the slider nudged up past where the peak hits the top
+  const drawn = [{ t: 0, v: 1.0 }, { t: 5, v: 1.8 }, { t: 10, v: 0.5 }]
+  const high = E.rescaleAutomation(drawn, 1, 1.2)
+  ok(high.volumePoints.every(p => p.v <= 2) && near(high.volumePoints[1].v, 2, 1e-9), 'the loudest point stops at the 2.0 ceiling')
+  ok(near(high.volume, 1 / 0.9, 1e-4) && near(high.volumePoints[0].v / high.volumePoints[2].v, 2, 1e-3), `and the rest stop with it: the slider reports where it got to (${high.volume}), the shape is kept`)
+  const back = E.rescaleAutomation(high.volumePoints, high.volume, 1)
+  ok(back.volume === 1 && back.volumePoints.every((p, i) => near(p.v, drawn[i].v, 1e-3)), `up past the ceiling and back restores the line (peak ${back.volumePoints[1].v}, was 1.8)`)
+  let swept = { volume: 1, volumePoints: drawn }
+  for (let v = 1.05; v <= 2.0001; v += 0.05) swept = E.rescaleAutomation(swept.volumePoints, swept.volume, +v.toFixed(2))
+  for (let v = 1.95; v >= 0.9999; v -= 0.05) swept = E.rescaleAutomation(swept.volumePoints, swept.volume, +v.toFixed(2))
+  ok(swept.volumePoints.every((p, i) => near(p.v, drawn[i].v, 2e-3)), 'a full sweep of the slider, step by step, up to the top and back, keeps the drawn line')
+  const atTop = E.rescaleAutomation([{ t: 0, v: 2 }, { t: 1, v: 1 }], 1, 1.5)
+  ok(atTop.volume === 1 && atTop.volumePoints[1].v === 1, 'a line already touching the top does not move up at all')
+  // from silence there is no ratio: the line shifts, but a point at silence stays silent
+  const fromZero = E.rescaleAutomation(pts, 0, 0.5)
+  ok(fromZero.volumePoints[0].v === 1.5 && fromZero.volumePoints[1].v === 1 && fromZero.volumePoints[2].v === 0, 'from silence it shifts instead of scaling, leaving silence silent')
+  const capped = E.rescaleAutomation([{ t: 0, v: 1.8 }, { t: 1, v: 0 }], 0, 1)
+  ok(near(capped.volume, 0.2, 1e-9) && capped.volumePoints[0].v === 2 && capped.volumePoints[1].v === 0, 'and the shift also stops at the top')
+  const dead = E.rescaleAutomation([{ t: 0, v: 0 }, { t: 1, v: 0 }], 0, 0.8)
+  ok(dead.volume === 0.8 && dead.volumePoints.every(p => p.v === 0.8), 'a line taken all the way to silence rises flat (no shape left, and the slider must not go dead)')
+}
+
+console.log('slideVolume (one drag of the Volume slider)')
+{
+  const drawn = [{ t: 0, v: 1.0 }, { t: 5, v: 1.8 }, { t: 10, v: 0.5 }]
+  // the Inspector: the clip as the document holds it, and the drag in a ref
+  const slider = () => {
+    let slide = null
+    return {
+      clip: { id: 'a', volume: 1, volumePoints: drawn },
+      to(v) { const r = E.slideVolume(slide, this.clip, v); slide = r.slide; this.clip = { ...this.clip, volume: r.volume, volumePoints: r.volumePoints }; return this.clip },
+    }
+  }
+  const s = slider()
+  s.to(0.5); s.to(0); s.to(0.5)
+  const restored = s.to(1)
+  ok(restored.volume === 1 && restored.volumePoints.every((p, i) => p.v === drawn[i].v), 'down to zero and back up restores the drawn line exactly')
+  const g = slider()
+  for (let i = 0; i < 40; i++) g.to(i % 2 ? 1.35 : 0.65)
+  ok(g.to(1).volumePoints.every((p, i) => p.v === drawn[i].v), 'forty steps back and forth leave no rounding behind')
+  const o = slider()
+  o.to(0.5)
+  o.clip = { ...o.clip, volumePoints: [{ t: 0, v: 0.2 }, { t: 3, v: 0.4 }] }   // a point dragged on the graph, or an undo
+  const fresh = o.to(1)
+  ok(near(fresh.volumePoints[0].v, 0.4, 1e-9) && near(fresh.volumePoints[1].v, 0.8, 1e-9), 'a line changed elsewhere is scaled as it now stands, not reverted')
+  const other = E.slideVolume({ id: 'b', volume: 1, points: [{ t: 0, v: 2 }], wrote: drawn }, { id: 'a', volume: 1, volumePoints: drawn }, 0.5)
+  ok(other.slide.id === 'a' && other.volumePoints[1].v === 0.9, 'a slide on another clip is never applied to this one')
 }
 
 console.log(`\n${fail ? 'FAILED' : 'ALL PASSED'} - ${pass} passed, ${fail} failed`)

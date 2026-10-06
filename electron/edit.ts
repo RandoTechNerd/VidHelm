@@ -85,16 +85,55 @@ export function rebasePoints(pts: VolPoint[] | undefined, from: number, to: numb
   return out
 }
 
+/** Gain at or below this is silence: the Volume slider's own "zero". */
+const SILENT = 1e-3
+
 /**
  * The Volume slider moved from `from` to `to` on a clip with automation: raise or lower the whole
  * line, keeping its shape. (It used to wipe the line, so one nudge of the slider threw away every
- * hand-drawn duck.) A point at silence stays silent; gains stay inside the slider's 0..2.
+ * hand-drawn duck.) Returns the new line and the volume the slider actually reached.
+ *
+ * The line moves as a whole or not at all. When its loudest point would pass the slider's top
+ * (2.0) the move stops there, and the returned volume says where; clamping points one at a time
+ * used to flatten every peak that touched the ceiling, and since the slider feeds its last result
+ * back in as the next step's start, nudging it up and back down lowered a drawn 1.8 to 1.667 for
+ * good. A point at silence stays silent, except when the whole line is silent (the slider was
+ * taken to zero): there is no shape left to keep then, and the line rises flat.
  */
-export function rescaleAutomation(pts: VolPoint[], from: number, to: number): VolPoint[] {
+export function rescaleAutomation(pts: VolPoint[], from: number, to: number): { volume: number; volumePoints: VolPoint[] } {
   const clamp = (v: number) => r4(Math.min(2, Math.max(0, v)))
-  // from silence there is no ratio to scale by, so the line moves up by the difference instead
-  if (!(from > 1e-3)) return pts.map(p => ({ t: p.t, v: clamp(p.v + (to - from)) }))
-  return pts.map(p => ({ t: p.t, v: clamp(p.v * to / from) }))
+  const peak = Math.max(0, ...pts.map(p => p.v))
+  if (from > SILENT) {
+    let ratio = to / from
+    if (ratio > 1 && peak > 0) ratio = Math.max(1, Math.min(ratio, 2 / peak))
+    return { volume: ratio === to / from ? to : r4(from * ratio), volumePoints: pts.map(p => ({ t: p.t, v: clamp(p.v * ratio) })) }
+  }
+  // from silence there is no ratio to scale by, so the line moves by the difference instead
+  const silent = peak <= SILENT
+  const moves = (p: VolPoint) => silent || p.v > SILENT
+  let d = to - from
+  const top = Math.max(0, ...pts.filter(moves).map(p => p.v))
+  if (d > 0) d = Math.max(0, Math.min(d, 2 - top))
+  return { volume: d === to - from ? to : r4(from + d), volumePoints: pts.map(p => ({ t: p.t, v: moves(p) ? clamp(p.v + d) : p.v })) }
+}
+
+/** A drag of the Volume slider on one clip with automation: the line it began from, and the line
+ *  it last wrote. */
+export interface VolumeSlide { id: string; volume: number; points: VolPoint[]; wrote: VolPoint[] }
+
+/**
+ * One step of the Volume slider on a clip with automation, scaled from where the drag began
+ * rather than from the previous step: taking the slider to zero silences every point, and a line
+ * of zeros has no shape left to bring back, so a drag that brushed the bottom flattened the line
+ * for good (and each step's rounding piled onto the last). The slide carries on while the clip's
+ * points are still the very array it last wrote (an identity check); a drawn point, an undo or an
+ * agent edit replaces that array, and the next step starts from the line as it now stands.
+ */
+export function slideVolume(slide: VolumeSlide | null, clip: { id: string; volume: number; volumePoints: VolPoint[] }, to: number): { slide: VolumeSlide; volume: number; volumePoints: VolPoint[] } {
+  const s = slide && slide.id === clip.id && slide.wrote === clip.volumePoints ? slide
+    : { id: clip.id, volume: clip.volume, points: clip.volumePoints, wrote: clip.volumePoints }
+  const r = rescaleAutomation(s.points, s.volume, to)
+  return { slide: { ...s, wrote: r.volumePoints }, ...r }
 }
 
 /**

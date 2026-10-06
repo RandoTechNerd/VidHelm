@@ -22,7 +22,7 @@ import { planBroll, snapToWords, describePlan, type BrollAsset, type Placement }
 import { looksLikeThumbPhoto } from '../electron/thumbpick'
 import { resolveProfile, describeProfile, type PerfProfile, type Tier, type TierPreference } from '../electron/capability'
 import { shortcutFor, focusKind, stepTime, type Shortcut } from '../electron/shortcuts'
-import { DEPOP, splitClip, removeRange, planPauseCuts, rescaleAutomation } from '../electron/edit'
+import { DEPOP, splitClip, removeRange, planPauseCuts, rescaleAutomation, slideVolume, type VolumeSlide } from '../electron/edit'
 
 interface MediaFile {
   id: string
@@ -688,6 +688,8 @@ function Editor() {
   const editTextRef = useRef<string>('')   // what to seed the editable div with
   // the caption the Inspector's Content box is typing into, as it stood before the typing began
   const contentTyping = useRef<CaptionTyping | null>(null)
+  // the automation line the Volume slider is scaling, as it stood before the drag began
+  const volumeSlide = useRef<VolumeSlide | null>(null)
   const [showTakes, setShowTakes] = useState(false)
   const [takes, setTakes] = useState<TakeAnalysis | null>(null)
   const [takesBusy, setTakesBusy] = useState<string | null>(null)
@@ -1315,14 +1317,18 @@ function Editor() {
         return { ok: true, clipId: clip.id, track: trackId }
       }
       case 'update_clip': {
-        if (!clips.find(c => c.id === cmd.clipId)) return { error: `clip not found: ${cmd.clipId}` }
+        const cur = clips.find(c => c.id === cmd.clipId)
+        if (!cur) return { error: `clip not found: ${cmd.clipId}` }
         if (cmd.trackId !== undefined && !['v1', 'v2', 'a1', 'a2'].includes(cmd.trackId)) return { error: `trackId must be v1, v2, a1 or a2, not "${cmd.trackId}"` }
         const patch: Partial<TimelineClip> = {}
         for (const k of ['start', 'duration', 'sourceStart', 'volume', 'fadeIn', 'fadeOut', 'trackId'] as const) if (cmd[k] !== undefined) (patch as any)[k] = cmd[k]
         // on a clip with automation the line is what plays, so a new volume moves the whole line
         // (as the Volume slider does); setting only the flat value would change nothing you hear
         setClips(prev => prev.map(c => c.id !== cmd.clipId ? c
-          : { ...c, ...patch, ...(patch.volume !== undefined && c.volumePoints?.length ? { volumePoints: rescaleAutomation(c.volumePoints, c.volume, patch.volume) } : {}) }))
+          : { ...c, ...patch, ...(patch.volume !== undefined && c.volumePoints?.length ? rescaleAutomation(c.volumePoints, c.volume, patch.volume) : {}) }))
+        // the line moves as a whole, so it stops when its loudest point reaches the 2.0 ceiling
+        const moved = patch.volume !== undefined && cur.volumePoints?.length ? rescaleAutomation(cur.volumePoints, cur.volume, patch.volume) : null
+        if (moved && moved.volume !== patch.volume) return { ok: true, volume: moved.volume, note: `volume stopped at ${moved.volume}: the automation line's loudest point is at the 2.0 ceiling` }
         return { ok: true }
       }
       case 'delete_item':
@@ -3582,8 +3588,14 @@ function Editor() {
                   <div className="field"><label>Volume - {Math.round(selClip.volume * 100)}%</label>
                     {/* with automation the slider raises or lowers the whole line; Clear is the way to drop it */}
                     <input type="range" min="0" max="2" step="0.05" value={selClip.volume}
-                      title={selClip.volumePoints?.length ? 'Raises or lowers the whole automation line, keeping its shape' : undefined}
-                      onChange={e => { const v = parseFloat(e.target.value); patchClip(selClip.volumePoints?.length ? { volume: v, volumePoints: rescaleAutomation(selClip.volumePoints, selClip.volume, v) } : { volume: v }) }}
+                      title={selClip.volumePoints?.length ? 'Raises or lowers the whole automation line, keeping its shape (it stops when the loudest point reaches 200%)' : undefined}
+                      onChange={e => {
+                        const v = parseFloat(e.target.value)
+                        if (!selClip.volumePoints?.length) { patchClip({ volume: v }); return }
+                        const r = slideVolume(volumeSlide.current, { id: selClip.id, volume: selClip.volume, volumePoints: selClip.volumePoints }, v)
+                        volumeSlide.current = r.slide
+                        patchClip({ volume: r.volume, volumePoints: r.volumePoints })
+                      }}
                       style={{ width: '100%', accentColor: 'var(--accent-primary)' }} />
                   </div>
                   <div className="field">
