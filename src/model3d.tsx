@@ -10,7 +10,7 @@ import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js'
 import { MTLLoader } from 'three/examples/jsm/loaders/MTLLoader.js'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { applyThreeMFObjectColours } from './threemfColor'
-import { IcCamera, IcClose, IcRecord } from './icons'
+import { IcCamera, IcClose } from './icons'
 import { OBJExporter } from 'three/examples/jsm/exporters/OBJExporter.js'
 
 const FINISHES = {
@@ -502,10 +502,10 @@ export function Model3DModal({ open, onClose, initialPath, onRendered, apiRef, g
               <option value="3">3s</option><option value="6">6s</option><option value="10">10s</option><option value="15">15s</option>
             </select>
           </label>
-          <button className="primary" disabled={!modelName || recording || busy} onClick={() => { void recordTurntable() }}>{recording ? 'Recording…' : <><IcRecord /> Render turntable clip</>}</button>
+          <button className="primary" disabled={!modelName || recording || busy} onClick={() => { void recordTurntable() }}>{recording ? 'Recording…' : 'Render turntable clip'}</button>
           <button disabled={!modelName || recording || busy} onClick={() => { void snapshot() }}><IcCamera /> Still</button>
-          {transparent && <span className="hint" style={{ margin: 0, maxWidth: 264 }}>Stills keep real transparency. Video can’t, so for a spin over footage use <b>Green screen</b>.</span>}
-          {backdrop === 'green' && <span className="hint" style={{ margin: 0, maxWidth: 264 }}>Rendered on {pickKeyColour(color) === KEY_MAGENTA ? 'magenta' : 'green'} and keyed out on the timeline, so the clip below shows through.</span>}
+          {transparent && <span className="hint m3d-foot-hint">Stills keep real transparency. Video can’t, so for a spin over footage use <b>Green screen</b>.</span>}
+          {backdrop === 'green' && <span className="hint m3d-foot-hint">Rendered on {pickKeyColour(color) === KEY_MAGENTA ? 'magenta' : 'green'} and keyed out on the timeline, so the clip below shows through.</span>}
           <button disabled={!modelName || recording || busy} onClick={exportObj} title="Convert the loaded model to .obj">Save as OBJ…</button>
         </div>
       </div>

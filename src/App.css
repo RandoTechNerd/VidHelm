@@ -1330,7 +1330,12 @@ textarea.duration-input { height: auto; padding: 7px 9px; resize: vertical; line
 .m3d-seg button.on { background: var(--accent-primary, #3b82f6); color: #fff; font-weight: 600; }
 .m3d-controls input[type="color"] { width: 30px; height: 22px; padding: 0; border: 1px solid rgb(var(--ink) / 0.15); border-radius: 6px; background: none; cursor: pointer; }
 .m3d-controls button, .m3d-foot button { display: inline-flex; align-items: center; gap: 6px; background: var(--bg-surface-elevated, #1a1d27); color: var(--text-main, #f8fafc); border: 1px solid rgb(var(--ink) / 0.14); border-radius: 8px; padding: 6px 12px; font-size: 12.5px; cursor: pointer; }
-.m3d-foot { gap: 10px; display: flex; align-items: center; }
+.m3d-foot { gap: 10px; display: flex; align-items: center; justify-content: flex-start; }
+/* buttons keep their one-line labels; the hint is what gives way when the window is narrow */
+.m3d-foot button, .m3d-foot select { flex: none; white-space: nowrap; }
+.m3d-foot .m3d-foot-hint { flex: 1 1 160px; min-width: 0; margin: 0; line-height: 1.4; }
+.m3d-foot > button:last-child { margin-left: auto; }
+.modal .m3d-foot label { flex-direction: row; align-items: center; white-space: nowrap; }
 .m3d-foot label { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-muted, #9aa3af); }
 
 /* ============ Voice clone wizard ============ */
