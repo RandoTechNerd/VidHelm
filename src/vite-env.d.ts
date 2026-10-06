@@ -33,6 +33,17 @@ interface AudioMediaAnalysis {
   sfx?: { M: number; gainDb: number }
   plan?: FixVoicePlan
   segments?: [number, number][]
+  /** what the export's mix reads for this file (electron/mixrender.ts MediaSound): the preview plays the same levels from it */
+  sound?: MediaSoundFacts
+  /** answered from userData/voice without decoding */
+  cached?: boolean
+}
+/** A media file's sound as the mix reads it: loudness, loudest moment, speech, the role guesses, where it came from */
+interface MediaSoundFacts {
+  I?: number; M?: number; segments?: [number, number][]; channels?: number
+  guessVideo?: { role: 'voice' | 'music' | 'sfx' | 'asis'; why: string }
+  guessAudio?: { role: 'voice' | 'music' | 'sfx' | 'asis'; why: string }
+  provenance?: 'booth' | 'narration' | 'voiceclone' | 'voiceover' | 'score' | 'sfx' | 'import' | 'camera'
 }
 /**
  * A baked voice (bake-voice): path is the FLAC the export reads (sample 0 = the media's time zero, so
@@ -95,7 +106,7 @@ interface Window {
     bakeVoice: (data: { filePath: string; preset?: FixVoicePreset; picture?: string | null }) => Promise<VoiceBakeResult>
     /** rejects with an Error whose message is "Export failed: <reason>" plus the end of ffmpeg's log on following lines */
     exportVideo: (data: { clips: any[], texts: any[], brand: any, audio: any, outputPath: string, settings: any }) => Promise<{ success: boolean }>
-    scanTimelineLoudness: (data: { clips: unknown[]; texts?: unknown[]; audio?: { optimize?: boolean; target?: string; duck?: boolean }; settings?: { masterVolume?: number }; bake?: boolean }) => Promise<TimelineLoudnessScan>
+    scanTimelineLoudness: (data: { clips: unknown[]; texts?: unknown[]; audio?: { optimize?: boolean; target?: string; duck?: boolean; duckDb?: number; sfxDuckDb?: number; bedLu?: number }; settings?: { masterVolume?: number }; bake?: boolean }) => Promise<TimelineLoudnessScan>
     sfxLibrary: () => Promise<{ dir: string; items: { name: string; path: string; duration: number; builtin: boolean }[] }>
     pickAudio: () => Promise<string | null>
     openExternal: (url: string) => Promise<void>

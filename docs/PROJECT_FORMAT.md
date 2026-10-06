@@ -22,7 +22,8 @@
       "hdr": true,                 // optional: HLG/PQ footage, tone-mapped on export
       "chromaKey": "#00e800",      // optional: key colour removed on export and in the preview
       "proxyPath": "C:\\Users\\me\\AppData\\Roaming\\vidhelm\\proxies\\ab12.mp4",  // optional: the preview copy
-      "proxyWidth": 1080, "proxyHeight": 1920, "proxyFps": 30 }  // optional: that copy's real size and rate
+      "proxyWidth": 1080, "proxyHeight": 1920, "proxyFps": 30,  // optional: that copy's real size and rate
+      "audio": { "role": "voice", "fix": "studio" } }  // optional: the sound choices (see "Sound roles and Fix voice")
   ],
 
   "clips": [
@@ -73,6 +74,15 @@ A project folder holds `project.vidhelm.json` (the save) and, at times, these:
 - `voice\`: recorded takes. Opening the project lists them along with the folder's own media.
 
 The save and the autosave are written to a `.tmp` file first and renamed into place, so a crash mid-write never leaves half a file. A project opened from an `.rsnap` or `.json` file is saved back into that same file.
+
+### Sound roles and Fix voice
+
+`mediaBin[].audio` holds the two sound choices a person (or an agent, through `update_clip`) made for a file, and nothing else:
+
+- `role`: `voice`, `music`, `sfx` or `asis`. Absent means guessed, the same way on every machine: where the file came from (booth, narration and voiceover takes are voices, `make_score` beds are music, the SFX library and the `a2` track are effects), then the measured sound (speech with pauses is a voice; a continuous sound is music on its own and as recorded under a picture).
+- `fix`: Fix voice for a voice, `off`, `light` or `studio`. Absent means `studio`.
+
+Both apply to every clip cut from that file. The measurements and the baked voices behind them live in the app's data folder (`voice\`), keyed on the file itself, and are rebuilt on open (a cache hit answers at once), so they never make a project unsaved and a project file never points at them. Files saved before these fields existed open with every role guessed and Studio on, which is what an untouched project gets anyway. docs/AUDIO.md explains what each choice does.
 
 ### Audio-only fades
 

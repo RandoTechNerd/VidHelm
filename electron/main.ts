@@ -19,13 +19,14 @@ import { generateClip, videoGenAvailable, estimateUsd, VIDEO_MODELS, GenTimeout 
 import { bridgeTimeoutMs, QUICK_MS } from '../agent/timeouts.mjs'
 import { stillInput, friendlyExportError, stderrTail, UNREADABLE_STILL } from './exportgraph'
 import { bridgeRefusal, commandForEditor, replyAlias, replyKey, type PendingReply } from './bridgeguard'
-import { decide, decideChannel, decisionsJson, summaryLine, speechSegments, analysisSummary, roleGuess, bedDb, sfxDb, type Preset, type Provenance } from './audiochain'
-import { analyzeMedia, bakeVoice, cachedBake, readFfmpegVersion, sweepVoiceTemp, voiceCacheKey, type BakeResult } from './voicebake'
-import { prepareExportAudio, scanTimelineLoudness, type ExportAudio, type MixEnv } from './mixrender'
-import { loudnessChecks, parseEbur128, soundCheck, type ExportAudioClip } from './audiomix'
+import { CHAIN_VERSION, decide, decideChannel, decisionsJson, summaryLine, speechSegments, analysisSummary, bedDb, sfxDb, type Preset, type Provenance } from './audiochain'
+import { analyzeMedia, bakeVoice, cachedBake, probeMedia, readFfmpegVersion, sweepVoiceTemp, voiceCacheKey, type BakeResult } from './voicebake'
+import { prepareExportAudio, scanTimelineLoudness, soundHead, storeSound, type ExportAudio, type MixEnv } from './mixrender'
+import { loudnessChecks, mixTuning, parseEbur128, provenanceFromPath, resolveRole, soundCheck, type ExportAudioClip, type MixTuning } from './audiomix'
 import path from 'node:path'
 import fs from 'node:fs'
 import os from 'node:os'
+import crypto from 'node:crypto'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
@@ -2497,6 +2498,8 @@ ipcMain.handle('save-sfx-recording', async (_event, { base64, name }: { base64: 
 // ffmpeg and caches the result in userData/voice (a FLAC per media file and preset, its decisions as
 // JSON, and for video a re-muxed preview copy). What is here: the queues, progress, stopping on quit.
 const voiceDir = () => path.join(app.getPath('userData'), 'voice')
+/** The app's own folders, which say where a file came from (make_score, the SFX library, narration). */
+const mixDirs = () => ({ score: path.join(sfxDir(), 'score'), sfx: sfxDir(), narration: path.join(app.getPath('userData'), 'narration') })
 let voiceSwept = false
 // part of every cache key: another ffmpeg build can filter differently
 let ffVersion: Promise<string> | null = null
@@ -2506,25 +2509,56 @@ const trackVoiceChild = (p: ChildProcess, done: boolean) => { if (done) voiceChi
 app.on('before-quit', () => { for (const c of voiceChildren) { try { c.kill() } catch { /* already gone */ } } })
 
 // Measuring is one fast decode (about a second per minute of sound), asked for once per import:
-// one at a time, so a dozen imports are not a dozen decodes at once, and never behind a bake.
+// one at a time, so a dozen imports are not a dozen decodes at once, and never behind a bake. The
+// decode reads the file the way the mix plays it (a mono file at full level on both sides) and fills
+// the export's own sound cache, so the export never measures it again; the reply is cached too, so
+// reopening a project measures nothing.
+const ANALYSIS_V = 1
 let analyzeTail: Promise<unknown> = Promise.resolve()
 ipcMain.handle('analyze-audio-media', async (_event, { filePath, preset = 'studio', provenance, isVideo, track }: { filePath: string; preset?: Preset; provenance?: Provenance; isVideo?: boolean; track?: string }) => {
   if (!filePath || !fs.existsSync(filePath)) return { error: 'file not found' }
+  if (!['off', 'light', 'studio'].includes(preset)) return { error: `unknown Fix voice preset "${preset}"` }
+  const cacheDir = voiceDir()
+  const prov = provenance || provenanceFromPath(filePath, mixDirs())
+  // the role depends on where the clip sits (the SFX track) and what it is, so it is worked out per call
+  const withRole = (r: any) => ({ ...r, role: resolveRole({ trackId: track, type: isVideo ? 'video' : 'audio' }, { ...r.sound, provenance: prov }), sound: { ...r.sound, provenance: prov } })
+  const cacheFile = async () => {
+    const st = fs.statSync(filePath)
+    const key = crypto.createHash('sha1').update([path.resolve(filePath), st.size, Math.round(st.mtimeMs), preset, CHAIN_VERSION, ANALYSIS_V, await ffmpegVersion()].join('|')).digest('hex').slice(0, 16)
+    const stem = path.basename(filePath).replace(/\.[^.]+$/, '').replace(/[^a-z0-9]+/gi, '-').slice(0, 40) || 'clip'
+    return path.join(cacheDir, `${stem}-analysis-${key}.json`)
+  }
+  try {
+    const hit = JSON.parse(fs.readFileSync(await cacheFile(), 'utf8'))
+    if (hit?.v === ANALYSIS_V && hit.ok) return withRole({ ...hit, cached: true })
+  } catch { /* not measured yet */ }
   const run = async () => {
     try {
-      const an = await analyzeMedia(paths.ffmpeg, filePath, { onChild: trackVoiceChild })
+      const probe = await probeMedia(paths.ffprobe, filePath)
+      if (probe && !probe.hasAudio) return { error: 'this file has no sound' }
+      const channels = probe?.audioChannels || 2
+      const an = await analyzeMedia(paths.ffmpeg, filePath, { durationS: probe?.durationS, onChild: trackVoiceChild, head: soundHead(channels) })
+      const sound = storeSound(filePath, an, channels, { cacheDir, ffmpegVersion: await ffmpegVersion() })
       const plan = decide(an, preset)
-      return {
-        ok: true, ...analysisSummary(an),
+      const reply = {
+        v: ANALYSIS_V, ok: true, ...analysisSummary(an),
         channel: { identical: an.channel.identical, foldLossDb: +an.channel.foldLossDb.toFixed(2), decision: decideChannel(an.channel) },
-        role: roleGuess(an, { provenance, isVideo, track }),
         // one decode serves every role: the bed level if this is music, the level match if it is an SFX
         music: { I: +an.I.toFixed(2), bedDb: +bedDb(an.I).toFixed(2) },
         sfx: { M: +an.momentaryMaxLufs.toFixed(2), gainDb: +sfxDb(an.momentaryMaxLufs).toFixed(2) },
         // the plan before the noise reduction pass: the lift heard at once while the bake runs
         plan: { ...decisionsJson(plan), summary: summaryLine(plan) },
         segments: speechSegments(an),
+        // what the export's mix reads for this file (electron/mixrender.ts), so the preview plays the same levels
+        sound: { I: sound.I, M: sound.M, segments: sound.segments, guessVideo: sound.guessVideo, guessAudio: sound.guessAudio, channels },
       }
+      try {
+        const f = await cacheFile()
+        fs.mkdirSync(cacheDir, { recursive: true })
+        fs.writeFileSync(f + '.tmp', JSON.stringify(reply))
+        fs.renameSync(f + '.tmp', f)
+      } catch { /* a cache that cannot be written only costs a decode next time */ }
+      return withRole(reply)
     } catch (e) { return { error: String((e as Error)?.message || e) } }
   }
   const job = analyzeTail.then(run)
@@ -2536,6 +2570,8 @@ ipcMain.handle('analyze-audio-media', async (_event, { filePath, preset = 'studi
 // matters more than a cleaner voice, and a dozen imports must not start a dozen ffmpegs. A finished
 // bake answers at once; the same bake asked for twice shares one run.
 const voiceBakes = new Map<string, Promise<BakeResult>>()
+/** Bakes actually running, by the sound they make (cache key without the picture). */
+const soundBaking = new Map<string, Promise<BakeResult>>()
 let bakeTail: Promise<unknown> = Promise.resolve()
 /**
  * Bake (or return the cached bake). `urgent` is an export waiting on it: it starts now instead of
@@ -2550,13 +2586,21 @@ async function runVoiceBake(filePath: string, preset: Preset, picture: string | 
   const hit = cachedBake(opts)
   if (hit) return hit
   const st = fs.statSync(filePath)
-  const id = `${voiceCacheKey(filePath, st.size, st.mtimeMs, preset, opts.ffmpegVersion)}|${opts.picture || ''}`
+  const sound = voiceCacheKey(filePath, st.size, st.mtimeMs, preset, opts.ffmpegVersion)
+  const id = `${sound}|${opts.picture || ''}`
   const running = voiceBakes.get(id)
   if (running) return await running
   o.send?.(0, 'Waiting its turn')
   const run = async () => {
     if (!o.urgent) while (proxyBuilds.size) await Promise.allSettled([...proxyBuilds.values()])
-    return bakeVoice({ ...opts, onProgress: o.send, onChild: trackVoiceChild })
+    // The preview asks with its picture and an export with none, but both bake the same FLAC: one at
+    // a time, or two runs write the same part file. The second then finds the bake (or only has the
+    // preview copy left to make). An urgent export waits only on a bake already running, never on a
+    // queued one, which could itself be waiting for a proxy.
+    while (soundBaking.has(sound)) await soundBaking.get(sound)!.catch(() => undefined)
+    const p = bakeVoice({ ...opts, onProgress: o.send, onChild: trackVoiceChild })
+    soundBaking.set(sound, p)
+    try { return await p } finally { if (soundBaking.get(sound) === p) soundBaking.delete(sound) }
   }
   const job = (o.urgent ? run() : bakeTail.then(run)).finally(() => voiceBakes.delete(id))
   if (!o.urgent) bakeTail = job.catch(() => undefined)
@@ -2577,7 +2621,7 @@ ipcMain.handle('bake-voice', async (event, { filePath, preset = 'studio', pictur
 const mixEnv = async (o: { bakeMissing: boolean }): Promise<MixEnv> => ({
   ffmpeg: paths.ffmpeg, ffprobe: paths.ffprobe, cacheDir: voiceDir(), ffmpegVersion: await ffmpegVersion(),
   workDir: app.getPath('temp'), bakeMissing: o.bakeMissing, onChild: trackVoiceChild,
-  dirs: { score: path.join(sfxDir(), 'score'), sfx: sfxDir(), narration: path.join(app.getPath('userData'), 'narration') },
+  dirs: mixDirs(),
   bake: ({ filePath, preset }) => runVoiceBake(filePath, preset, null, {
     urgent: true,
     send: (pct, line) => { if (win && !win.webContents.isDestroyed()) win.webContents.send('voice-progress', { filePath, preset, pct, line }) },
@@ -2593,12 +2637,12 @@ const timelineEnd = (clips: { start?: unknown; duration?: unknown }[], texts: { 
 // Where the export will land, without exporting: the export's own audio graph rendered to nothing and
 // measured. Voices without a bake play as recorded here and are counted (`unbaked`); pass bake:true to
 // make them first, as the export does. The same timeline answers from memory.
-ipcMain.handle('scan-timeline-loudness', async (_event, { clips, texts, audio, settings, bake }: { clips: ExportAudioClip[]; texts?: { start: number; duration: number }[]; audio?: { optimize?: boolean; target?: string; duck?: boolean }; settings?: { masterVolume?: number }; bake?: boolean }) => {
+ipcMain.handle('scan-timeline-loudness', async (_event, { clips, texts, audio, settings, bake }: { clips: ExportAudioClip[]; texts?: { start: number; duration: number }[]; audio?: { optimize?: boolean; target?: string; duck?: boolean } & MixTuning; settings?: { masterVolume?: number }; bake?: boolean }) => {
   try {
     const a = audio || {}
     return await scanTimelineLoudness(clips || [], {
       totalS: timelineEnd(clips || [], texts || []), optimize: a.optimize !== false, target: a.target, duck: a.duck !== false,
-      masterVolume: typeof settings?.masterVolume === 'number' ? settings.masterVolume : 1,
+      masterVolume: typeof settings?.masterVolume === 'number' ? settings.masterVolume : 1, ...mixTuning(a),
     }, await mixEnv({ bakeMissing: !!bake }))
   } catch (e) { return { error: String((e as Error)?.message || e) } }
 })
@@ -2790,7 +2834,7 @@ ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outp
   try {
     sound = await prepareExportAudio(clips, {
       totalS: timelineEnd(clips, texts), optimize: audio.optimize !== false, target: audio.target, duck: audio.duck !== false,
-      masterVolume: typeof settings?.masterVolume === 'number' ? settings.masterVolume : 1,
+      masterVolume: typeof settings?.masterVolume === 'number' ? settings.masterVolume : 1, ...mixTuning(audio),
     }, await mixEnv({ bakeMissing: settings?.quality !== 'analysis' }))
   } catch (e) {
     exportsRunning.delete(outKey)

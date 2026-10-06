@@ -14,7 +14,7 @@
  * The numbers are the quiet-audio shoot-out's (see electron/audiochain.ts).
  */
 import {
-  DUCK, SFX_DUCK, LOUDNESS_TARGET, LOWPASS_20K, MASTER_CEILING_DBFS, MAX_STATIC_DB, SR, bedDb, sfxDb, duckTraps, limiterFilter,
+  BED_UNDER_VOICE_LU, DUCK, SFX_DUCK, LOUDNESS_TARGET, LOWPASS_20K, MASTER_CEILING_DBFS, MAX_STATIC_DB, SR, bedDb, sfxDb, duckTraps, limiterFilter,
   mapSegmentsToTimeline, musicBusGraph, platformTarget, roleGuess, sfxBusGraph, unionSegments,
   type Preset, type Provenance, type Role, type Trapezoid,
 } from './audiochain'
@@ -132,21 +132,38 @@ export function resolveRole(c: { role?: string; trackId?: string; type?: string 
 }
 
 /**
+ * The mix's three numbers a person may change (Export, Advanced): how far the music and the SFX dip
+ * under speech, and how far the bed sits under the voice. Absent = the shoot-out's defaults (10 dB,
+ * 6 dB, 5 LU). The preview reads the same values, so what it plays is what exports.
+ */
+export interface MixTuning { duckDb?: number; sfxDuckDb?: number; bedLu?: number }
+const num = (x: unknown, lo: number, hi: number, dflt: number) => (typeof x === 'number' && Number.isFinite(x) ? clamp(x, lo, hi) : dflt)
+export function mixTuning(t?: MixTuning | null): Required<MixTuning> {
+  return { duckDb: num(t?.duckDb, 0, 24, DUCK.depth), sfxDuckDb: num(t?.sfxDuckDb, 0, 24, SFX_DUCK.depth), bedLu: num(t?.bedLu, 0, 20, BED_UNDER_VOICE_LU) }
+}
+
+/**
  * The level a role puts a clip at. Music: the bed, 5 LU under the voice. SFX: the loudest moment at
  * the voice level. Voices are already at it (the bake) and As is stays as recorded. Capped so a
  * near-silent file is not lifted into hiss.
  */
-export function roleLevelDb(role: Role, f: SoundFacts | null | undefined): number {
+export function roleLevelDb(role: Role, f: SoundFacts | null | undefined, tune?: MixTuning | null): number {
   const ok = (x?: number) => typeof x === 'number' && Number.isFinite(x) && x > -70
-  if (role === 'music' && ok(f?.I)) return clamp(bedDb(f!.I!), -24, 18)
+  if (role === 'music' && ok(f?.I)) return clamp(bedDb(f!.I!, mixTuning(tune).bedLu), -24, 18)
   if (role === 'sfx' && ok(f?.M)) return clamp(sfxDb(f!.M!), -24, 18)
   return 0
 }
 
 /** Every voice clip's speech on the timeline, and the duck trapezoids for the music and SFX buses. */
-export function duckPlan(clips: MixClip[]) {
+export function duckPlan(clips: Pick<MixClip, 'role' | 'segments' | 'start' | 'duration' | 'sourceStart'>[], tune?: MixTuning | null) {
+  const t = mixTuning(tune)
   const segments = unionSegments(clips.filter((c) => c.role === 'voice' && c.segments?.length).map((c) => mapSegmentsToTimeline(c.segments!, c)))
-  return { segments, music: duckTraps(segments, DUCK), sfx: duckTraps(segments, SFX_DUCK) }
+  // a depth of 0 is no duck at all, not a curve of zeros for ffmpeg to evaluate every millisecond
+  return {
+    segments,
+    music: t.duckDb > 0 ? duckTraps(segments, { ...DUCK, depth: t.duckDb }) : [],
+    sfx: t.sfxDuckDb > 0 ? duckTraps(segments, { ...SFX_DUCK, depth: t.sfxDuckDb }) : [],
+  }
 }
 
 export interface MixPlan {
@@ -167,10 +184,10 @@ export interface MixPlan {
  * and the role's level is applied. `solo` renders one bus alone with the ducks still drawn from every
  * voice (stems, and the tests' voice-over-bed measurement).
  */
-export function planMix(all: MixClip[], o: { totalS: number; duck?: boolean; solo?: Bus }): MixPlan {
+export function planMix(all: MixClip[], o: { totalS: number; duck?: boolean; solo?: Bus; tune?: MixTuning | null }): MixPlan {
   const total = Math.max(0.05, o.totalS)
   const samples = Math.round(total * SR)
-  const traps = duckPlan(all)
+  const traps = duckPlan(all, o.tune)
   const clips = o.solo ? all.filter((c) => busOf(c.role) === o.solo) : all
   const inputs: string[][] = [['-f', 'lavfi', '-i', `anullsrc=channel_layout=stereo:sample_rate=${SR}:d=${total.toFixed(3)}`]]
   const lines: string[] = []

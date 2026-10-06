@@ -49,7 +49,7 @@ contextBridge.exposeInMainWorld('ipcRenderer', {
   bakeVoice: (data: { filePath: string; preset?: string; picture?: string | null }) => ipcRenderer.invoke('bake-voice', data),
   exportVideo: (data: { clips: any[], texts: any[], brand: any, audio: any, outputPath: string, settings: any }) => ipcRenderer.invoke('export-video', data),
   // where the export will land, measured on the export's own audio graph (electron/mixrender.ts)
-  scanTimelineLoudness: (data: { clips: unknown[]; texts?: unknown[]; audio?: { optimize?: boolean; target?: string; duck?: boolean }; settings?: { masterVolume?: number }; bake?: boolean }) => ipcRenderer.invoke('scan-timeline-loudness', data),
+  scanTimelineLoudness: (data: { clips: unknown[]; texts?: unknown[]; audio?: { optimize?: boolean; target?: string; duck?: boolean; duckDb?: number; sfxDuckDb?: number; bedLu?: number }; settings?: { masterVolume?: number }; bake?: boolean }) => ipcRenderer.invoke('scan-timeline-loudness', data),
   sfxLibrary: () => ipcRenderer.invoke('sfx-library'),
   pickAudio: () => ipcRenderer.invoke('pick-audio'),
   openExternal: (url: string) => ipcRenderer.invoke('open-external', url),

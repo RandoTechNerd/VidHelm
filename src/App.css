@@ -1279,3 +1279,23 @@ textarea.duration-input { height: auto; padding: 7px 9px; resize: vertical; line
 .crash-screen .crash-detail { font-family: ui-monospace, Consolas, monospace; font-size: 12px; color: var(--text-dim); max-width: 100%; overflow-wrap: anywhere; }
 .crash-screen button { margin-top: 6px; height: 34px; padding: 0 18px; border: none; border-radius: var(--radius-sm); background: var(--accent-primary); color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; }
 .crash-screen button:hover { background: var(--accent-hover); }
+
+/* ============ Sound: where the export lands, the live meter, the advanced mix ============ */
+.sound-readout { display: flex; flex-direction: column; gap: 6px; }
+.land-line { font-size: 12px; line-height: 1.45; color: var(--text-main); font-variant-numeric: tabular-nums; }
+.land-line.busy { color: var(--text-dim); }
+.lufs-meter { display: flex; align-items: center; gap: 8px; }
+.lm-track { position: relative; flex: 1; height: 6px; border-radius: 3px; background: rgb(var(--ink) / 0.08); overflow: hidden; }
+.lm-fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--accent-secondary); border-radius: 3px; transition: width 0.08s linear; }
+.lm-fill.hot { background: var(--accent-warning); }
+.lm-mark { position: absolute; top: -1px; bottom: -1px; width: 2px; margin-left: -1px; background: var(--text-main); opacity: 0.7; }
+.lm-value { min-width: 84px; text-align: right; font-size: 11px; color: var(--text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.adv-mix { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 0 10px; }
+.adv-mix[open] { padding-bottom: 10px; }
+.adv-mix summary { cursor: pointer; font-size: 12px; font-weight: 500; color: var(--text-muted); padding: 7px 0; list-style-position: inside; }
+.adv-mix summary:hover { color: var(--text-main); }
+.adv-mix .field { margin-top: 8px; }
+.adv-mix input[type="range"]:disabled { opacity: 0.4; }
+.link-btn { background: none; border: none; padding: 0; color: var(--accent-text); font: inherit; cursor: pointer; }
+.link-btn:hover:not(:disabled) { text-decoration: underline; }
+.link-btn:disabled { color: var(--text-dim); cursor: default; }

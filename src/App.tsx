@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, Component, type ReactNode } from 'react'
+import { useState, useRef, useEffect, useCallback, useMemo, Component, type ReactNode } from 'react'
 import './App.css'
 import { VidHelmMark, IcSave, IcOpen, IcCloud, IcRecipe, IcCube, IcSparkle, IcBot, IcSun, IcMoon, IcHelp, IcRefresh, IcFolder, IcPlus, IcBooth, IcVoice, IcCut, IcList, IcCheck, IcEye, IcChat, IcMissing } from './icons'
 import { Tour, tourSeen } from './tour'
@@ -18,7 +18,9 @@ import { spanForPhrase, sentenceSpans, type Word as SpeechWord, type Span } from
 import { planBroll, snapToWords, describePlan, type BrollAsset, type Placement } from '../electron/broll'
 import { looksLikeThumbPhoto } from '../electron/thumbpick'
 import { resolveProfile, describeProfile, type PerfProfile, type Tier, type TierPreference } from '../electron/capability'
-import { PLATFORM_TARGETS, platformTarget } from '../electron/audiochain'
+import { PLATFORM_TARGETS, platformTarget, type Preset, type Role } from '../electron/audiochain'
+import { isPreset, isRole, mixTuning, resolveRole, type SoundFacts } from '../electron/audiomix'
+import { audioFadeFactor, gainAt, dbToGain, planPreviewMix, previewMasterDb, previewMixer, type PreviewSoundClip } from './previewAudio'
 
 interface MediaFile {
   id: string
@@ -42,6 +44,39 @@ interface MediaFile {
   fps?: number         // the source's own frame rate (a 30 fps copy of 30 fps footage loses nothing)
   relPath?: string     // where it sat inside the project folder when saved, so a moved folder relinks
   offline?: boolean    // the file is not where the project says and nothing matched: relink or remove it
+  audio?: MediaAudio   // its sound: the role and Fix voice the user chose, and what was measured and baked
+}
+
+/**
+ * A media file's sound. role and fix are the user's choices (saved with the project; absent = the
+ * guess and Studio). Everything else is measured or baked from the file (userData/voice), rebuilt on
+ * every open and never saved: a cache hit answers at once.
+ */
+interface MediaAudio {
+  role?: Role
+  fix?: Preset
+  /** what the mix reads (analyze-audio-media's `sound`): null when it could not be measured */
+  facts?: SoundFacts | null
+  /** the measurement in numbers and the Fix voice plan before its bake: what get_state and analyze_audio report */
+  measured?: { I?: number; floorDb?: number; snr?: number; speechS?: number; durationS?: number; speechFraction?: number; plan?: string; liftDb?: number; nrDb?: number; effective?: Preset }
+  error?: string
+  /** the bake for `want` (preset|picture): path is the FLAC the export reads, previewPath what the preview plays */
+  bake?: { want: string; path?: string; previewPath?: string; segments?: [number, number][]; summary?: string; effective?: Preset }
+  baking?: { want: string; pct: number; line: string }
+  bakeError?: { want: string; error: string }
+}
+/** Only the user's choices: what a project file keeps, and what survives a relink. */
+const userAudio = (a?: MediaAudio): MediaAudio | undefined => {
+  const out: MediaAudio = {}
+  if (isRole(a?.role)) out.role = a!.role
+  if (isPreset(a?.fix)) out.fix = a!.fix
+  return out.role || out.fix ? out : undefined
+}
+const fixOf = (m?: MediaFile): Preset => (isPreset(m?.audio?.fix) ? m!.audio!.fix! : 'studio')
+/** The bake that matches the media's Fix voice now (a preview copy made from an older picture still counts). */
+const bakeFor = (m?: MediaFile) => {
+  const b = m?.audio?.bake
+  return b && b.want.split('|')[0] === fixOf(m) ? b : undefined
 }
 
 interface TimelineClip {
@@ -67,8 +102,9 @@ interface AppSettings {
   brand: { enabled: boolean; logoPath: string | null; position: 'tl' | 'tr' | 'bl' | 'br' | 'center'; sizePct: number; margin: number; opacity: number; showMode: 'whole' | 'intro' | 'outro'; windowSec: number; fade: number }
   intro: { segment: 'first' | 'last'; seconds: number; fade: number; treatment: 'ripple' | 'overlay' }
   /** optimize: land the export on `target` (a platform id, electron/audiochain.ts); duck: music and SFX dip under speech.
+   *  duckDb / sfxDuckDb / bedLu: the Advanced depths (absent = 10 dB, 6 dB, 5 LU; electron/audiomix.ts mixTuning).
    *  Noise reduction is no longer a switch: Fix voice measures and cleans each voice on its own. */
-  audio: { optimize: boolean; target: string; duck: boolean }
+  audio: { optimize: boolean; target: string; duck: boolean; duckDb?: number; sfxDuckDb?: number; bedLu?: number }
   /** theme: a theme id or the creator's words ("futuristic tech"); 'classic' = the plain style below. tweak: words on top ("but blue") */
   caption: { fontSize: number; color: string; position: 'lower' | 'top' | 'center'; box: boolean; boxOpacity: number; model: 'tiny' | 'base' | 'small'; language: string; mode: 'phrase' | 'word'; theme: string; tweak: string }
   silence: { minPause: number; thresholdDb: number; pad: number; smooth: boolean; transition: number; detectBy: 'auto' | 'audio' | 'motion'; freezeDb: number }
@@ -110,6 +146,35 @@ const masterVolumeHint = (audio: AppSettings['audio'], masterVolume: number) => 
   if (!audio.optimize) return `No loudness target: the mix as it is${off ? `, ${off}` : ''}, under a \u22121 dBTP ceiling.`
   const t = platformTarget(audio.target)
   return `Export lands at ${lufsText(t.lufs + mvDb)} LUFS${off ? ` (${off} from the ${lufsText(t.lufs)} target)` : ''}.`
+}
+
+/**
+ * The preview's live loudness: momentary (400 ms) LUFS read off the master as it plays, through the
+ * same K-weighting the export is measured with, with the level the export is planned at marked. Speech
+ * swings a few LU around it; a bar that lives well above the mark means the master is hot.
+ */
+function LufsMeter({ playing, mark }: { playing: boolean; mark: number | null }) {
+  const [m, setM] = useState<number | null>(null)
+  useEffect(() => {
+    if (!playing) return
+    const mixer = previewMixer()
+    const iv = window.setInterval(() => setM(mixer.momentary()), 100)
+    return () => window.clearInterval(iv)
+  }, [playing])
+  const lo = -42, hi = -6
+  const pos = (x: number) => clamp((x - lo) / (hi - lo), 0, 1) * 100
+  // paused, the last reading is not what is playing
+  const v = playing && m != null && Number.isFinite(m) && m > lo - 30 ? m : null
+  const hot = v != null && mark != null && v > mark + 4
+  return (
+    <div className="lufs-meter" title="What the preview is playing right now, as momentary loudness (400 ms). The mark is where the export is planned to land; speech moves a few LU either side of it.">
+      <div className="lm-track">
+        <div className={`lm-fill ${hot ? 'hot' : ''}`} style={{ width: `${v == null ? 0 : pos(v)}%` }} />
+        {mark != null && <div className="lm-mark" style={{ left: `${pos(mark)}%` }} />}
+      </div>
+      <span className="lm-value">{v != null ? `${lufsText(v)} LUFS` : playing ? 'quiet' : 'play to meter'}</span>
+    </div>
+  )
 }
 
 // Every agent command carries an id. StrictMode's double mount, and, in dev, hot reloads
@@ -456,7 +521,7 @@ const exportFailureText = (f: { reason: string; detail: string }) =>
 // are derived from the files and rebuilt on every open, so they never make a project "unsaved".
 type DocFields = { mediaBin: MediaFile[]; clips: TimelineClip[]; texts: TextClip[]; markers: Marker[]; orientation: OrientationKey; resolution: ResolutionKey; fps: 24 | 30 | 60; masterVolume: number; exportQuality: 'medium' | 'high' }
 const docKeyOf = (d: DocFields) => JSON.stringify([
-  d.mediaBin.map(m => [m.id, m.path, m.name, m.type, m.duration, m.chromaKey ?? null]),
+  d.mediaBin.map(m => [m.id, m.path, m.name, m.type, m.duration, m.chromaKey ?? null, m.audio?.role ?? null, m.audio?.fix ?? null]),
   d.clips, d.texts, d.markers, d.orientation, d.resolution, d.fps, d.masterVolume, d.exportQuality,
 ])
 interface Autosave { savedAt: number; dir: string | null; name: string | null; file: string | null; data: any }
@@ -565,29 +630,8 @@ function fadeFactor(c: { start: number; duration: number; fadeIn: number; fadeOu
   return clamp(o, 0, 1)
 }
 
-// Same, for AUDIO: uses the audio-only ramps when a cut set them, so the picture
-// can cut hard while the waveform still ramps. Mirrors clipAudioChain in electron/exportgraph.ts,
-// including its floor: every clip end ramps for at least DEPOP, and so does a start that is not
-// the file's own beginning (sourceStart > 0), however the clip was made.
-function audioFadeFactor(c: { start: number; duration: number; fadeIn: number; fadeOut: number; aFadeIn?: number; aFadeOut?: number; sourceStart?: number }, t: number) {
-  const fadeIn = Math.max(c.aFadeIn ?? c.fadeIn ?? 0, (Number(c.sourceStart) || 0) > 0 ? DEPOP : 0)
-  const fadeOut = Math.max(c.aFadeOut ?? c.fadeOut ?? 0, DEPOP)
-  return fadeFactor({ start: c.start, duration: c.duration, fadeIn, fadeOut }, t)
-}
-
-// Interpolated gain at an absolute time, following the clip's volume automation line.
-function gainAt(c: TimelineClip, tAbs: number) {
-  const pts = c.volumePoints
-  if (!pts || pts.length === 0) return c.volume ?? 1
-  const rel = tAbs - c.start
-  const P = [...pts].sort((a, b) => a.t - b.t)
-  if (rel <= P[0].t) return P[0].v
-  if (rel >= P[P.length - 1].t) return P[P.length - 1].v
-  for (let i = 1; i < P.length; i++) {
-    if (rel <= P[i].t) { const a = P[i - 1], b = P[i]; const f = (rel - a.t) / ((b.t - a.t) || 1); return a.v + (b.v - a.v) * f }
-  }
-  return c.volume ?? 1
-}
+// The audio side (gainAt, audioFadeFactor: the clip's volume line and its de-pop ramps, exactly as
+// the export's clip chain applies them) lives in src/previewAudio.ts with the rest of the preview mix.
 
 // Remove timeline range [s,e] and ripple everything after it left. Used to cut silent dead space.
 // If `transition` > 0, surviving edges get a short fade for a smoother seam.
@@ -820,6 +864,47 @@ function Editor() {
   const activeTexts = texts.filter(t => currentTime >= t.start && currentTime < t.start + t.duration)
   const activeKey = activeVideoClips.map(c => c.id).join(',')
 
+  // ---- the preview's sound: the export's mix, played through WebAudio (src/previewAudio.ts) ----
+  const mixer = previewMixer()
+  const tune = mixTuning(settings.audio)
+  // Every clip with what is known about its media's sound, so roles, levels and ducks are decided
+  // exactly as the export decides them (electron/mixrender.ts resolveMix).
+  const previewMix = useMemo(() => planPreviewMix(clips.map((c): PreviewSoundClip => {
+    const m = mediaBin.find(x => x.id === c.mediaId)
+    const a = m?.audio, b = bakeFor(m)
+    const failed = !!a?.bakeError && a.bakeError.want.split('|')[0] === fixOf(m)
+    return {
+      ...c, hasAudio: c.trackId === 'v2' || m?.offline ? false : m?.hasAudio, mediaPath: m?.path,
+      role: a?.role, voiceFix: fixOf(m), facts: a?.facts ?? null,
+      // a video's bake is heard through its re-muxed preview copy; with no copy the original plays,
+      // lifted by the prediction, rather than as recorded while the export plays the bake
+      bake: b && (m?.type !== 'video' || b.previewPath || !b.path) ? { path: b.path, segments: b.segments } : failed ? null : undefined,
+    }
+  }), { duck: settings.audio.duck, tune }), [clips, mediaBin, settings.audio])   // eslint-disable-line react-hooks/exhaustive-deps
+  /** What the preview element for a clip plays: a voice's baked copy once it exists, else the proxy or the original. */
+  const previewSrc = (c: TimelineClip, m: MediaFile) => {
+    const b = previewMix.clips.get(c.id)?.baked ? bakeFor(m)?.previewPath : undefined
+    return b || (m.type === 'video' ? m.proxyPath || m.path : m.path)
+  }
+  /** A clip's gain right now: its role's level, its own volume line and its de-pop ramps (the master is a node of its own). */
+  const clipGainNow = (c: TimelineClip, t: number) => {
+    const p = previewMix.clips.get(c.id)
+    return p ? dbToGain(p.levelDb) * gainAt(c, t) * audioFadeFactor(c, t) : 0
+  }
+  // The same timeline, as far as the sound is concerned: a scan of an older one does not count
+  const mixSig = useMemo(() => JSON.stringify([
+    clips.filter(c => c.trackId !== 'v2').map(c => { const m = mediaBin.find(x => x.id === c.mediaId); return [m?.path, m?.hasAudio, c.trackId, c.start, c.duration, c.sourceStart, c.volume, c.volumePoints, c.fadeIn, c.fadeOut, c.aFadeIn, c.aFadeOut, m?.audio?.role, fixOf(m), bakeFor(m)?.path ?? null] }),
+    settings.audio.duck, tune.duckDb, tune.sfxDuckDb, tune.bedLu,
+  ]), [clips, mediaBin, settings.audio])   // eslint-disable-line react-hooks/exhaustive-deps
+  const [loudScan, setLoudScan] = useState<{ sig: string; r: TimelineLoudnessScan } | null>(null)
+  // the measured bus sum, when it is of THIS timeline with every voice baked (else the prediction stands)
+  const measuredMix = loudScan && loudScan.sig === mixSig && loudScan.r.ok && !loudScan.r.unbaked && loudScan.r.I != null ? loudScan.r : null
+  const masterPlan = previewMasterDb({ optimize: settings.audio.optimize, target: settings.audio.target, masterVolume, measuredLufs: measuredMix?.I, measuredTp: measuredMix?.TP, predictedLufs: previewMix.predictedLufs })
+  const masterGain = dbToGain(masterPlan.gainDb)
+  // the media whose sound is in the mix, and whether any of it is still being measured or baked
+  const mixMediaIds = new Set(clips.filter(c => previewMix.clips.has(c.id) || (c.trackId !== 'v2' && mediaBin.find(m => m.id === c.mediaId)?.hasAudio)).map(c => c.mediaId))
+  const soundBusy = mediaBin.some(m => mixMediaIds.has(m.id) && !m.offline && ((m.audio?.facts === undefined && !m.audio?.error) || !!m.audio?.baking))
+
   // ---- effects ----
   // Ask the main process what this machine can take. The heavy defaults (which Whisper model,
   // how many frames to decode, how many ffmpeg jobs at once) come from the answer, so a thin
@@ -850,7 +935,12 @@ function Editor() {
     const handleProxy = (_e: unknown, d: { filePath: string; pct: number }) =>
       setMediaBin(prev => prev.map(m => m.path === d.filePath ? { ...m, proxyPct: d.pct >= 100 ? m.proxyPct : d.pct } : m))
     window.ipcRenderer.on('proxy-progress', handleProxy)
-    return () => { window.ipcRenderer.off('export-progress', handleProgress); window.ipcRenderer.off('transcribe-progress', handleTranscribe); window.ipcRenderer.off('proxy-progress', handleProxy) }
+    // Fix voice bakes (on import, or made by an export that needed one): the Inspector shows the percent
+    const handleVoice = (_e: unknown, d: { filePath: string; preset: string; pct: number; line: string }) =>
+      setMediaBin(prev => prev.map(m => m.path !== d.filePath || fixOf(m) !== d.preset ? m
+        : { ...m, audio: { ...m.audio, baking: d.pct >= 100 ? undefined : { want: m.audio?.baking?.want || d.preset, pct: d.pct, line: d.line } } }))
+    window.ipcRenderer.on('voice-progress', handleVoice)
+    return () => { window.ipcRenderer.off('export-progress', handleProgress); window.ipcRenderer.off('transcribe-progress', handleTranscribe); window.ipcRenderer.off('proxy-progress', handleProxy); window.ipcRenderer.off('voice-progress', handleVoice) }
   }, [])
 
   useEffect(() => {
@@ -880,6 +970,20 @@ function Editor() {
     return () => cancelAnimationFrame(raf)
   }, [isPlaying, totalDuration])
 
+  /**
+   * Route a preview element through the mixer on its clip's bus. False where WebAudio is not there
+   * (or b-roll, which is picture only): the element then keeps the old el.volume, clamped at 1.
+   */
+  const routed = (c: TimelineClip, el: HTMLMediaElement) =>
+    c.trackId !== 'v2' && mixer.attach(c.id, el, previewMix.clips.get(c.id)?.bus || 'voice')
+  /** A clip's level now, through its gain node (or el.volume where it cannot be routed). */
+  const setClipLevel = (c: TimelineClip, el: HTMLMediaElement, g: number) => {
+    if (routed(c, el)) mixer.setClipGain(c.id, g)
+    else el.volume = clamp(g * masterGain, 0, 1)
+  }
+  useEffect(() => { mixer.setMaster(masterGain) }, [masterGain])   // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (isPlaying) mixer.resume() }, [isPlaying])   // eslint-disable-line react-hooks/exhaustive-deps
+
   // Sync preview video layers
   useEffect(() => {
     const map = videoEls.current
@@ -888,7 +992,7 @@ function Editor() {
     previewVideoClips.filter(c => currentTime < c.start).forEach(c => {
       const el = map.get(c.id)
       if (!el) return
-      el.volume = 0
+      setClipLevel(c, el, 0)
       if (!el.paused) el.pause()
       if (Math.abs(el.currentTime - c.sourceStart) > 0.05) el.currentTime = c.sourceStart
     })
@@ -897,7 +1001,7 @@ function Editor() {
       if (media?.type !== 'video') return
       const el = map.get(c.id)
       if (!el) return
-      el.volume = clamp(gainAt(c, currentTime) * masterVolume * audioFadeFactor(c, currentTime), 0, 1)
+      setClipLevel(c, el, clipGainNow(c, currentTime))
       const target = c.sourceStart + (currentTime - c.start)
       if (isPlaying) {
         if (Math.abs(el.currentTime - target) > 0.3) el.currentTime = target
@@ -907,18 +1011,29 @@ function Editor() {
         if (Math.abs(el.currentTime - target) > 0.05) el.currentTime = target
       }
     })
-  }, [currentTime, isPlaying, activeKey, clips, masterVolume, mediaBin])
+  }, [currentTime, isPlaying, activeKey, clips, masterGain, mediaBin, previewMix])   // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Manage hidden audio elements for audio-track clips
+  // Manage hidden audio elements for audio-track clips. A voice's element switches to its baked
+  // copy when the bake lands (and back if Fix voice is turned off), like a video switching to its proxy.
   useEffect(() => {
     const map = audioEls.current
     const audioClips = clips.filter(c => c.trackId === 'a1' || c.trackId === 'a2')
     audioClips.forEach(c => {
       const media = mediaBin.find(m => m.id === c.mediaId)
-      if (media && !map.has(c.id)) map.set(c.id, new Audio(fileUrl(media.path)))
+      if (!media) return
+      const url = fileUrl(previewSrc(c, media))
+      const el = map.get(c.id)
+      if (!el) { const a = new Audio(url); a.dataset.src = url; map.set(c.id, a) }
+      else if (el.dataset.src !== url) {
+        const at = el.currentTime, playing = !el.paused
+        el.dataset.src = url
+        el.src = url
+        el.currentTime = at
+        if (playing) el.play().catch(() => {})
+      }
     })
-    for (const [id, el] of map) { if (!audioClips.find(c => c.id === id)) { el.pause(); map.delete(id) } }
-  }, [clips, mediaBin])
+    for (const [id, el] of map) { if (!audioClips.find(c => c.id === id)) { el.pause(); mixer.detach(id); map.delete(id) } }
+  }, [clips, mediaBin, previewMix])   // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const map = audioEls.current
@@ -926,16 +1041,88 @@ function Editor() {
       const el = map.get(c.id)
       if (!el) return
       const active = currentTime >= c.start && currentTime < c.start + c.duration
-      el.volume = clamp(gainAt(c, currentTime) * masterVolume * audioFadeFactor(c, currentTime), 0, 1)
+      setClipLevel(c, el, clipGainNow(c, currentTime))
       if (active && isPlaying) {
         const target = c.sourceStart + (currentTime - c.start)
         if (Math.abs(el.currentTime - target) > 0.3) el.currentTime = target
         if (el.paused) el.play().catch(() => {})
       } else if (!el.paused) el.pause()
     })
-  }, [currentTime, isPlaying, clips, masterVolume])
+    // the music and SFX ducks, as the export draws them
+    mixer.scheduleDucks(previewMix.traps, currentTime, isPlaying)
+  }, [currentTime, isPlaying, clips, masterGain, previewMix])   // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => () => { audioEls.current.forEach(el => el.pause()) }, [])
+
+  // ---- sound: measure every file once, bake every voice (Fix voice) ----
+  // One watcher for every way media arrives (import, the booth, narration, score, SFX, a project
+  // opening): anything with sound is measured once (analyze-audio-media, cached on disk, so a
+  // reopened project answers at once), and a file whose role is Voice gets its Fix voice baked in
+  // the background. Both run one at a time in main, behind any preview copy being built.
+  const soundJobs = useRef(new Set<string>())
+  useEffect(() => {
+    for (const m of mediaBin) {
+      if (!m.hasAudio || m.offline || m.type === 'image') continue
+      const a = m.audio
+      if (a?.facts === undefined && !a?.error) {
+        const k = `a|${m.path}`
+        if (soundJobs.current.has(k)) continue
+        soundJobs.current.add(k)
+        const path = m.path
+        void window.ipcRenderer.analyzeAudioMedia({ filePath: path, preset: fixOf(m), isVideo: m.type === 'video' }).then(r => {
+          const audio: Partial<MediaAudio> = r?.ok && r.sound
+            ? { facts: r.sound as SoundFacts, error: undefined, measured: {
+                I: r.I, floorDb: r.floorDb, snr: r.snr, speechS: r.activeS, durationS: r.durationS, speechFraction: r.speechFraction,
+                plan: r.plan?.summary, liftDb: r.plan?.staticDb, nrDb: r.plan?.nrDb, effective: r.plan?.effective } }
+            : { facts: null, error: r?.error || 'could not be measured' }
+          setMediaBin(prev => prev.map(x => x.path === path ? { ...x, audio: { ...x.audio, ...audio } } : x))
+        }).catch(e => setMediaBin(prev => prev.map(x => x.path === path ? { ...x, audio: { ...x.audio, facts: null, error: errText(e) } } : x)))
+          .finally(() => soundJobs.current.delete(k))
+        continue
+      }
+      if (!a?.facts) continue
+      // a voice: on the timeline as one, or (not placed yet) one by its own guess or the user's choice
+      const usedAs = clips.filter(c => c.mediaId === m.id).map(c => previewMix.clips.get(c.id)?.role).filter(Boolean)
+      const role = usedAs.length ? (usedAs.includes('voice') ? 'voice' : usedAs[0]) : resolveRole({ role: a.role, trackId: m.type === 'audio' ? 'a1' : 'v1', type: m.type }, a.facts).role
+      const fix = fixOf(m)
+      if (role !== 'voice' || fix === 'off') continue
+      // a video's preview copy carries the picture the preview shows: wait for its proxy
+      if (m.type === 'video' && m.proxyPct !== undefined) continue
+      const picture = m.type === 'video' ? (m.proxyPath || m.path) : null
+      const want = `${fix}|${picture || ''}`
+      if (a.bake?.want === want || a.bakeError?.want === want) continue
+      const k = `b|${m.path}|${want}`
+      if (soundJobs.current.has(k)) continue
+      soundJobs.current.add(k)
+      const path = m.path, name = m.name
+      setMediaBin(prev => prev.map(x => x.path === path ? { ...x, audio: { ...x.audio, baking: { want, pct: 0, line: 'Waiting its turn' } } } : x))
+      void window.ipcRenderer.bakeVoice({ filePath: path, preset: fix, picture }).then(r => {
+        setMediaBin(prev => prev.map(x => x.path !== path ? x : { ...x, audio: { ...x.audio, baking: undefined,
+          ...(r?.error ? { bakeError: { want, error: r.error } }
+            : { bake: { want, path: r.path, previewPath: r.previewPath, segments: r.segments, summary: r.summary, effective: r.effective }, bakeError: undefined }) } }))
+        if (r?.error) notify(`Fix voice could not run on ${name} (${r.error}). It plays and exports as recorded.`, 9000)
+      }).catch(e => setMediaBin(prev => prev.map(x => x.path === path ? { ...x, audio: { ...x.audio, baking: undefined, bakeError: { want, error: errText(e) } } } : x)))
+        .finally(() => soundJobs.current.delete(k))
+    }
+  }, [mediaBin, clips, previewMix])
+
+  /** The Export panel's line: where the export will land, from the background scan of this very timeline. */
+  const exportLandsLine = (): { text: string; busy: boolean } => {
+    if (!previewMix.clips.size) return { text: 'Nothing on the timeline makes a sound yet.', busy: false }
+    if (soundBusy) return { text: 'Measuring the mix once Fix voice has finished…', busy: true }
+    const r = loudScan?.sig === mixSig ? loudScan.r : null
+    if (!r) return { text: 'Measuring where the export will land…', busy: true }
+    if (!r.ok || r.error) return { text: `The mix could not be measured (${r.error || 'unknown error'}).`, busy: false }
+    if (r.silent || r.I == null) return { text: 'The mix is silent.', busy: false }
+    const m = previewMasterDb({ optimize: settings.audio.optimize, target: settings.audio.target, masterVolume, measuredLufs: r.I, measuredTp: r.TP })
+    if (m.plannedLufs == null) return { text: 'The export will be silent.', busy: false }
+    // the ceiling takes any peak above it, so the delivered peak is at most the ceiling
+    const tp = r.TP != null ? Math.min(r.TP + m.gainDb, m.ceilingDbtp) : null
+    const later = r.unbaked ? ` For now: ${r.unbaked} voice${r.unbaked > 1 ? 's are' : ' is'} still to be fixed, which the export does first.` : ''
+    return { text: `Export will land at ${lufsText(m.plannedLufs)} LUFS${tp != null ? `, ${lufsText(tp)} dBTP` : ''}.${later}`, busy: false }
+  }
+  const setAudio = (patch: Partial<AppSettings['audio']>) => setSettings(s => ({ ...s, audio: { ...s.audio, ...patch } }))
+
 
   // Record history snapshots (debounced/coalesced)
   useEffect(() => {
@@ -2212,7 +2399,9 @@ function Editor() {
       const media = mediaBin.find(m => m.id === c.mediaId)
       const src = exportSource(media, W, H, FPS, quality)
       // mediaPath: the original, which a voice's bake and the sound measurements belong to (path may be the proxy)
-      return { ...c, path: src.path, mediaPath: media?.path, hdr: src.hdr, hasVideo: media?.hasVideo, hasAudio: c.trackId === 'v2' ? false : media?.hasAudio, chromaKey: media?.chromaKey }
+      // role and voiceFix: the user's choices for the media (absent = guessed, and Studio), the same ones the preview plays
+      return { ...c, path: src.path, mediaPath: media?.path, hdr: src.hdr, hasVideo: media?.hasVideo, hasAudio: c.trackId === 'v2' ? false : media?.hasAudio, chromaKey: media?.chromaKey,
+        role: media?.audio?.role, voiceFix: fixOf(media) }
     })
 
   // The exporter opens the source once per clip, and on a long cut of 4K HEVC HDR that is a lot of
@@ -2234,6 +2423,26 @@ function Editor() {
     const smooth = pf + 0.5 >= Math.min(FPS, m.fps || FPS)
     return !upscale && smooth ? { path: m.proxyPath, hdr: false } : original
   }
+
+  // ---- where the export will land: the export's own audio graph, measured in the background ----
+  // Debounced after the last edit, never while playing (it decodes every clip), and not while a
+  // file is still being measured or baked (it would decode the same files again, or measure a voice
+  // about to change). The same timeline answers from main's memory.
+  const scanBusy = useRef(false)
+  useEffect(() => {
+    if (!previewMix.clips.size || isPlaying || soundBusy || scanBusy.current || loudScan?.sig === mixSig) return
+    const sig = mixSig
+    const t = window.setTimeout(async () => {
+      scanBusy.current = true
+      try {
+        const r = await window.ipcRenderer.scanTimelineLoudness({ clips: exportClips(w, h, fps, exportQuality), texts, audio: settings.audio, settings: { masterVolume } })
+        setLoudScan({ sig, r })
+      } catch (e) {
+        setLoudScan({ sig, r: { ok: false, error: errText(e), hash: '', I: null, TP: null, plannedLufs: null, targetLufs: null, unbaked: 0, notes: [], seconds: 0 } })
+      } finally { scanBusy.current = false }
+    }, 2000)
+    return () => window.clearTimeout(t)
+  }, [mixSig, isPlaying, soundBusy, loudScan])   // eslint-disable-line react-hooks/exhaustive-deps
 
   /** Reasons an export cannot start, as one line (null when it can). Run before ffmpeg ever sees it. */
   const exportPreflight = async (): Promise<string | null> => {
@@ -2679,6 +2888,9 @@ function Editor() {
       mediaBin: d.mediaBin.map(m => {
         const out: MediaFile = { ...m }
         delete out.proxyPct; delete out.offline; delete out.relPath
+        // measurements and bakes are rebuilt from the files on open; only the choices are the work
+        const audio = userAudio(m.audio)
+        if (audio) out.audio = audio; else delete out.audio
         const rel = dir ? relInside(dir, m.path) : null
         if (rel) out.relPath = rel
         return out
@@ -2769,7 +2981,7 @@ function Editor() {
   const applyProjectData = (data: any, bin?: MediaFile[]): DocFields => {
     const arr = <T,>(v: unknown): T[] => Array.isArray(v) ? v as T[] : []
     const doc: DocFields = {
-      mediaBin: bin ?? arr<MediaFile>(data?.mediaBin),
+      mediaBin: (bin ?? arr<MediaFile>(data?.mediaBin)).map(m => ({ ...m, audio: userAudio(m.audio) })),
       clips: arr<TimelineClip>(data?.clips), texts: arr<TextClip>(data?.texts), markers: arr<Marker>(data?.markers),
       orientation: normOrientation(data?.orientation) ?? orientation,
       resolution: normResolution(data?.resolution) ?? resolution,
@@ -2843,7 +3055,7 @@ function Editor() {
       if (!p) { e.offline = true; missing.push(m.name) }
       else {
         delete e.offline
-        if (pathKey(p) !== pathKey(m.path)) { e.path = p; delete e.proxyPath; delete e.proxyWidth; delete e.proxyHeight; delete e.proxyFps; relinked.add(e.id) }
+        if (pathKey(p) !== pathKey(m.path)) { e.path = p; delete e.proxyPath; delete e.proxyWidth; delete e.proxyHeight; delete e.proxyFps; e.audio = userAudio(e.audio); relinked.add(e.id) }
       }
       bin.push(e)
     }
@@ -2996,7 +3208,7 @@ function Editor() {
     const moves = new Map<string, string>([[media.id, picked]])
     for (const m of mediaBin) if (m.offline && m.id !== media.id) { const hit = there.get(baseName(m.path).toLowerCase()); if (hit) moves.set(m.id, hit) }
     const moved = mediaBin.filter(m => moves.has(m.id))
-      .map(m => ({ ...m, path: moves.get(m.id)!, offline: undefined, proxyPath: undefined, proxyWidth: undefined, proxyHeight: undefined, proxyFps: undefined }))
+      .map(m => ({ ...m, path: moves.get(m.id)!, offline: undefined, proxyPath: undefined, proxyWidth: undefined, proxyHeight: undefined, proxyFps: undefined, audio: userAudio(m.audio) }))
     setMediaBin(prev => prev.map(m => moved.find(x => x.id === m.id) ?? m))
     notify(`Relinked ${moved.length} file${moved.length > 1 ? 's' : ''}. Save to keep the new location${moved.length > 1 ? 's' : ''}.`)
     void backfillMedia(moved, 'all')   // possibly a different file: its HDR flag, frame rate and preview copy are found afresh
@@ -3515,9 +3727,9 @@ function Editor() {
                 const op = currentTime < c.start ? 0 : fadeFactor(c, currentTime)
                 return media.type === 'image'
                   ? <img key={c.id} className="layer" style={{ opacity: op, filter: media.chromaKey ? `url(#${keyFilterFor(media.chromaKey)})` : undefined }} src={fileUrl(media.path)} alt="" />
-                  : <video key={c.id} ref={el => { if (el) videoEls.current.set(c.id, el); else videoEls.current.delete(c.id) }} className="layer"
+                  : <video key={c.id} ref={el => { if (el) videoEls.current.set(c.id, el); else { videoEls.current.delete(c.id); mixer.detach(c.id) } }} className="layer"
                       muted={c.trackId === 'v2'}
-                      style={{ opacity: op, filter: media.chromaKey ? `url(#${keyFilterFor(media.chromaKey)})` : undefined }} src={fileUrl(media.proxyPath || media.path)} />
+                      style={{ opacity: op, filter: media.chromaKey ? `url(#${keyFilterFor(media.chromaKey)})` : undefined }} src={fileUrl(previewSrc(c, media))} />
               })}
               {activeTexts.map(t => t.caption ? (
                 <CaptionLayer key={t.id} t={t} time={currentTime} groupBase={texts.indexOf(t)} outW={w} outH={h} stageH={stageH} selected={selectedId === t.id && !isPlaying} onSelect={() => { if (!isPlaying) setSelectedId(t.id) }} />
@@ -3600,7 +3812,30 @@ function Editor() {
                     </select>
                   </div>
                 )}
-                <div className="field chk"><input type="checkbox" checked={settings.audio.duck} id="duck" onChange={e => setSettings(s => ({ ...s, audio: { ...s.audio, duck: e.target.checked } }))} /><label htmlFor="duck" style={{ cursor: 'pointer', marginBottom: 0 }}>Duck music under speech</label></div>
+                {(() => {
+                  const line = exportLandsLine()
+                  return (
+                    <div className="field sound-readout">
+                      <p className={`land-line ${line.busy ? 'busy' : ''}`}>{line.text}</p>
+                      <LufsMeter playing={isPlaying} mark={previewMix.clips.size ? masterPlan.plannedLufs : null} />
+                    </div>
+                  )
+                })()}
+                <div className="field chk"><input type="checkbox" checked={settings.audio.duck} id="duck" onChange={e => setAudio({ duck: e.target.checked })} /><label htmlFor="duck" style={{ cursor: 'pointer', marginBottom: 0 }}>Duck music under voice</label></div>
+                <details className="adv-mix">
+                  <summary>Advanced mix</summary>
+                  {/* each is a gain the preview and the export apply identically (electron/audiomix.ts mixTuning) */}
+                  <div className="field"><label htmlFor="duck-db">Music dips under the voice by {tune.duckDb} dB</label>
+                    <input id="duck-db" type="range" min="0" max="20" step="1" value={tune.duckDb} disabled={!settings.audio.duck} onChange={e => setAudio({ duckDb: parseFloat(e.target.value) })} style={{ width: '100%', accentColor: 'var(--accent-primary)' }} />
+                  </div>
+                  <div className="field"><label htmlFor="sfx-duck-db">Sound effects dip by {tune.sfxDuckDb} dB</label>
+                    <input id="sfx-duck-db" type="range" min="0" max="12" step="1" value={tune.sfxDuckDb} disabled={!settings.audio.duck} onChange={e => setAudio({ sfxDuckDb: parseFloat(e.target.value) })} style={{ width: '100%', accentColor: 'var(--accent-primary)' }} />
+                  </div>
+                  <div className="field"><label htmlFor="bed-lu">Music sits {tune.bedLu} LU under the voice</label>
+                    <input id="bed-lu" type="range" min="0" max="15" step="1" value={tune.bedLu} onChange={e => setAudio({ bedLu: parseFloat(e.target.value) })} style={{ width: '100%', accentColor: 'var(--accent-primary)' }} />
+                  </div>
+                  <p className="hint">The defaults (10 dB, 6 dB, 5 LU) keep every word clear over a bed. <button className="link-btn" onClick={() => setAudio({ duckDb: undefined, sfxDuckDb: undefined, bedLu: undefined })} disabled={settings.audio.duckDb == null && settings.audio.sfxDuckDb == null && settings.audio.bedLu == null}>Back to the defaults</button></p>
+                </details>
                 <div className="field"><label>Save To</label><div className="path-box" onClick={pickExportPath}><IconFolder /><span>{customExportPath ? customExportPath.split(/[\\/]/).pop() : 'Choose on export…'}</span></div></div>
                 <div className={`progress-line ${exportProgress !== null ? 'show' : ''}`}><div className="fill" style={{ width: `${exportProgress || 0}%` }} /></div>
                 <button className="action-btn export" onClick={handleExport} disabled={(clips.length === 0 && texts.length === 0) || exportProgress !== null}><IconExport /> <span>{exportProgress !== null ? `Rendering ${Math.round(exportProgress)}%${eta && eta > 0 ? ` • ${fmtEta(eta)} left` : ''}` : 'Export Video'}</span></button>
