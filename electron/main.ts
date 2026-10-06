@@ -49,7 +49,10 @@ if (process.env.VH_USER_DATA) app.setPath('userData', process.env.VH_USER_DATA)
 
 // Must match build.appId so Windows ties the running window to the installed shortcut - 
 // without it the taskbar shows a generic Electron icon and pinning behaves oddly.
-if (process.platform === 'win32') app.setAppUserModelId('com.randotechnerd.vidhelm')
+// A copy run from source (npm run dev, the bare electron.exe) gets its own ID: sharing the installed
+// one let a finished-export notification file an "Electron" Start shortcut under VidHelm's name,
+// which Windows Search then offered as the best match for "VidHelm".
+if (process.platform === 'win32') app.setAppUserModelId(app.isPackaged ? 'com.randotechnerd.vidhelm' : 'com.randotechnerd.vidhelm.dev')
 
 const getBinaryPath = () => {
   if (app.isPackaged) {
