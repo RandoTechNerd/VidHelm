@@ -1648,7 +1648,7 @@ textarea.duration-input { height: auto; padding: 7px 9px; resize: vertical; line
 .sel-thumb.icon.text { color: var(--clip-text); }
 .sel-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .sel-meta b { font-size: 12.5px; font-weight: 600; color: var(--text-main); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sel-meta .mono { font-family: ui-monospace, Consolas, monospace; font-size: 11px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.sel-meta .mono { font-family: var(--font-mono); font-size: 11px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
 .prop-group { border-top: 1px solid var(--border); }
 .prop-group-head { width: 100%; display: flex; align-items: center; gap: 6px; padding: 9px 0 7px; background: none; border: none; cursor: pointer; color: var(--text-dim); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.07em; text-align: left; }
 .prop-group-head:hover { color: var(--text-main); }
@@ -1666,8 +1666,6 @@ label .prop-val { margin-left: auto; }
 .num-suffix { margin-left: 6px; font-size: 11.5px; color: var(--text-dim); }
 .color-swatch { width: 28px; height: 24px; padding: 1px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-input); cursor: pointer; }
 .color-swatch:disabled { opacity: 0.35; cursor: default; }
-.inline-chk { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--text-main); cursor: pointer; }
-.inline-chk input { accent-color: var(--accent-primary); width: 14px; height: 14px; }
 .prop-ctl input[type="range"]:disabled { opacity: 0.4; }
 .anchor-grid { display: grid; grid-template-columns: repeat(3, 26px); grid-template-rows: repeat(3, 18px); gap: 3px; padding: 4px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-input); }
 .anchor-grid button { display: flex; align-items: center; justify-content: center; border: none; border-radius: 3px; background: none; cursor: pointer; padding: 0; }
@@ -1677,7 +1675,7 @@ label .prop-val { margin-left: auto; }
 /* Sound: role chips, the Fix voice switch, the line the bake leaves */
 .sound-controls { display: flex; flex-direction: column; gap: 6px; }
 .chips { gap: 4px; flex-wrap: wrap; }
-.chip { height: 26px; padding: 0 10px; border: 1px solid var(--border); border-radius: 999px; background: transparent; color: var(--text-muted); font-size: 12px; font-weight: 500; cursor: pointer; transition: border-color 0.12s, background 0.12s, color 0.12s; }
+.chip { height: 26px; padding: 0 10px; border: 1px solid var(--border); border-radius: 999px; background: transparent; color: var(--text-muted); font-size: 12px; font-weight: 500; cursor: pointer; transition: border-color var(--dur-1) var(--ease-out), background var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out); }
 .chip:hover { border-color: var(--border-strong); color: var(--text-main); }
 .chip.on { background: var(--accent-soft); border-color: var(--accent-primary); color: var(--text-main); }
 .seg { display: inline-flex; gap: 2px; padding: 2px; border-radius: var(--radius-sm); background: rgb(var(--ink) / 0.05); border: 1px solid var(--border-subtle); }
