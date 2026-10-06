@@ -1,5 +1,5 @@
-/* The export as a JOB, not a filtergraph: how far along it is, when it will be done, where it lands
- * and what it must never overwrite. Used by electron/main.ts (export-video) and the Export panel in
+/* The export as a JOB, not a filtergraph: how far along it is, when it will be done, where it lands,
+ * what it must never overwrite and which sound plan the landed file is judged by. Used by electron/main.ts (export-video) and the Export panel in
  * src/App.tsx, so it does no I/O and needs no Node: paths are plain strings with either separator.
  * Tests: npm run test:exportjob */
 
@@ -70,6 +70,29 @@ export function nextVersion(target: string, exists: (p: string) => boolean): str
     if (!exists(p)) return p
   }
   return `${dir}${base}_${Date.now()}${ext}`
+}
+
+/**
+ * What each export's sound was planned to be, by the file the render LANDED in, so Watch & Verify
+ * judges a file against the mix it really holds. Filed when the render started, a cancelled or failed
+ * re-export left its new plan on the old file it never touched, and that file then failed its
+ * loudness check against a mix it does not contain. `key` gives a path its one spelling (main
+ * resolves it and lower-cases it, as Windows compares names).
+ */
+export class LandedPlans<P> {
+  private byFile = new Map<string, P>()
+  private key: (file: string) => string
+  private cap: number
+  constructor(key: (file: string) => string = f => f, cap = 50) { this.key = key; this.cap = cap }
+  /** The render is in place as `file`: this plan is that file's now. */
+  land(file: string, plan: P) {
+    const k = this.key(file)
+    // filed again counts as newest, so the cap forgets the oldest export and never the one just made
+    this.byFile.delete(k)
+    this.byFile.set(k, plan)
+    while (this.byFile.size > this.cap) this.byFile.delete(this.byFile.keys().next().value as string)
+  }
+  get(file: string): P | null { return this.byFile.get(this.key(file)) ?? null }
 }
 
 /** The default file name: the project's name and the frame shape, without characters Windows refuses in a file name. */

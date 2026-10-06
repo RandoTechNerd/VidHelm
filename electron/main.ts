@@ -26,7 +26,7 @@ import { bridgeRefusal, commandForEditor, replyAlias, replyKey, type PendingRepl
 import { isAppNavigation, externalLink } from './navguard'
 import { pathToFileURL } from 'node:url'
 import { PeakBucketer, peakDecodeArgs, PEAK_RATE, PEAK_VERSION } from './peaks'
-import { progressPct, partialPath, nextVersion, exportFileName } from './exportjob'
+import { progressPct, partialPath, nextVersion, exportFileName, LandedPlans } from './exportjob'
 import { CHAIN_VERSION, decide, decideChannel, decisionsJson, summaryLine, speechSegments, analysisSummary, bedDb, sfxDb, type Preset, type Provenance } from './audiochain'
 import { analyzeMedia, bakeVoice, cachedBake, probeMedia, pruneVoiceCache, readFfmpegVersion, sweepVoiceTemp, voiceCacheKey, type BakeResult } from './voicebake'
 import { prepareExportAudio, scanTimelineLoudness, soundHead, storeSound, type ExportAudio, type MixEnv } from './mixrender'
@@ -1129,7 +1129,7 @@ ipcMain.handle('quality-check', async (_event, filePath: string) => {
   try { const head = fs.readFileSync(filePath).slice(0, 200000); faststart = head.indexOf('moov') >= 0 && head.indexOf('moov') < head.indexOf('mdat') } catch {}
   checks.push({ label: 'Web fast-start', status: faststart ? 'pass' : 'warn', detail: faststart ? 'moov at front' : 'not optimized' })
   // loudness: against the target this export was made for, and what it was planned to land at
-  const plan = exportPlans.get(path.resolve(filePath).toLowerCase()) || null
+  const plan = exportPlans.get(filePath)
   checks.push(...loudnessChecks({ I: lu.I, TP: lu.TP, codec: a?.codec_name }, plan))
   const mixLine = soundCheck(plan)
   if (mixLine) checks.push(mixLine)
@@ -2944,19 +2944,18 @@ ipcMain.handle('cancel-export', async () => {
  * What each export's sound was planned to be, by output file, so Watch & Verify can say "planned
  * -14.0, measured -14.0" and judge the loudness against the target that was asked for (a podcast
  * export at -16 is not a failed YouTube export). Only this run's exports; a file from elsewhere is
- * judged against the default target.
+ * judged against the default target. Filed once the render is in place (see LandedPlans).
  */
 interface ExportPlan { targetLufs: number | null; plannedLufs: number | null; ceilingDbtp: number; gainDb: number; masterPasses: number; notes: string[]; roles: Record<string, number>; baked: number; at: number }
-const exportPlans = new Map<string, ExportPlan>()
-const rememberExportPlan = (outKey: string, s: ExportAudio) => {
+const exportPlans = new LandedPlans<ExportPlan>(f => path.resolve(f).toLowerCase())
+const exportPlanOf = (s: ExportAudio): ExportPlan => {
   const m = s.master, roles: Record<string, number> = {}
   for (const r of s.mix.roles) roles[r.role] = (roles[r.role] || 0) + 1
-  exportPlans.set(outKey, {
+  console.log(`[export sound] ${Object.entries(roles).map(([k, v]) => `${v} ${k}`).join(', ') || 'silent'}; ${s.mix.baked} baked; pre ${s.pre.I.toFixed(2)} LUFS / ${s.pre.TP ?? '?'} dBTP; master ${m.gainDb.toFixed(2)} dB -> ${m.plannedLufs?.toFixed(2) ?? '-'} LUFS (${m.passes} check passes) in ${s.seconds.toFixed(1)} s`)
+  return {
     targetLufs: m.targetLufs, plannedLufs: m.plannedLufs, ceilingDbtp: m.ceilingDbtp, gainDb: +m.gainDb.toFixed(2),
     masterPasses: m.passes, notes: s.mix.notes, roles, baked: s.mix.baked, at: Date.now(),
-  })
-  if (exportPlans.size > 50) exportPlans.delete(exportPlans.keys().next().value!)
-  console.log(`[export sound] ${Object.entries(roles).map(([k, v]) => `${v} ${k}`).join(', ') || 'silent'}; ${s.mix.baked} baked; pre ${s.pre.I.toFixed(2)} LUFS / ${s.pre.TP ?? '?'} dBTP; master ${m.gainDb.toFixed(2)} dB -> ${m.plannedLufs?.toFixed(2) ?? '-'} LUFS (${m.passes} check passes) in ${s.seconds.toFixed(1)} s`)
+  }
 }
 // A failure must say WHY, in words, with the end of ffmpeg's log after it: the renderer shows the
 // message in a toast (it used to just make the progress bar disappear).
@@ -3008,7 +3007,7 @@ ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outp
     const msg = String((e as Error)?.message || e)
     throw exportError(`the sound could not be mixed (${friendlyExportError(msg)})`, stderrTail(msg))
   }
-  rememberExportPlan(outKey, sound)
+  const soundPlan = exportPlanOf(sound)
   // Text files, caption scripts and the graph for this export only, removed when it ends either way
   // (they used to pile up in one shared temp folder).
   let workDir = ''
@@ -3203,14 +3202,13 @@ ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outp
             final = nextVersion(outputPath, p => fs.existsSync(p))
             fs.renameSync(partial, final)
             warnings.push(`${path.basename(outputPath)} is open in another program, so this export was saved as ${path.basename(final)}`)
-            // the quality check looks its sound plan up by the file it is given, which is this one
-            const plan = exportPlans.get(outKey)
-            if (plan) exportPlans.set(path.resolve(final).toLowerCase(), plan)
           } catch (e) {
             reject(exportError(`the finished video could not be moved into place; it is at ${partial}`, String((e as Error)?.message || e)))
             return
           }
         }
+        // the quality check looks the plan up by the file it is given: the one this render landed as
+        exportPlans.land(final, soundPlan)
         announce(final)
         resolve({ success: true, path: final, ...(warnings.length ? { warnings } : {}) })
       })

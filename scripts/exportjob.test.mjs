@@ -1,6 +1,7 @@
 // Tests for the export job decisions (electron/exportjob.ts): progress, time left, the partial file,
-// versioned names and the default file name. Run with: npm run test:exportjob
+// versioned names, the default file name and the sound plans. Run with: npm run test:exportjob
 import { build } from 'esbuild'
+import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -52,6 +53,31 @@ console.log('files')
   ok(J.exportFileName('My Trip', 'portrait') === 'My Trip_portrait.mp4', 'project name and orientation')
   ok(J.exportFileName(null, 'landscape') === 'video_landscape.mp4' && J.exportFileName('  ', '') === 'video_landscape.mp4', 'no project gives video_landscape.mp4')
   ok(J.exportFileName('a:b/c?d*. ', 'square') === 'a b c d_square.mp4', 'characters Windows refuses are replaced, no trailing dot')
+}
+
+console.log('sound plans')
+{
+  // main files a plan only in the render's 'end', after the rename; a cancel or an error never calls land()
+  const plans = new J.LandedPlans((f) => f.replace(/\//g, '\\').toLowerCase())
+  const first = { plannedLufs: -14, roles: { voice: 1 } }
+  plans.land('C:\\Videos\\talk_landscape.mp4', first)
+  ok(plans.get('c:/videos/TALK_landscape.mp4') === first, 'a landed export is found by any spelling of its path')
+  // re-export with music and the master at -6 dB, then Cancel: main never reaches land(), nothing is filed
+  const second = { plannedLufs: -20, roles: { voice: 1, music: 1 } }
+  ok(plans.get('C:\\Videos\\talk_landscape.mp4') === first, 'a cancelled or failed re-export leaves the untouched file judged by its own plan')
+  // the old file is open in a player, so the render lands as _v2: the plan goes with the render
+  plans.land('C:\\Videos\\talk_landscape_v2.mp4', second)
+  ok(plans.get('C:\\Videos\\talk_landscape_v2.mp4') === second && plans.get('C:\\Videos\\talk_landscape.mp4') === first, 'a render saved under the next name files its plan there, and the original keeps its own')
+  ok(plans.get('C:\\Videos\\never.mp4') === null, 'a file this run never exported has no plan')
+  const small = new J.LandedPlans(undefined, 2)
+  small.land('a', 1); small.land('b', 2); small.land('a', 3); small.land('c', 4)
+  ok(small.get('a') === 3 && small.get('b') === null && small.get('c') === 4, 'past the cap the oldest export is forgotten, never one just exported again')
+  // and main files it only there: inside the render's 'end', after the rename has landed
+  const main = fs.readFileSync(path.join(here, '..', 'electron', 'main.ts'), 'utf8')
+  const end = main.search(/\.on\('end', \(\) => \{\s*setBar\(-1\)\s*let final = outputPath/), error = main.indexOf(".on('error'", end)
+  const lands = [...main.matchAll(/exportPlans\.land\(/g)].map((m) => m.index)
+  ok(end > 0 && lands.length === 1 && lands[0] > main.indexOf('fs.renameSync(partial', end) && lands[0] < error,
+    'export-video files the plan once, in its end handler after the rename (never before the render, never on cancel)')
 }
 
 console.log(`\n${fail === 0 ? 'ALL CHECKS PASSED' : 'FAILURES'} - ${pass} passed, ${fail} failed\n`)
