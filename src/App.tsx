@@ -61,8 +61,9 @@ interface MediaAudio {
   /** the measurement in numbers and the Fix voice plan before its bake: what get_state and analyze_audio report */
   measured?: { I?: number; floorDb?: number; snr?: number; speechS?: number; durationS?: number; speechFraction?: number; plan?: string; liftDb?: number; nrDb?: number; effective?: Preset }
   error?: string
-  /** the bake for `want` (preset|picture): path is the FLAC the export reads, previewPath what the preview plays */
-  bake?: { want: string; path?: string; previewPath?: string; segments?: [number, number][]; summary?: string; effective?: Preset }
+  /** the bake for `want` (preset|picture): path is the FLAC the export reads, previewPath what the preview plays
+   *  (a video's copy of its picture with the bake, absent until one is made for it; previewError when it could not be) */
+  bake?: { want: string; path?: string; previewPath?: string; previewError?: string; segments?: [number, number][]; summary?: string; effective?: Preset }
   baking?: { want: string; pct: number; line: string }
   bakeError?: { want: string; error: string }
 }
@@ -79,6 +80,10 @@ const bakeFor = (m?: MediaFile) => {
   const b = m?.audio?.bake
   return b && b.want.split('|')[0] === fixOf(m) ? b : undefined
 }
+/** proxyNote of footage whose preview copy could not be built (it is not coming) */
+const PROXY_FAILED = 'preview unavailable'
+/** A proxy being built or still to come (needed, not here, not given up on): until it lands the original may not even play in the preview. */
+const proxyComing = (m: MediaFile) => m.proxyPct !== undefined || (!m.proxyPath && !!m.proxyNote && m.proxyNote !== PROXY_FAILED)
 
 interface TimelineClip {
   id: string
@@ -1093,20 +1098,25 @@ function Editor() {
       const role = usedAs.length ? (usedAs.includes('voice') ? 'voice' : usedAs[0]) : resolveRole({ role: a.role, trackId: m.type === 'audio' ? 'a1' : 'v1', type: m.type }, a.facts).role
       const fix = fixOf(m)
       if (role !== 'voice' || fix === 'off') continue
-      // a video's preview copy carries the picture the preview shows: wait for its proxy
-      if (m.type === 'video' && m.proxyPct !== undefined) continue
-      const picture = m.type === 'video' ? (m.proxyPath || m.path) : null
+      // A video's preview copy carries the picture the preview shows, and it is one more file on
+      // disk: it is made only for footage heard on the timeline (a voice still in the bin bakes its
+      // sound alone, and the copy follows once it is placed), and only from the picture the preview
+      // will play, never the HEVC original of a clip whose proxy is still coming. The sound does not
+      // wait for the picture: the copy is made on its own when the proxy lands.
+      const picture = m.type === 'video' && usedAs.length && !proxyComing(m) ? (m.proxyPath || m.path) : null
       const want = `${fix}|${picture || ''}`
       if (a.bake?.want === want || a.bakeError?.want === want) continue
       const k = `b|${m.path}|${want}`
       if (soundJobs.current.has(k)) continue
       soundJobs.current.add(k)
       const path = m.path, name = m.name
+      // a video asked without a picture is told the FLAC, which its <video> must never be given
+      const previewOf = (r: VoiceBakeResult) => m.type === 'video' && !picture ? undefined : r.previewPath
       setMediaBin(prev => prev.map(x => x.path === path ? { ...x, audio: { ...x.audio, baking: { want, pct: 0, line: 'Waiting its turn' } } } : x))
       void window.ipcRenderer.bakeVoice({ filePath: path, preset: fix, picture }).then(r => {
         setMediaBin(prev => prev.map(x => x.path !== path ? x : { ...x, audio: { ...x.audio, baking: undefined,
           ...(r?.error ? { bakeError: { want, error: r.error } }
-            : { bake: { want, path: r.path, previewPath: r.previewPath, segments: r.segments, summary: r.summary, effective: r.effective }, bakeError: undefined }) } }))
+            : { bake: { want, path: r.path, previewPath: previewOf(r), previewError: r.previewError, segments: r.segments, summary: r.summary, effective: r.effective }, bakeError: undefined }) } }))
         if (r?.error) notify(`Fix voice could not run on ${name} (${r.error}). It plays and exports as recorded.`, 9000)
       }).catch(e => setMediaBin(prev => prev.map(x => x.path === path ? { ...x, audio: { ...x.audio, baking: undefined, bakeError: { want, error: errText(e) } } } : x)))
         .finally(() => soundJobs.current.delete(k))
@@ -1143,7 +1153,9 @@ function Editor() {
     const a = m.audio, fix = fixOf(m), b = bakeFor(m)
     const baking = a?.baking && a.baking.want.split('|')[0] === fix ? a.baking : null
     const failed = a?.bakeError && a.bakeError.want.split('|')[0] === fix ? a.bakeError : null
-    const fixStatus = fix === 'off' ? 'off' : baking ? `baking ${baking.pct}%` : failed ? `failed: ${failed.error}` : b ? (b.path ? 'baked' : 'left as is') : a?.facts ? 'queued' : 'measuring'
+    const noCopy = m.type === 'video' && !!b?.path && !b.previewPath && !!b.previewError
+    const fixStatus = fix === 'off' ? 'off' : baking ? `baking ${baking.pct}%` : failed ? `failed: ${failed.error}`
+      : b ? (noCopy ? 'baked (the export has it; no preview copy could be made, so the preview plays it lifted)' : b.path ? 'baked' : 'left as is') : a?.facts ? 'queued' : 'measuring'
     return {
       role: p.role, guessed: p.guessed, why: p.why, levelDb: +p.levelDb.toFixed(1),
       ...(p.role === 'voice' ? { voiceFix: fix, fixStatus, summary: b?.summary ?? a?.measured?.plan } : {}),
@@ -1344,14 +1356,21 @@ function Editor() {
   // copy only when it is as big and as smooth as the export (exportSource), so the copy's real size
   // and frame rate are kept with it. Cached in userData, so it happens once per file.
   const ensureProxies = useCallback(async (items: MediaFile[], probes: Map<string, Probe>) => {
-    for (const m of items) {
-      if (m.type !== 'video') continue
-      const info = probes.get(m.id)
-      if (!info) continue
-      const plan = planProxy({ ...info, hasVideo: true })
-      if (!plan.needed) continue
-      setMediaBin(prev => prev.map(x => x.id === m.id ? { ...x, proxyPct: 0, proxyNote: plan.reason } : x))
+    const todo = items.flatMap(m => {
+      const info = m.type === 'video' ? probes.get(m.id) : undefined
+      const plan = info && planProxy({ ...info, hasVideo: true })
+      return info && plan?.needed ? [{ m, info, plan }] : []
+    })
+    if (!todo.length) return
+    // Every copy to come is marked before the first is built, not each as its turn starts: whatever
+    // waits for a copy (the filmstrip, Fix voice's preview copy) would otherwise take the third
+    // clip's HEVC original while the first clip's copy was still building.
+    const notes = new Map(todo.map(t => [t.m.id, t.plan.reason]))
+    setMediaBin(prev => prev.map(x => notes.has(x.id) ? { ...x, proxyPct: 0, proxyNote: notes.get(x.id) } : x))
+    for (const { m, info, plan } of todo) {
+      // one that cannot even be asked for must not leave the rest marked as building for ever
       const r = await window.ipcRenderer.makeProxy({ filePath: m.path, info: { ...info, hasVideo: true }, maxWidth: perf.proxyMaxWidth, maxFps: perf.proxyMaxFps })
+        .catch((e: unknown) => ({ error: errText(e) } as Awaited<ReturnType<typeof window.ipcRenderer.makeProxy>>))
       if (r.path) {
         // width/height/fps arrive from newer main processes; without them the copy is preview-only
         const dims = r as { width?: number; height?: number; fps?: number }
@@ -1359,7 +1378,7 @@ function Editor() {
         setMediaBin(prev => prev.map(x => x.id === m.id ? { ...x, proxyPath: r.path, proxyWidth: num(dims.width), proxyHeight: num(dims.height), proxyFps: num(dims.fps), proxyPct: undefined } : x))
         if (!r.cached) notify(`${m.name}: ${plan.reason}, so VidHelm made a preview copy to edit with. High quality exports read the original; Standard ones use the copy only when it already matches the export's size and frame rate.`, 9000)
       } else {
-        setMediaBin(prev => prev.map(x => x.id === m.id ? { ...x, proxyPath: undefined, proxyWidth: undefined, proxyHeight: undefined, proxyFps: undefined, proxyPct: undefined, proxyNote: 'preview unavailable' } : x))
+        setMediaBin(prev => prev.map(x => x.id === m.id ? { ...x, proxyPath: undefined, proxyWidth: undefined, proxyHeight: undefined, proxyFps: undefined, proxyPct: undefined, proxyNote: PROXY_FAILED } : x))
         notify(`${m.name}: ${plan.reason}, and the preview copy could not be made (${r.error || 'unknown error'}). Editing still works, the preview will stay blank.`, 11000)
       }
     }
@@ -3669,6 +3688,9 @@ function Editor() {
       : fix === 'off' ? { text: 'Fix voice is off: it plays as recorded.' }
       : baking ? { text: `Fixing the voice: ${baking.line.toLowerCase()} (${baking.pct}%)`, pct: baking.pct, tone: 'busy' }
       : failed ? { text: `Fix voice could not run (${failed.error}), so it plays as recorded.`, tone: 'warn' }
+      // the export has the bake either way; say so when the preview cannot play it (no picture copy)
+      : b && m.type === 'video' && b.path && !b.previewPath && b.previewError
+        ? { text: `${b.summary || 'Fixed.'} The preview copy could not be made, so the preview plays the recording lifted to the same level; the export has the fixed voice.`, tone: 'warn' }
       : b ? { text: b.summary || 'Fixed.' }
       : { text: a.measured?.plan ? `Planned: ${a.measured.plan.charAt(0).toLowerCase()}${a.measured.plan.slice(1)}. Fixing it shortly.` : 'Waiting to be fixed…', tone: 'busy' }
     return {

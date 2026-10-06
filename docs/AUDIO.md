@@ -45,7 +45,7 @@ The chain, per file, at 48 kHz float stereo:
 6. **Compressor** 2:1 with its threshold AT the working level (-16 dB, knee 4, attack 80, release 1000, RMS), so it only shapes the voice and never lifts the room.
 7. **Make-up** measured, then the **limiter** at -3.3 dBFS, 4x oversampled (`aresample=192000,alimiter=...:level=disabled:latency=1,aresample=48000`). Measured again; up to 3 passes until the voice is at -16.0 LUFS.
 
-The bake is a 24-bit FLAC in `userData/voice`, keyed on the file's path, size and time, the preset, the chain version and the ffmpeg build. Sample 0 is the media's own time zero, so `-ss sourceStart` lines it up with the picture exactly (lag 0 ms and length change 0 on every corpus file). A video also gets a re-muxed preview copy (its picture, untouched, beside 256 kbps AAC of the bake) so the preview plays one file on one clock.
+The bake is a 24-bit FLAC in `userData/voice`, keyed on the file's path, size and time, the preset, the chain version and the ffmpeg build. Sample 0 is the media's own time zero, so `-ss sourceStart` lines it up with the picture exactly (lag 0 ms and length change 0 on every corpus file). A video on the timeline also gets a preview copy (its picture beside 256 kbps AAC of the bake) so the preview plays one file on one clock. The picture is the proxy when the footage needs one (the copy waits for it), copied as it is when that is cheap (a proxy, or an original up to 256 MB), else made small (1280 on the long side, H.264): copied whole, a folder of 4K phone clips came back as gigabytes each. A picture MP4 cannot carry as it is (VP8 from Chrome's recorder, Theora) is made small too. When no copy can be made the preview plays the recording lifted to the same level and the Inspector says so; the export has the bake either way. A voice still in the bin bakes its sound only.
 
 What it says under the clip comes from the bake: "Lifted 18 dB, cleaned 16 dB of room noise", "Levelled 6 sections, up to +18 dB", "Tamed 6 knocks", "No clear speech, left as is".
 
@@ -113,7 +113,7 @@ What still differs, by construction: the bus limiters and the master's ceiling o
 
 ## Where things live
 
-- `userData/voice/<key>.flac`, `<key>.json`, `<key>.mp4`: a bake, its decisions, a video's preview copy.
+- `userData/voice/<key>.flac`, `<key>.json`, `<key>.<picture>.mp4`: a bake, its decisions, a video's preview copy. The folder is held under 2 GB after each bake: least recently used bakes go first (they are made again if asked for), never one asked for since the app started.
 - `userData/voice/<name>-sound-<hash>.json`: a file's measured sound as the mix reads it.
 - `userData/voice/<name>-analysis-<hash>.json`: the import's measurement (what the Inspector and `analyze_audio` report).
 - The corpus test, opt-in: `VIDHELM_AUDIO_CORPUS=<dir> npm run test:audiochain:corpus`.

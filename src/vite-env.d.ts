@@ -47,8 +47,9 @@ interface MediaSoundFacts {
 }
 /**
  * A baked voice (bake-voice): path is the FLAC the export reads (sample 0 = the media's time zero, so
- * -ss sourceStart lines up with the picture), previewPath what the preview plays (the re-muxed copy
- * for video, the FLAC for audio). No path: Fix voice is off or the recording was left as is.
+ * -ss sourceStart lines up with the picture), previewPath what the preview plays: asked with a
+ * picture, that picture's copy beside the bake, absent when it could not be made (previewError says
+ * why); asked without one, the FLAC. No path: Fix voice is off or the recording was left as is.
  */
 interface VoiceBakeResult {
   ok?: boolean; error?: string; cached?: boolean; key?: string

@@ -20,7 +20,7 @@ import { bridgeTimeoutMs, QUICK_MS } from '../agent/timeouts.mjs'
 import { stillInput, friendlyExportError, stderrTail, UNREADABLE_STILL } from './exportgraph'
 import { bridgeRefusal, commandForEditor, replyAlias, replyKey, type PendingReply } from './bridgeguard'
 import { CHAIN_VERSION, decide, decideChannel, decisionsJson, summaryLine, speechSegments, analysisSummary, bedDb, sfxDb, type Preset, type Provenance } from './audiochain'
-import { analyzeMedia, bakeVoice, cachedBake, probeMedia, readFfmpegVersion, sweepVoiceTemp, voiceCacheKey, type BakeResult } from './voicebake'
+import { analyzeMedia, bakeVoice, cachedBake, probeMedia, pruneVoiceCache, readFfmpegVersion, sweepVoiceTemp, voiceCacheKey, type BakeResult } from './voicebake'
 import { prepareExportAudio, scanTimelineLoudness, soundHead, storeSound, type ExportAudio, type MixEnv } from './mixrender'
 import { loudnessChecks, mixTuning, parseEbur128, provenanceFromPath, resolveRole, soundCheck, type ExportAudioClip, type MixTuning } from './audiomix'
 import path from 'node:path'
@@ -2572,6 +2572,8 @@ ipcMain.handle('analyze-audio-media', async (_event, { filePath, preset = 'studi
 const voiceBakes = new Map<string, Promise<BakeResult>>()
 /** Bakes actually running, by the sound they make (cache key without the picture). */
 const soundBaking = new Map<string, Promise<BakeResult>>()
+/** Every bake asked for since the app started: a project open now plays or exports it, so the cache's size cap never takes it. */
+const voiceInUse = new Set<string>()
 let bakeTail: Promise<unknown> = Promise.resolve()
 /**
  * Bake (or return the cached bake). `urgent` is an export waiting on it: it starts now instead of
@@ -2581,12 +2583,13 @@ async function runVoiceBake(filePath: string, preset: Preset, picture: string | 
   if (!filePath || !fs.existsSync(filePath)) return { error: 'file not found' }
   if (!['off', 'light', 'studio'].includes(preset)) return { error: `unknown Fix voice preset "${preset}"` }
   const cacheDir = voiceDir()
-  if (!voiceSwept) { voiceSwept = true; sweepVoiceTemp(cacheDir) }
   const opts = { ffmpeg: paths.ffmpeg, ffprobe: paths.ffprobe, cacheDir, filePath, preset, ffmpegVersion: await ffmpegVersion(), picture: picture && fs.existsSync(picture) ? picture : null }
-  const hit = cachedBake(opts)
-  if (hit) return hit
   const st = fs.statSync(filePath)
   const sound = voiceCacheKey(filePath, st.size, st.mtimeMs, preset, opts.ffmpegVersion)
+  voiceInUse.add(sound)
+  if (!voiceSwept) { voiceSwept = true; sweepVoiceTemp(cacheDir) }
+  const hit = cachedBake(opts)
+  if (hit) return hit
   const id = `${sound}|${opts.picture || ''}`
   const running = voiceBakes.get(id)
   if (running) return await running
@@ -2600,7 +2603,12 @@ async function runVoiceBake(filePath: string, preset: Preset, picture: string | 
     while (soundBaking.has(sound)) await soundBaking.get(sound)!.catch(() => undefined)
     const p = bakeVoice({ ...opts, onProgress: o.send, onChild: trackVoiceChild })
     soundBaking.set(sound, p)
-    try { return await p } finally { if (soundBaking.get(sound) === p) soundBaking.delete(sound) }
+    try { return await p } finally {
+      if (soundBaking.get(sound) === p) soundBaking.delete(sound)
+      // Every new FLAC or preview copy grows userData/voice: hold it under its cap. Only after a bake,
+      // never at start-up, when the project being opened has not asked for its bakes yet.
+      try { pruneVoiceCache(cacheDir, { keep: voiceInUse }) } catch { /* only a cache */ }
+    }
   }
   const job = (o.urgent ? run() : bakeTail.then(run)).finally(() => voiceBakes.delete(id))
   if (!o.urgent) bakeTail = job.catch(() => undefined)

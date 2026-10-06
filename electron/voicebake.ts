@@ -14,7 +14,9 @@
  *   pass B     a.f32 x gain, 2:1 compressor, measured: make-up = target - I
  *   pass D     pass B again + make-up + 4x oversampled ceiling -> FLAC (24-bit), measured; the
  *              residual is folded back in when the limiter cost loudness (at most 3 passes)
- *   preview    video media only: the picture copied beside AAC of the bake, one file, one clock
+ *   preview    video media only: the picture beside AAC of the bake, one file, one clock. The picture
+ *              is copied as it is when that is cheap (a proxy, a small original), else made small
+ *              (previewPicturePlan); the folder is held under a size cap (pruneVoiceCache)
  */
 import { spawn, type ChildProcess } from 'node:child_process'
 import crypto from 'node:crypto'
@@ -55,7 +57,11 @@ export interface BakeResult {
   key?: string
   /** the bake (FLAC, sample 0 = the media's time zero); absent when the fix is off or the recording was left as is */
   path?: string
-  /** what the preview plays: the re-muxed video, or the FLAC for audio media */
+  /**
+   * What the preview plays. Asked with a picture: that picture's copy, and nothing when it could not
+   * be made (previewError says why), because a FLAC in a <video> plays the voice with no picture.
+   * Asked without one: the FLAC, which is what an audio element plays.
+   */
   previewPath?: string
   previewError?: string
   jsonPath?: string
@@ -142,7 +148,8 @@ export function runFF(ffmpeg: string, args: string[], o: { onPcm?: (x: Float32Ar
     p.on('close', (code) => {
       o.onChild?.(p, true)
       if (code === 0) resolve(tail)
-      else reject(new Error(tail.split(/\r?\n/).filter((l) => l.trim() && !/^\s*size=/.test(l)).slice(-6).join('\n') || `ffmpeg exited ${code}`))
+      // progress lines (\r-separated, frame= for a picture, size= for sound) are not the reason
+      else reject(new Error(tail.split(/\r\n|\r|\n/).filter((l) => l.trim() && !/^\s*(size|frame)=/.test(l)).slice(-6).join('\n') || `ffmpeg exited ${code}`))
     })
   })
 }
@@ -206,7 +213,8 @@ interface BakeJson {
   /** file names inside the cache folder */
   flac?: string
   output?: BakeResult['output']
-  preview?: { from: string; file?: string; error?: string }
+  /** the preview copy (file) of the picture `from` (path|size|mtime), or why it could not be made */
+  preview?: { from: string; file?: string; how?: 'copy' | 'small'; error?: string }
   seconds?: number
 }
 const readJson = (file: string): BakeJson | null => { try { return JSON.parse(fs.readFileSync(file, 'utf8')) as BakeJson } catch { return null } }
@@ -233,29 +241,92 @@ const pictureId = (picture: string) => { try { const s = fs.statSync(picture); r
  * the old one may be playing (Windows will not replace an open file), so the new one gets its own name.
  */
 const previewName = (key: string, picture: string) => `${key}.${crypto.createHash('sha1').update(pictureId(picture)).digest('hex').slice(0, 8)}.mp4`
+const samePath = (a: string, b: string) => {
+  const x = path.resolve(a), y = path.resolve(b)
+  return process.platform === 'win32' ? x.toLowerCase() === y.toLowerCase() : x === y
+}
 
-/** Make the preview copy and record it (or why it failed) in the bake's JSON; an older copy is removed when nothing holds it. */
-async function attachPreview(o: BakeOptions, json: BakeJson, flac: string) {
-  const name = previewName(json.key, o.picture!), old = json.preview?.file
+/**
+ * A preview copy duplicates its picture on disk. Copied whole, every voice video cost its own size
+ * again in userData/voice: 3.7 GB for five minutes of 4K phone footage, per clip. So an original is
+ * copied only while that is cheap; a bigger one gets a small picture made for it (once, like a
+ * proxy), which is all the preview pane shows anyway. A proxy is already that small picture, so it
+ * is always copied.
+ */
+export const PREVIEW_COPY_MAX_BYTES = 256 * 1024 ** 2
+/** The long side of a picture made small for the preview copy (a smaller one is never enlarged). */
+export const PREVIEW_LONG_SIDE = 1280
+export type PreviewPicture = 'copy' | 'small'
+export function previewPicturePlan(p: { bytes: number; isOriginal: boolean }): PreviewPicture {
+  return p.isOriginal && p.bytes > PREVIEW_COPY_MAX_BYTES ? 'small' : 'copy'
+}
+
+/**
+ * ffmpeg's arguments for the preview copy: the picture (as it is, or small) beside the bake as AAC
+ * 256k. Both already sit on the media's own clock (the bake starts at its time zero), so they are
+ * muxed as they are; no offset to guess. The small picture is 8-bit 4:2:0 H.264, which the preview
+ * decodes whatever the original was (a 10-bit source left to libx264's default comes out 10-bit).
+ */
+export function previewCopyArgs(picture: string, flac: string, out: string, how: PreviewPicture): string[] {
+  const L = PREVIEW_LONG_SIDE
+  const video = how === 'copy' ? ['-c:v', 'copy']
+    : ['-vf', `scale='min(${L},iw)':'min(${L},ih)':force_original_aspect_ratio=decrease:force_divisible_by=2`,
+      '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '26', '-pix_fmt', 'yuv420p']
+  return ['-hide_banner', '-nostdin', '-y', '-v', 'error', '-stats', '-i', picture, '-i', flac,
+    '-map', '0:v:0', '-map', '1:a:0', ...video, '-c:a', 'aac', '-b:a', '256k', '-movflags', '+faststart', out]
+}
+
+/** Make one preview copy through a part file, so a copy cut off half way is never served. */
+async function makePreviewCopy(o: BakeOptions, flac: string, out: string, how: PreviewPicture, durS: number, onFraction?: (f: number) => void) {
+  const part = out.replace(/\.mp4$/i, '.part.mp4')
   try {
-    await remux(o, flac, path.join(o.cacheDir, name))
-    json.preview = { from: pictureId(o.picture!), file: name }
-    if (old && old !== name) try { fs.rmSync(path.join(o.cacheDir, old), { force: true }) } catch { /* still playing: harmless */ }
+    await runFF(o.ffmpeg, previewCopyArgs(o.picture!, flac, part, how), { onChild: o.onChild, onTime: onFraction && durS > 0 ? (t) => onFraction(Math.min(1, t / durS)) : undefined })
+    await renameRetry(part, out)
   } catch (e) {
-    json.preview = { from: pictureId(o.picture!), error: String((e as Error)?.message || e).slice(0, 300) }
+    try { fs.rmSync(part, { force: true }) } catch { /* locked */ }
+    throw e
   }
 }
 
-/** The reply for a finished (or cached) bake, from its JSON. */
-function resultFrom(j: BakeJson, base: string, cached: boolean): BakeResult {
-  const flac = j.flac ? path.join(path.dirname(base), j.flac) : undefined
-  const preview = j.preview?.file ? path.join(path.dirname(base), j.preview.file) : flac
+/** Make the preview copy and record it (or why it failed) in the bake's JSON; an older copy is removed when nothing holds it. */
+async function attachPreview(o: BakeOptions, json: BakeJson, flac: string, onFraction?: (f: number) => void) {
+  const picture = o.picture!, name = previewName(json.key, picture), old = json.preview?.file, out = path.join(o.cacheDir, name)
+  try {
+    let how = previewPicturePlan({ bytes: fs.statSync(picture).size, isOriginal: samePath(picture, o.filePath) })
+    try {
+      await makePreviewCopy(o, flac, out, how, json.source.durationS, onFraction)
+    } catch (e) {
+      // MP4 cannot carry every picture as it is: VP8 (what Chrome's recorder makes) and Theora are
+      // refused at the header. Those get the small picture rather than no copy at all.
+      if (how !== 'copy') throw e
+      how = 'small'
+      await makePreviewCopy(o, flac, out, how, json.source.durationS, onFraction)
+    }
+    json.preview = { from: pictureId(picture), file: name, how }
+    if (old && old !== name) try { fs.rmSync(path.join(o.cacheDir, old), { force: true }) } catch { /* still playing: pruneVoiceCache takes it later */ }
+  } catch (e) {
+    json.preview = { from: pictureId(picture), error: String((e as Error)?.message || e).slice(0, 300) }
+  }
+}
+
+/**
+ * The reply for a finished (or cached) bake, from its JSON. `picture` is what this caller asked
+ * with: a <video> must only ever be given its own preview copy, never the FLAC (its picture would
+ * vanish while the voice played on).
+ */
+function resultFrom(j: BakeJson, base: string, cached: boolean, picture?: string | null): BakeResult {
+  const dir = path.dirname(base)
+  const flac = j.flac ? path.join(dir, j.flac) : undefined
+  const preview = !picture ? flac : flac && j.preview?.file ? path.join(dir, j.preview.file) : undefined
   return {
-    ok: true, cached, key: j.key, path: flac, previewPath: preview, previewError: j.preview?.error, jsonPath: base + '.json',
+    ok: true, cached, key: j.key, path: flac, previewPath: preview, previewError: picture && flac && !preview ? j.preview?.error || 'no preview copy' : undefined, jsonPath: base + '.json',
     preset: j.preset, effective: j.effective, skipped: j.skipped, summary: j.summary, decisions: j.decisions,
     segments: j.segments, output: j.output, seconds: j.seconds,
   }
 }
+
+/** Mark a bake as used now: pruneVoiceCache lets the ones used longest ago go first. */
+const touch = (file: string) => { try { const now = new Date(); fs.utimesSync(file, now, now) } catch { /* read-only: it only ages sooner */ } }
 
 /** A cached bake for these options, or null. Cheap (a stat and a JSON read), so callers check it before queueing. */
 export function cachedBake(o: Pick<BakeOptions, 'cacheDir' | 'filePath' | 'preset' | 'ffmpegVersion' | 'picture'>): BakeResult | null {
@@ -266,27 +337,71 @@ export function cachedBake(o: Pick<BakeOptions, 'cacheDir' | 'filePath' | 'prese
     const j = readJson(base + '.json')
     if (!j || j.v !== CHAIN_VERSION || j.key !== key) return null
     if (j.flac && !fs.existsSync(path.join(o.cacheDir, j.flac))) return null
-    // a preview copy made from another picture (the proxy arrived since) is made again
-    if (o.picture && j.flac && (!j.preview || j.preview.from !== pictureId(o.picture) || (j.preview.file && !fs.existsSync(path.join(o.cacheDir, j.preview.file))))) return null
-    return resultFrom(j, base, true)
+    // The preview copy is made again when it is of another picture (the proxy arrived since), gone,
+    // or failed last time: a failure is not a verdict to keep, a fixed build may well make it.
+    if (o.picture && j.flac && !(j.preview?.file && j.preview.from === pictureId(o.picture) && fs.existsSync(path.join(o.cacheDir, j.preview.file)))) return null
+    touch(base + '.json')
+    return resultFrom(j, base, true, o.picture)
   } catch { return null }
 }
 
 /**
- * The preview copy: the picture untouched, the bake as AAC 256k. Both already sit on the media's
- * own clock (the bake starts at its time zero), so they are muxed as they are; no offset to guess.
+ * How big userData/voice may grow before the bakes used longest ago are let go. They are made again
+ * if they are ever asked for, so this trades a rebake for disk, never a wrong result.
  */
-async function remux(o: BakeOptions, flac: string, out: string) {
-  const part = out.replace(/\.mp4$/i, '.part.mp4')
-  const args = ['-hide_banner', '-nostdin', '-y', '-v', 'error', '-i', o.picture!, '-i', flac,
-    '-map', '0:v:0', '-map', '1:a:0', '-c:v', 'copy', '-c:a', 'aac', '-b:a', '256k', '-movflags', '+faststart', part]
-  try {
-    await runFF(o.ffmpeg, args, { onChild: o.onChild })
-    await renameRetry(part, out)
-  } catch (e) {
-    try { fs.rmSync(part, { force: true }) } catch { /* locked */ }
-    throw e
+export const VOICE_CACHE_MAX_BYTES = 2 * 1024 ** 3
+/** a bake's own files: <key>.json, <key>.flac and its preview copies <key>.<picture>.mp4 (part files are sweepVoiceTemp's) */
+const BAKE_FILE = /^(.+-(?:off|light|studio)-[0-9a-f]{16})\.(?:json|flac|[0-9a-f]{8}\.mp4)$/i
+
+/**
+ * Hold userData/voice under `maxBytes`. First what can never be served again goes: a preview copy its
+ * JSON no longer names (an older picture's copy that was playing when it was replaced), a FLAC or
+ * copy with no JSON, a bake from an older chain. Then whole bakes, least recently used first (the
+ * JSON is touched on every use). A bake in `keep` (asked for since the app started: a project open
+ * now plays or exports it) or used in the last `graceMs` is never taken, nor is a file younger than
+ * that (a bake may be between writing its FLAC and its JSON). A file Windows holds open is skipped
+ * and counted; the next run tries again.
+ */
+export function pruneVoiceCache(cacheDir: string, o: { maxBytes?: number; keep?: ReadonlySet<string>; graceMs?: number; now?: number } = {}): { removed: string[]; bytes: number } {
+  const maxBytes = o.maxBytes ?? VOICE_CACHE_MAX_BYTES, grace = o.graceMs ?? 10 * 60_000, now = o.now ?? Date.now()
+  const removed: string[] = []
+  const rm = (name: string) => { try { fs.rmSync(path.join(cacheDir, name), { force: true }); removed.push(name); return true } catch { return false } }
+  type File = { name: string; bytes: number; mtimeMs: number }
+  const groups = new Map<string, File[]>()
+  let names: string[] = []
+  try { names = fs.readdirSync(cacheDir) } catch { return { removed, bytes: 0 } }
+  for (const name of names) {
+    const m = BAKE_FILE.exec(name)
+    if (!m) continue
+    try {
+      const st = fs.statSync(path.join(cacheDir, name))
+      if (st.isFile()) groups.set(m[1], [...(groups.get(m[1]) || []), { name, bytes: st.size, mtimeMs: st.mtimeMs }])
+    } catch { /* gone meanwhile */ }
   }
+  const young = (f: File) => now - f.mtimeMs < grace
+  const entries: { key: string; files: File[]; usedMs: number; held: boolean }[] = []
+  for (const [key, files] of groups) {
+    const jf = files.find((f) => f.name === key + '.json'), j = jf ? readJson(path.join(cacheDir, jf.name)) : null
+    const servable = !!j && j.v === CHAIN_VERSION && j.key === key
+    const usedMs = jf ? jf.mtimeMs : Math.max(...files.map((f) => f.mtimeMs))
+    const held = !!o.keep?.has(key) || now - usedMs < grace
+    // what nothing will ever serve again goes whatever the size (unless it is still being written)
+    const left = files.filter((f) => {
+      const dead = !servable ? !held : /\.mp4$/i.test(f.name) && f.name !== j?.preview?.file
+      return !(dead && !young(f) && rm(f.name))
+    })
+    if (left.length) entries.push({ key, files: left, usedMs, held })
+  }
+  let total = entries.reduce((s, e) => s + e.files.reduce((a, f) => a + f.bytes, 0), 0)
+  for (const e of entries.filter((x) => !x.held).sort((a, b) => a.usedMs - b.usedMs)) {
+    if (total <= maxBytes) break
+    // the sound and its copies first, the JSON last: a bake whose FLAC is held open stays whole
+    const media = e.files.filter((f) => !f.name.endsWith('.json')), json = e.files.filter((f) => f.name.endsWith('.json'))
+    let whole = true
+    for (const f of media) { if (rm(f.name)) total -= f.bytes; else whole = false }
+    if (whole) for (const f of json) if (rm(f.name)) total -= f.bytes
+  }
+  return { removed, bytes: total }
 }
 
 /**
@@ -316,13 +431,14 @@ export async function bakeVoice(o: BakeOptions): Promise<BakeResult> {
     const base = path.join(o.cacheDir, key)
     const prior = readJson(base + '.json')
     const flacName = `${key}.flac`, flac = path.join(o.cacheDir, flacName)
-    // only the preview copy is missing (a proxy arrived, or the copy was deleted): re-mux, nothing else
+    // only the preview copy is missing (a proxy arrived, the clip was placed, the copy was deleted
+    // or failed last time): make it, nothing else
     if (prior && prior.v === CHAIN_VERSION && prior.key === key && prior.flac && fs.existsSync(flac) && o.picture) {
       progress(90, 'Making the preview copy')
-      await attachPreview(o, prior, flac)
+      await attachPreview(o, prior, flac, (f) => progress(90 + 9 * f, 'Making the preview copy'))
       await writeJsonAtomic(base + '.json', prior)
       progress(100, 'Done')
-      return resultFrom(prior, base, false)
+      return resultFrom(prior, base, false, o.picture)
     }
 
     const probe = o.ffprobe ? await probeMedia(o.ffprobe, o.filePath) : null
@@ -341,7 +457,7 @@ export async function bakeVoice(o: BakeOptions): Promise<BakeResult> {
       Object.assign(json, { decisions: decisionsJson(plan), segments: speechSegments(src), summary: summaryLine(plan), seconds: (Date.now() - T0) / 1000 })
       await writeJsonAtomic(base + '.json', json)
       progress(100, 'Done')
-      return resultFrom(json, base, false)
+      return resultFrom(json, base, false, o.picture)
     }
 
     tmp = path.join(o.cacheDir, 'tmp', key)
@@ -394,12 +510,12 @@ export async function bakeVoice(o: BakeOptions): Promise<BakeResult> {
     })
     if (o.picture) {
       progress(92, 'Making the preview copy')
-      await attachPreview(o, json, flac)
+      await attachPreview(o, json, flac, (f) => progress(92 + 7 * f, 'Making the preview copy'))
     }
     json.seconds = +((Date.now() - T0) / 1000).toFixed(1)
     await writeJsonAtomic(base + '.json', json)
     progress(100, 'Done')
-    return resultFrom(json, base, false)
+    return resultFrom(json, base, false, o.picture)
   } catch (e) {
     return { error: String((e as Error)?.message || e) }
   } finally {
