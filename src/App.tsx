@@ -33,6 +33,7 @@ import { tickStepFor, contentWidth, collectSnapTargets, nearestTarget, snapMove,
 import { TimeRuler } from './ruler'
 import { ClipWave, type Peaks } from './clipwave'
 import { etaStep, type EtaState } from '../electron/exportjob'
+import { boxFill } from '../electron/exportgraph'
 import { resolveCaptionModel, modelLabel, MODEL_NAMES, type CaptionModelSetting } from '../electron/asrmodel'
 import { PLATFORM_TARGETS, platformTarget, type Preset, type Role } from '../electron/audiochain'
 import { isPreset, isRole, mixTuning, resolveRole, type SoundFacts } from '../electron/audiomix'
@@ -4248,7 +4249,7 @@ function Editor() {
                 <CaptionLayer key={t.id} t={t} time={currentTime} groupBase={texts.indexOf(t)} outW={w} outH={h} stageH={stageH} selected={selectedId === t.id && !isPlaying} onSelect={() => { if (!isPlaying) setSelectedId(t.id) }} onEdit={() => editCaptionInInspector(t.id)} />
               ) : (
                 <div key={t.id} className={`text-layer ${selectedId === t.id && !isPlaying ? 'editing' : ''} ${editingTextId === t.id ? 'typing' : ''}`}
-                  style={{ left: `${t.x * 100}%`, top: `${t.y * 100}%`, fontSize: `${t.fontSize / 1080 * stageH}px`, color: t.color, opacity: fadeFactor(t, currentTime), background: t.box ? (t.boxColor ? `${t.boxColor}${Math.round((t.boxOpacity ?? 0.5) * 255).toString(16).padStart(2, '0')}` : `rgba(0,0,0,${t.boxOpacity ?? 0.5})`) : 'transparent',
+                  style={{ left: `${t.x * 100}%`, top: `${t.y * 100}%`, fontSize: `${t.fontSize / 1080 * stageH}px`, color: t.color, opacity: fadeFactor(t, currentTime), background: t.box ? boxFill(t) : 'transparent',
                     // the export's drawtext twins (titleDrawtext): square box padded BOX_PAD, a hard shadow under bare text only
                     padding: t.box ? `${BOX_PAD.y}em ${BOX_PAD.x}em` : 0, textShadow: t.box ? 'none' : '0 0.04em 0 rgba(0, 0, 0, 0.6)',
                     ...(t.font && THEME_FONTS[t.font] ? { fontFamily: `'${THEME_FONTS[t.font].family}', sans-serif`, fontWeight: THEME_FONTS[t.font].bold ? 700 : 400 } : { fontFamily: `'${TITLE_FONT.family}', sans-serif`, fontWeight: 400 }),

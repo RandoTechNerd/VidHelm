@@ -86,6 +86,21 @@ export function clipVideoChain(input: string, c: VideoClip, o: { W: number; H: n
   return `${v}[${out}]`
 }
 
+const boxRgb = (hex: unknown) => { const h = String(hex || '').replace('#', ''); return /^[0-9a-f]{6}/i.test(h) ? h.slice(0, 6) : '000000' }
+const boxAlpha = (opacity: unknown) => (typeof opacity === 'number' && Number.isFinite(opacity) ? Math.min(1, Math.max(0, opacity)) : 0.5)
+
+/**
+ * A title's box fill as CSS, for the preview: the colour at boxOpacity, exactly as the export draws
+ * it. A colour that carries its own alpha ('#1a1a1acc', which hexColor accepts) has it replaced by
+ * boxOpacity on both sides, as drawtext's '@' replaces it. The preview used to append the opacity's
+ * two hex digits to the colour, so an 8-digit colour became a 10-digit one that CSS rejects: the
+ * preview showed bare text while the export burned a box behind it.
+ */
+export function boxFill(t: { boxColor?: unknown; boxOpacity?: unknown }): string {
+  const h = boxRgb(t.boxColor)
+  return `rgba(${parseInt(h.slice(0, 2), 16)}, ${parseInt(h.slice(2, 4), 16)}, ${parseInt(h.slice(4, 6), 16)}, ${boxAlpha(t.boxOpacity)})`
+}
+
 /**
  * drawtext options for one title, drawn the way the preview draws it (the .text-layer styles in
  * src/App.tsx): every line centred on the text's x, a hard drop shadow under bare text (drawtext
@@ -111,7 +126,7 @@ export function titleDrawtext(t: ReturnType<typeof cleanText>, o: { H: number; W
     ? [`borderw=${Math.max(1, Math.round(size * t.outline))}`, `bordercolor=${ff(String(t.outlineColor || '#000000'))}`] : []
   const shadow = boxed ? [] : ['shadowcolor=black@0.6', 'shadowx=0', `shadowy=${Math.max(1, Math.round(size * 0.04))}`]
   const box = boxed
-    ? ['box=1', `boxcolor=${ff(String(t.boxColor || '#000000'))}@${typeof t.boxOpacity === 'number' ? t.boxOpacity : 0.5}`,
+    ? ['box=1', `boxcolor=0x${boxRgb(t.boxColor)}@${boxAlpha(t.boxOpacity)}`,
       `boxborderw=${Math.round(size * BOX_PAD.y)}|${Math.round(size * BOX_PAD.x)}`]
     : ['box=0']
   return [

@@ -13,7 +13,7 @@ const load = async f => {
   const out = await build({ entryPoints: [path.join(here, f)], bundle: true, write: false, format: 'esm', platform: 'node', target: 'node18' })
   return import('data:text/javascript;base64,' + Buffer.from(out.outputFiles[0].text).toString('base64'))
 }
-const { stillInput, clipAudioChain, clipVideoChain, logoChain, titleDrawtext, fontCoverage, dropMissingGlyphs, friendlyExportError, stderrTail, DEPOP_S, UNREADABLE_STILL } = await load('exportgraph.ts')
+const { stillInput, clipAudioChain, clipVideoChain, logoChain, titleDrawtext, boxFill, fontCoverage, dropMissingGlyphs, friendlyExportError, stderrTail, DEPOP_S, UNREADABLE_STILL } = await load('exportgraph.ts')
 const { planProxy, proxyFilter, proxyFits, HDR_TO_SDR } = await load('playable.ts')
 const { cleanText, TITLE_FONT } = await load('textlayout.ts')
 
@@ -260,6 +260,14 @@ try {
     ok(Math.abs(h - want) <= lines && Math.abs(mid - 180) <= 1,
       `a boxed ${JSON.stringify(text)} gets the preview's box: ${h} px tall (preview ${want}: ${lines} x ${lineBox} line box + 2 x 15 padding), centred at ${mid} (y 180)` + (r.px ? '' : ': ' + r.err.slice(-300)))
   }
+  // a box colour with its own alpha: hexColor lets '#rrggbbaa' through, and the preview used to append
+  // the opacity's two digits to it, a 10-digit colour CSS rejects (no box on screen, a box in the video)
+  const tinted = (boxColor, boxOpacity) => title({ ...base, text: 'BOX', box: true, boxColor, boxOpacity }).px
+  const withAlpha = tinted('#ff0000cc', 0.5), plainRed = tinted('#ff0000', 0.5), at80 = tinted('#ff0000', 0.8)
+  ok(withAlpha && plainRed && at80 && Buffer.compare(withAlpha, plainRed) === 0 && Buffer.compare(withAlpha, at80) !== 0,
+    "the export draws '#ff0000cc' at the box opacity, its own alpha replaced (drawtext's '@')")
+  ok(boxFill({ boxColor: '#ff0000cc', boxOpacity: 0.5 }) === 'rgba(255, 0, 0, 0.5)' && boxFill({ boxColor: '#1a1a1a', boxOpacity: 0.7 }) === 'rgba(26, 26, 26, 0.7)' && boxFill({}) === 'rgba(0, 0, 0, 0.5)',
+    `...and the preview fills its box the same way, always a colour CSS accepts (${boxFill({ boxColor: '#1a1a1acc' })})`)
   // characters the face has no glyph for: drawtext has no fallback, and Inter's .notdef is a box with
   // "NO GLYPH" printed in it, burned into the middle of the title
   const has = fontCoverage(fontBuf)
