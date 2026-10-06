@@ -98,6 +98,7 @@ export interface ResolvedMix {
   roles: { start: number; trackId?: string; role: string; why: string; fixed?: string; file: string }[]
   /** voice media that has no bake (scan without baking, or a bake that failed): played as recorded */
   unbaked: number
+  /** clips that read a bake (a voice cut into ten clips is ten) */
   baked: number
   /** things worth telling the user, in words */
   notes: string[]
