@@ -2622,10 +2622,11 @@ const mixEnv = async (o: { bakeMissing: boolean }): Promise<MixEnv> => ({
   ffmpeg: paths.ffmpeg, ffprobe: paths.ffprobe, cacheDir: voiceDir(), ffmpegVersion: await ffmpegVersion(),
   workDir: app.getPath('temp'), bakeMissing: o.bakeMissing, onChild: trackVoiceChild,
   dirs: mixDirs(),
-  bake: ({ filePath, preset }) => runVoiceBake(filePath, preset, null, {
-    urgent: true,
-    send: (pct, line) => { if (win && !win.webContents.isDestroyed()) win.webContents.send('voice-progress', { filePath, preset, pct, line }) },
-  }),
+  bake: async ({ filePath, preset }) => {
+    const send = (pct: number, line: string) => { if (win && !win.webContents.isDestroyed()) win.webContents.send('voice-progress', { filePath, preset, pct, line }) }
+    // a bake that fails sends no 100 of its own, and the Inspector would show it running for ever
+    try { return await runVoiceBake(filePath, preset, null, { urgent: true, send }) } finally { send(100, 'Done') }
+  },
   onStage: (line) => console.log('[export sound]', line),
 })
 /** The timeline's end, as the export computes it (clips and text). */
