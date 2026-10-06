@@ -4016,7 +4016,8 @@ function Editor() {
                 // a trim cannot run past the footage (the export would show black, the preview a frozen frame)
                 const maxDur = m && m.type !== 'image' ? Math.max(0.1, m.duration - selClip.sourceStart) : 24 * 3600
                 return (
-                  <div className="panel-section inspector">
+                  // keyed: another selection is another set of fields (a half-typed number commits to the clip it was typed for)
+                  <div className="panel-section inspector" key={selClip.id}>
                     <div className="sel-head">
                       {m?.type === 'video' ? <video className="sel-thumb" src={`${fileUrl(m.proxyPath || m.path)}#t=${(selClip.sourceStart + 0.1).toFixed(2)}`} muted preload="metadata" />
                         : m?.type === 'image' ? <img className="sel-thumb" src={fileUrl(m.path)} alt="" />
@@ -4067,7 +4068,7 @@ function Editor() {
                 )
               })()}
               {rightTab === 'inspect' && selText && (
-                <div className="panel-section inspector">
+                <div className="panel-section inspector" key={selText.id}>
                   <div className="sel-head">
                     <span className="sel-thumb icon text">{selText.caption ? <IconCaptions /> : <IconText />}</span>
                     <div className="sel-meta">

@@ -1,6 +1,6 @@
 // The Inspector's controls: typed numbers that stick, volume in dB, collapsible groups, the selection
 // header, the position grid and the Sound section. Props-driven; App.tsx owns the state.
-import { useRef, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { Preset, Role } from '../electron/audiochain'
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v))
@@ -15,8 +15,11 @@ export function NumField({ value, onCommit, min = -Infinity, max = Infinity, ste
   value: number; onCommit: (v: number) => void; min?: number; max?: number; step?: number; digits?: number; id?: string; title?: string; suffix?: string
 }) {
   const [draft, setDraft] = useState<string | null>(null)
-  // the draft as typed, for blur after Escape (state would still hold it in that closure)
+  // the draft as typed (Escape then blur must see it gone at once), and where it goes: the commit
+  // and bounds of the render it was typed in. Clicking another clip re-renders the Inspector before
+  // the field loses focus, and a draft must land on the item it was typed for, never the new one.
   const live = useRef<string | null>(null)
+  const target = useRef({ onCommit, min, max })
   const show = (v: number) => (Number.isFinite(v) ? String(+v.toFixed(digits)) : '')
   const commit = () => {
     const d = live.current
@@ -24,14 +27,17 @@ export function NumField({ value, onCommit, min = -Infinity, max = Infinity, ste
     setDraft(null)
     if (d == null) return
     const v = parseFloat(d.replace(',', '.').replace('−', '-'))
-    if (Number.isFinite(v)) onCommit(clamp(v, min, max))
+    const t = target.current
+    if (Number.isFinite(v)) t.onCommit(clamp(v, t.min, t.max))
   }
+  // removed while a draft is pending (the selection changed under it): it still lands where it was typed
+  useEffect(() => () => { if (live.current != null) commit() }, [])
   const set = (s: string | null) => { live.current = s; setDraft(s) }
   return (
     <span className="num-field">
       <input id={id} type="text" inputMode="decimal" className="duration-input" title={title} value={draft ?? show(value)}
         onFocus={e => e.target.select()}
-        onChange={e => set(e.target.value)}
+        onChange={e => { if (live.current == null) target.current = { onCommit, min, max }; set(e.target.value) }}
         onBlur={commit}
         onKeyDown={e => {
           if (e.key === 'Enter') { commit(); e.currentTarget.blur() }
