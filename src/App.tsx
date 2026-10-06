@@ -799,6 +799,26 @@ function Editor() {
   // the smoothed render rate behind `eta`; null at the start of every export (see etaStep)
   const etaRef = useRef<EtaState | null>(null)
   const exportClickAt = useRef(0)
+  // One export at a time from this window, whoever asks (the human, or an agent through the bridge):
+  // they share one bar, one Cancel and one "Done", and two at once drove them in turns (the ETA
+  // restarting, a "Done" that could not be cancelled while the other still rendered).
+  const exportBusy = useRef(false)
+  // Which export the bar belongs to: one export's 3 s "Done" must never clear the next one's bar
+  const exportGen = useRef(0)
+  const beginExport = () => {
+    exportBusy.current = true
+    setExportProgress(0); setEta(null); etaRef.current = null
+    return ++exportGen.current
+  }
+  const endExport = (gen: number, done: boolean) => {
+    if (exportGen.current !== gen) return
+    exportBusy.current = false
+    setEta(null)
+    if (!done) { setExportProgress(null); return }
+    setExportProgress(100)
+    setTimeout(() => { if (exportGen.current === gen && !exportBusy.current) setExportProgress(null) }, 3000)
+  }
+  const EXPORT_BUSY = 'an export is already running in VidHelm; wait for it to finish, or cancel it (the Export button) first'
   // Where the next export will be written and whether that replaces a file, for the Export panel.
   const [exportTo, setExportTo] = useState<{ path: string; exists: boolean; nextVersion: string | null } | null>(null)
   const settingsLoaded = useRef(false)
@@ -2466,28 +2486,31 @@ function Editor() {
         }
 
         if (clips.length === 0) return { error: 'timeline is empty' }
+        // the bar, Cancel and "Done" are shared: one render at a time (see exportBusy)
+        if (exportBusy.current) return { error: EXPORT_BUSY }
         // Flatten the timeline so returned timestamps line up 1:1 with what the human sees.
         // Rendered small on purpose: analysis does not need 1080p, and the upload is quicker.
-        const preA = await exportPreflight()
-        if (preA) return { error: 'could not render the timeline for analysis: ' + preA }
-        const out: string = cmd.outputPath || await window.ipcRenderer.analysisPath(currentProject?.name || 'timeline')
-        setIsPlaying(false)
-        setExportProgress(0); setEta(null); etaRef.current = null
+        const genA = beginExport()
+        let out = ''
         try {
-          const done = await window.ipcRenderer.exportVideo({
+          const preA = await exportPreflight()
+          if (preA) { endExport(genA, false); return { error: 'could not render the timeline for analysis: ' + preA } }
+          out = cmd.outputPath || await window.ipcRenderer.analysisPath(currentProject?.name || 'timeline')
+          setIsPlaying(false)
+          const payloadA = {
             clips: exportClips(1280, 720, 30, 'analysis'),
             texts: await exportTexts(1280, 720), brand: { ...settings.brand, enabled: false }, audio: settings.audio, outputPath: out,
             settings: { width: 1280, height: 720, fps: 30, quality: 'analysis', masterVolume },
-          })
-          if (done?.cancelled) { setExportProgress(null); setEta(null); return { error: 'the analysis render was cancelled in VidHelm (the Cancel button)' } }
+          }
+          const done = await window.ipcRenderer.exportVideo(payloadA)
+          if (done?.cancelled) { endExport(genA, false); return { error: 'the analysis render was cancelled in VidHelm (the Cancel button)' } }
         } catch (e) {
-          setExportProgress(null); setEta(null)
+          endExport(genA, false)
           const f = exportFailure(e)
           console.error('Analysis render failed:', f.reason, f.detail)
           return { error: 'could not render the timeline for analysis: ' + f.reason, ...(f.detail ? { detail: f.detail } : {}) }
         }
-        setExportProgress(100); setEta(null)
-        setTimeout(() => setExportProgress(null), 3000)
+        endExport(genA, true)
         return {
           ok: true, scope, file: out, duration: +total.toFixed(2),
           toTimeline: { add: 0 }, tags: tagList, coveredSeconds, covered, gaps,
@@ -2504,22 +2527,27 @@ function Editor() {
         if (cmd.target !== undefined && (typeof cmd.target !== 'string' || (platformTarget(cmd.target).id === 'youtube' && !known.test(cmd.target.trim()))))
           return { error: `target must be one of ${PLATFORM_TARGETS.map(t => t.id).join(', ')}, not "${cmd.target}"` }
         if (cmd.duck !== undefined && typeof cmd.duck !== 'boolean') return { error: 'duck must be true or false' }
-        const pre = await exportPreflight()
-        if (pre) return { error: 'export not started: ' + pre }
-        setIsPlaying(false)
-        const audio = { ...settings.audio, ...(cmd.target !== undefined ? { target: platformTarget(cmd.target).id, optimize: true } : {}), ...(typeof cmd.duck === 'boolean' ? { duck: cmd.duck } : {}) }
-        const payload = {
-          clips: exportClips(w, h, fps, exportQuality),
-          texts: await exportTexts(w, h), brand: settings.brand, audio, outputPath: cmd.outputPath,
-          settings: { width: w, height: h, fps, quality: exportQuality, masterVolume },
-        }
+        // The bar, Cancel and "Done" are shared with the human's Export button: one render at a time.
+        // (An agent retrying after a bridge timeout used to get main's "already running" refusal, and
+        // its error handling then wiped the human's running bar and Cancel button.)
+        if (exportBusy.current) return { error: EXPORT_BUSY }
         // Drive the same progress state the button uses: the human watches it render, and
         // the button re-enables afterwards (it stayed stuck and disabled before).
-        setExportProgress(0); setEta(null); etaRef.current = null
+        const audio = { ...settings.audio, ...(cmd.target !== undefined ? { target: platformTarget(cmd.target).id, optimize: true } : {}), ...(typeof cmd.duck === 'boolean' ? { duck: cmd.duck } : {}) }
+        const gen = beginExport()
         let done: { cancelled?: boolean; path?: string; warnings?: string[] } | null = null
-        try { done = await window.ipcRenderer.exportVideo(payload) }
-        catch (e) {
-          setExportProgress(null); setEta(null); setLastExport(null)
+        try {
+          const pre = await exportPreflight()
+          if (pre) { endExport(gen, false); return { error: 'export not started: ' + pre } }
+          setIsPlaying(false)
+          const payload = {
+            clips: exportClips(w, h, fps, exportQuality),
+            texts: await exportTexts(w, h), brand: settings.brand, audio, outputPath: cmd.outputPath,
+            settings: { width: w, height: h, fps, quality: exportQuality, masterVolume },
+          }
+          done = await window.ipcRenderer.exportVideo(payload)
+        } catch (e) {
+          endExport(gen, false); setLastExport(null)
           const f = exportFailure(e)
           console.error('Export failed:', f.reason, f.detail)
           notify(exportFailureText(f), 15000)
@@ -2527,14 +2555,13 @@ function Editor() {
           return { error: 'export failed: ' + f.reason, ...(f.detail ? { detail: f.detail } : {}) }
         }
         if (done?.cancelled) {
-          setExportProgress(null); setEta(null)
+          endExport(gen, false)
           return { error: 'the export was cancelled in VidHelm (the Cancel button); nothing was written and any earlier file is untouched' }
         }
         // where it really landed: a file open in a player is not replaced, the render gets the next _vN name
         const outPath = done?.path || cmd.outputPath
         const exportWarnings = done?.warnings ?? []
-        setExportProgress(100); setEta(null)
-        setTimeout(() => setExportProgress(null), 3000)
+        endExport(gen, true)
         setLastExport(outPath)
         const qc = cmd.qualityCheck === false ? null : await window.ipcRenderer.qualityCheck(outPath).catch(() => null)
         const checks: string[] = qc?.checks?.map((c: any) => `${c.status}: ${c.label} - ${c.detail}`) ?? []
@@ -3174,21 +3201,20 @@ function Editor() {
     // that started it: the button turns into Cancel under the pointer.
     if (exporting) { if (Date.now() - exportClickAt.current > 800) void window.ipcRenderer.cancelExport(); return }
     if (clips.length === 0 && texts.length === 0) return
+    if (exportBusy.current) return
     exportClickAt.current = Date.now()
     setIsPlaying(false)
-    setExportProgress(0)
-    setEta(null)
-    etaRef.current = null
+    const gen = beginExport()
     try {
       // missing or removed media is named up front, rather than ffmpeg failing halfway through
       const pre = await exportPreflight()
-      if (pre) { setExportProgress(null); notify(`Export not started. ${pre}`, 15000); return }
+      if (pre) { endExport(gen, false); notify(`Export not started. ${pre}`, 15000); return }
       // No file picked: straight into the project's exports folder (or Videos/VidHelm), named after
       // the project and the frame shape, instead of a save dialog every time.
       let finalPath = customExportPath
       if (!finalPath) {
         const t = await window.ipcRenderer.exportTarget({ ...exportTargetArgs, create: true })
-        if (!t?.path) { setExportProgress(null); notify(`Export not started. ${t?.error || 'There is no folder to export into; choose one under Save To.'}`, 11000); return }
+        if (!t?.path) { endExport(gen, false); notify(`Export not started. ${t?.error || 'There is no folder to export into; choose one under Save To.'}`, 11000); return }
         finalPath = t.path
       }
       const payload = {
@@ -3201,12 +3227,11 @@ function Editor() {
       }
       etaRef.current = null
       const done = await window.ipcRenderer.exportVideo(payload)
-      if (done?.cancelled) { setExportProgress(null); setEta(null); notify('Export cancelled. Nothing was written, and any earlier export is untouched.', 6000); return }
+      if (done?.cancelled) { endExport(gen, false); notify('Export cancelled. Nothing was written, and any earlier export is untouched.', 6000); return }
       // where it really landed: a file open in a player is not replaced, the render gets the next _vN name
       const landed = done?.path || finalPath
-      setExportProgress(100)
+      endExport(gen, true)
       setLastExport(landed)
-      setTimeout(() => setExportProgress(null), 3000)
       if (done?.warnings?.length) notify(`Exported, but ${done.warnings.join('; ')}.`, 11000)
       runQualityCheck(landed) // auto "watch & verify" the result
     } catch (err) {
@@ -3214,7 +3239,7 @@ function Editor() {
       // reason; ffmpeg's last lines go to the log (DevTools console) for anyone digging deeper.
       const f = exportFailure(err)
       console.error('Export failed:', f.reason, f.detail ? '\n' + f.detail : '')
-      setExportProgress(null); setEta(null)
+      endExport(gen, false)
       setLastExport(null)   // the old "Show in folder" would point at a missing or half-written file
       notify(exportFailureText(f), 15000)
     }
