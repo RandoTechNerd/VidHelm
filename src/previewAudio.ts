@@ -306,6 +306,9 @@ export class PreviewMixer {
     const cur = this.clips.get(id)
     if (cur && cur.el === el) {
       if (cur.bus !== bus) { cur.gain.disconnect(); cur.gain.connect(this.buses[bus]); cur.bus = bus }
+      // a stretch on b-roll left it on the el.volume fallback (often 0), which would scale its sound
+      // before the graph from here on: a clip dragged V1 -> V2 -> V1 came back silent
+      if (el.volume !== 1) el.volume = 1
       return true
     }
     if (cur) this.detach(id)
@@ -332,6 +335,9 @@ export class PreviewMixer {
   }
 
   has(id: string) { return this.clips.has(id) }
+
+  /** The clips routed now, so the caller can detach the ones whose element has gone. */
+  routedIds() { return [...this.clips.keys()] }
 
   /** A clip's gain (linear), eased over a few ms so a per-frame update does not zipper. */
   setClipGain(id: string, g: number) {

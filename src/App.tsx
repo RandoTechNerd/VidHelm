@@ -1032,6 +1032,10 @@ function Editor() {
   // Sync preview video layers
   useEffect(() => {
     const map = videoEls.current
+    // A stage <video> that unmounted (its clip left the preroll window, or the timeline) leaves the
+    // graph here, after the commit, never from its ref: an inline ref callback is called with null on
+    // EVERY render, so a detach there cut V1's sound and faded it back in once a frame while playing.
+    for (const id of mixer.routedIds()) if (!map.has(id) && !audioEls.current.has(id)) mixer.detach(id)
     map.forEach((el, id) => { if (!activeVideoClips.find(c => c.id === id)) el.pause() })
     // park the not-yet-visible ones on their first frame so the decoder is warm
     previewVideoClips.filter(c => currentTime < c.start).forEach(c => {
@@ -4236,7 +4240,7 @@ function Editor() {
                 const op = currentTime < c.start ? 0 : fadeFactor(c, currentTime)
                 return media.type === 'image'
                   ? <img key={c.id} className="layer" style={{ opacity: op, filter: media.chromaKey ? `url(#${keyFilterFor(media.chromaKey)})` : undefined }} src={fileUrl(media.path)} alt="" />
-                  : <video key={c.id} ref={el => { if (el) videoEls.current.set(c.id, el); else { videoEls.current.delete(c.id); mixer.detach(c.id) } }} className="layer"
+                  : <video key={c.id} ref={el => { if (el) videoEls.current.set(c.id, el); else videoEls.current.delete(c.id) }} className="layer"
                       muted={c.trackId === 'v2'}
                       style={{ opacity: op, filter: media.chromaKey ? `url(#${keyFilterFor(media.chromaKey)})` : undefined }} src={fileUrl(previewSrc(c, media))} />
               })}

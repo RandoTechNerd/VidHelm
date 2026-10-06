@@ -4,6 +4,7 @@
 // audiochain.ts), turned back into JS, rather than against a second copy of the formula.
 // Run: npm run test:previewaudio
 import { build } from 'esbuild'
+import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -238,6 +239,21 @@ console.log('the WebAudio graph (against a stand-in that enforces the spec\'s au
   const ctx = mx.ctx, voiceBus = mx.buses.voice, musicBus = mx.buses.music
   mx.setClipGain('c', 0.5); mx.setClipGain('c', 0.5)
   ok(mx.clips.get('c').gain.gain.events.filter((e) => e.kind === 'target').length === 1, 'a per-frame gain that has not changed schedules nothing')
+  // The editor calls attach + setClipGain for every clip on every frame it plays. A frame must leave
+  // the route alone: a fresh gain node starts at 0 and ramps up, and once a frame that is a buzz.
+  {
+    const v = { volume: 1 }
+    mx.attach('v', v, 'voice'); mx.setClipGain('v', 0.8)
+    const node = mx.clips.get('v').gain
+    for (let f = 0; f < 60; f++) { mx.attach('v', v, 'voice'); mx.setClipGain('v', 0.8) }
+    ok(mx.clips.get('v').gain === node && node.gain.events.filter((e) => e.kind === 'target').length === 1, 'sixty frames of attach + gain keep one gain node and schedule one ramp')
+    // a stretch on b-roll puts the element on the el.volume fallback; back on V1 the gain node is the volume again
+    v.volume = 0
+    ok(mx.attach('v', v, 'voice') && v.volume === 1 && mx.clips.get('v').gain === node, 'attached again after the fallback set el.volume, its volume is back at 1 (V1 -> V2 -> V1 is not silent)')
+    ok(mx.routedIds().includes('v') && mx.routedIds().includes('c'), `routedIds lists what is routed (${mx.routedIds().join(', ')})`)
+    mx.detach('v')
+    ok(!mx.routedIds().includes('v') && !mx.has('v'), 'a detached clip is no longer listed')
+  }
   const traps = A.duckTraps([[2, 5], [9, 12]], A.DUCK)
   let threw = null
   try {
@@ -274,6 +290,25 @@ console.log('the WebAudio graph (against a stand-in that enforces the spec\'s au
   delete globalThis.AudioContext
   const none = new P.PreviewMixer()
   ok(!none.available && none.attach('x', { volume: 0.5 }, 'voice') === false && none.momentary() === null, 'no WebAudio: the caller is told to keep el.volume')
+}
+
+console.log('App.tsx keeps the graph out of its ref callbacks')
+{
+  // React calls an inline ref callback with null on EVERY render, not only on unmount, and the editor
+  // re-renders once a frame while playing. A detach (or attach) in one silenced the V1 clip and faded
+  // it back in sixty times a second, which no pure test above can see. Routes are dropped in an effect.
+  const app = fs.readFileSync(path.join(here, '..', 'src', 'App.tsx'), 'utf8')
+  const refs = [...app.matchAll(/\bref=\{\s*\(?\s*\w+\s*\)?\s*=>/g)].map((m) => {
+    let i = app.indexOf('{', m.index), depth = 0
+    for (let j = i; j < app.length; j++) {
+      if (app[j] === '{') depth++
+      else if (app[j] === '}' && --depth === 0) return app.slice(i, j + 1)
+    }
+    return app.slice(i)
+  })
+  ok(refs.some((r) => r.includes('videoEls')), `the source scan finds the stage video's ref (${refs.length} inline refs)`)
+  const bad = refs.filter((r) => /\bmixer\.|previewMixer\(/.test(r))
+  ok(bad.length === 0, `no inline ref touches the mixer${bad.length ? `: ${bad[0].slice(0, 100)}` : ''}`)
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)
