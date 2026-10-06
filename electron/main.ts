@@ -20,7 +20,7 @@ import { planVisualIndex, timecode, stackLayout } from './visual'
 import { readZip, parseHandoff, downloadList, buildProject, entriesToWrite, isCloudMediaUrl, CLOUD_ORIGINS } from './cloudimport'
 import { generateClip, videoGenAvailable, estimateUsd, VIDEO_MODELS, GenTimeout } from './videogen'
 import { bridgeTimeoutMs, QUICK_MS } from '../agent/timeouts.mjs'
-import { stillInput, clipVideoChain, logoChain, titleDrawtext, friendlyExportError, stderrTail, UNREADABLE_STILL, TO_709 } from './exportgraph'
+import { stillInput, clipVideoChain, logoChain, titleDrawtext, fontCoverage, dropMissingGlyphs, friendlyExportError, stderrTail, UNREADABLE_STILL, TO_709 } from './exportgraph'
 import { cleanText, TITLE_FONT } from './textlayout'
 import { bridgeRefusal, commandForEditor, replyAlias, replyKey, type PendingReply } from './bridgeguard'
 import { isAppNavigation, externalLink } from './navguard'
@@ -2957,6 +2957,16 @@ const exportPlanOf = (s: ExportAudio): ExportPlan => {
     masterPasses: m.passes, notes: s.mix.notes, roles, baked: s.mix.baked, at: Date.now(),
   }
 }
+/** Which characters a bundled title font can draw (read once per font file). */
+const glyphCache = new Map<string, (cp: number) => boolean>()
+const glyphsOf = (file: string) => {
+  let has = glyphCache.get(file)
+  if (!has) {
+    try { has = fontCoverage(fs.readFileSync(file)) } catch { has = () => true }
+    glyphCache.set(file, has)
+  }
+  return has
+}
 // A failure must say WHY, in words, with the end of ffmpeg's log after it: the renderer shows the
 // message in a toast (it used to just make the progress bar disappear).
 const exportError = (reason: string, detail = '') => new Error(`Export failed: ${reason}${detail ? `\n${detail}` : ''}`)
@@ -3017,8 +3027,6 @@ ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outp
     const W = Math.round(settings?.width) || 1920
     const H = Math.round(settings?.height) || 1080
     const FPS = [24, 30, 60].includes(settings?.fps) ? settings.fps : 30
-    // a title with no theme font: the bundled face the preview shows, not the system's Arial
-    const fontFile = escFilter(path.join(themeFontsDir(), TITLE_FONT.file))
     const ends = [...clips.map(c => c.start + c.duration), ...texts.map(t => t.start + t.duration)]
     const totalDuration = ends.length ? Math.max(...ends) : 1
 
@@ -3093,10 +3101,16 @@ ipcMain.handle('export-video', async (_event, { clips, texts, brand, audio, outp
     // Burn in text overlays on top of the video chain, drawn as the preview draws them (titleDrawtext)
     texts.forEach((t, i) => {
       if (t.caption && t.caption.spec) return   // burned above with its theme
+      // a title with no theme font: the bundled face the preview shows, not the system's Arial
+      const faceFile = path.join(themeFontsDir(), t.font && THEME_FONTS[t.font as ThemeFont] ? THEME_FONTS[t.font as ThemeFont].file : TITLE_FONT.file)
+      // drawtext has no fallback face: what this one cannot draw (an emoji, CJK) would burn in as a
+      // "NO GLYPH" box, so it is left out and the user is told
+      const { text, dropped } = dropMissingGlyphs(t.text, glyphsOf(faceFile))
+      if (dropped.length) warnings.push(`the title "${(text || t.text).replace(/\s+/g, ' ').slice(0, 40)}" has ${dropped.join(' ')}, which its font cannot draw, so the export leaves ${dropped.length === 1 ? 'it' : 'them'} out`)
+      if (!text.trim()) return
       const txtFile = path.join(tmpDir, `t_${i}.txt`)
-      fs.writeFileSync(txtFile, t.text, 'utf8')
-      const themeFont = t.font && THEME_FONTS[t.font as ThemeFont] ? escFilter(path.join(themeFontsDir(), THEME_FONTS[t.font as ThemeFont].file)) : null
-      const dt = titleDrawtext(t, { W, H, fontFile: themeFont || fontFile, textFile: escFilter(txtFile), alpha: alphaExpr(t.start, t.start + t.duration, t.fadeIn, t.fadeOut) })
+      fs.writeFileSync(txtFile, text, 'utf8')
+      const dt = titleDrawtext(t, { W, H, fontFile: escFilter(faceFile), textFile: escFilter(txtFile), alpha: alphaExpr(t.start, t.start + t.duration, t.fadeIn, t.fadeOut) })
       filterComplex.push(`[${currentVOut}]drawtext=${dt}[v_txt_${i}]`)
       currentVOut = `v_txt_${i}`
     })

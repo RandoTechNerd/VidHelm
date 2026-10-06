@@ -135,6 +135,81 @@ export function titleDrawtext(t: ReturnType<typeof cleanText>, o: { H: number; W
 }
 
 /**
+ * Which characters a TrueType/OpenType font has a glyph for, from its cmap (format 12 for the full
+ * range, else format 4). drawtext draws from ONE face with no fallback, so a character the face lacks
+ * is drawn as its .notdef glyph, which in Inter is a box with "NO GLYPH" printed in it: an emoji that
+ * the preview shows (Chromium falls back to Segoe UI Emoji) burned into the video as that box. A
+ * font this cannot read answers "yes" for everything, which is how the export behaved before.
+ */
+export function fontCoverage(font: Uint8Array): (cp: number) => boolean {
+  const all = () => true
+  try {
+    const dv = new DataView(font.buffer, font.byteOffset, font.byteLength)
+    const tag = (o: number) => String.fromCharCode(font[o], font[o + 1], font[o + 2], font[o + 3])
+    // a collection: its first face
+    const base = tag(0) === 'ttcf' ? dv.getUint32(12) : 0
+    let cmap = -1
+    for (let i = 0, n = dv.getUint16(base + 4); i < n; i++) if (tag(base + 12 + i * 16) === 'cmap') cmap = dv.getUint32(base + 12 + i * 16 + 8)
+    if (cmap < 0) return all
+    let f4 = -1, f12 = -1
+    for (let i = 0, n = dv.getUint16(cmap + 2); i < n; i++) {
+      const rec = cmap + 4 + i * 8, platform = dv.getUint16(rec), encoding = dv.getUint16(rec + 2), at = cmap + dv.getUint32(rec + 4)
+      const unicode = platform === 0 || (platform === 3 && (encoding === 1 || encoding === 10))
+      if (!unicode) continue
+      const format = dv.getUint16(at)
+      if (format === 12 && f12 < 0) f12 = at
+      if (format === 4 && f4 < 0) f4 = at
+    }
+    if (f12 >= 0) {
+      const groups: [number, number, number][] = []
+      for (let i = 0, n = dv.getUint32(f12 + 12); i < n; i++) { const g = f12 + 16 + i * 12; groups.push([dv.getUint32(g), dv.getUint32(g + 4), dv.getUint32(g + 8)]) }
+      return cp => groups.some(([s, e, glyph]) => cp >= s && cp <= e && glyph + (cp - s) !== 0)
+    }
+    if (f4 >= 0) {
+      const segs = dv.getUint16(f4 + 6) / 2
+      const endAt = f4 + 14, startAt = endAt + segs * 2 + 2, deltaAt = startAt + segs * 2, rangeAt = deltaAt + segs * 2
+      return cp => {
+        if (cp > 0xffff) return false
+        for (let i = 0; i < segs; i++) {
+          if (dv.getUint16(endAt + i * 2) < cp) continue
+          const start = dv.getUint16(startAt + i * 2)
+          if (start > cp) return false
+          const delta = dv.getInt16(deltaAt + i * 2), ro = dv.getUint16(rangeAt + i * 2)
+          if (ro === 0) return ((cp + delta) & 0xffff) !== 0
+          const gAt = rangeAt + i * 2 + ro + (cp - start) * 2
+          if (gAt + 2 > font.byteLength) return false
+          const g = dv.getUint16(gAt)
+          return g !== 0 && ((g + delta) & 0xffff) !== 0
+        }
+        return false
+      }
+    }
+    return all
+  } catch { return all }
+}
+
+/**
+ * A title without the characters its face cannot draw (see fontCoverage), and which ones went. Line
+ * breaks and tabs are drawtext's own layout and always stay; a space left doubled by a removal is
+ * closed up. Only lines that lost something are touched.
+ */
+export function dropMissingGlyphs(text: string, has: (cp: number) => boolean): { text: string; dropped: string[] } {
+  const dropped: string[] = []
+  const lines = String(text ?? '').split('\n').map(line => {
+    let kept = '', lost = false
+    for (const ch of line) {
+      const cp = ch.codePointAt(0)!
+      if (cp === 9 || cp === 11 || cp === 12 || cp === 13 || has(cp)) { kept += ch; continue }
+      lost = true
+      // a variation selector or a joiner is part of the emoji just dropped, not a character of its own
+      if (!(cp === 0x200d || (cp >= 0xfe00 && cp <= 0xfe0f) || (cp >= 0x1f3fb && cp <= 0x1f3ff)) && !dropped.includes(ch)) dropped.push(ch)
+    }
+    return lost ? kept.replace(/ {2,}/g, ' ').replace(/^ +| +$/g, '') : kept
+  })
+  return { text: lines.join('\n'), dropped }
+}
+
+/**
  * The brand logo's branch: sized and made translucent in RGB, then converted to the file's BT.709
  * here. Left to the overlay, the conversion happens automatically with BT.601 and shifts the brand
  * colours, the one place a viewer is sure to notice.

@@ -13,7 +13,7 @@ const load = async f => {
   const out = await build({ entryPoints: [path.join(here, f)], bundle: true, write: false, format: 'esm', platform: 'node', target: 'node18' })
   return import('data:text/javascript;base64,' + Buffer.from(out.outputFiles[0].text).toString('base64'))
 }
-const { stillInput, clipAudioChain, clipVideoChain, logoChain, titleDrawtext, friendlyExportError, stderrTail, DEPOP_S, UNREADABLE_STILL } = await load('exportgraph.ts')
+const { stillInput, clipAudioChain, clipVideoChain, logoChain, titleDrawtext, fontCoverage, dropMissingGlyphs, friendlyExportError, stderrTail, DEPOP_S, UNREADABLE_STILL } = await load('exportgraph.ts')
 const { planProxy, proxyFilter, proxyFits, HDR_TO_SDR } = await load('playable.ts')
 const { cleanText, TITLE_FONT } = await load('textlayout.ts')
 
@@ -260,6 +260,19 @@ try {
     ok(Math.abs(h - want) <= lines && Math.abs(mid - 180) <= 1,
       `a boxed ${JSON.stringify(text)} gets the preview's box: ${h} px tall (preview ${want}: ${lines} x ${lineBox} line box + 2 x 15 padding), centred at ${mid} (y 180)` + (r.px ? '' : ': ' + r.err.slice(-300)))
   }
+  // characters the face has no glyph for: drawtext has no fallback, and Inter's .notdef is a box with
+  // "NO GLYPH" printed in it, burned into the middle of the title
+  const has = fontCoverage(fontBuf)
+  ok(['A', 'z', '%', '"', "'", 'é', 'ß', '€', 'Ж', 'Ω', ' '].every(c => has(c.codePointAt(0))), 'the title font covers Latin, accents, punctuation, Cyrillic and Greek')
+  ok(![0x1f389, 0x1f680, 0x4e2d, 0xfe0f].some(has), 'it has no emoji, no CJK and no variation selector')
+  const party = dropMissingGlyphs('Great job 🎉 100% "it\'s" done', has)
+  ok(party.text === 'Great job 100% "it\'s" done' && party.dropped.join() === '🎉', `an emoji is left out and named, the gap closed up (${JSON.stringify(party)})`)
+  const rocket = dropMissingGlyphs('🚀 Launch day\n❤️ 中文 ok\nuntouched  line', has)
+  ok(rocket.text === 'Launch day\n❤ ok\nuntouched  line' && rocket.dropped.join(' ') === '🚀 中 文', `line breaks stay, a heart the font has stays (minus the emoji selector it has no glyph for), a line that lost nothing keeps its spacing (${JSON.stringify(rocket)})`)
+  ok(dropMissingGlyphs('a\tb\r\nc', () => false).text === '\t\r\n' && fontCoverage(new Uint8Array(8))(0x1f389), 'layout characters always stay, and a font that cannot be read is taken as covering everything (as before)')
+  const notdef = title({ ...base, text: 'A 🎉', box: true, boxColor: '#000000' }), bare = title({ ...base, text: dropMissingGlyphs('A 🎉', has).text, box: true, boxColor: '#000000' }), justA = title({ ...base, text: 'A', box: true, boxColor: '#000000' })
+  ok(notdef.px && justA.px && Buffer.compare(notdef.px, justA.px) !== 0, '(control: drawn as typed, the emoji puts a box beside the A)')
+  ok(bare.px && justA.px && Buffer.compare(bare.px, justA.px) === 0, 'without it the title renders exactly like a plain "A"')
   // the injection: a colour that smuggles a second textfile in (measured: it drew that file into the video)
   fs.writeFileSync(T('secret.txt'), 'SECRET SECRET SECRET', 'utf8')
   const sneaky = title({ ...base, text: 'Hi', box: true, color: `white:textfile='${esc(T('secret.txt'))}'`, boxColor: 'red:x=0', start: "0,1)':textfile=x:enable='1" })
