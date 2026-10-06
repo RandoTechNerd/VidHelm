@@ -147,6 +147,22 @@ try {
     ok(M.planMaster({ I: -60, TP: -40, optimize: true }).gainDb === 30, 'the lift is capped at +30 dB (a near-silent mix is mostly room)')
   }
 
+  console.log('\n-- Watch & Verify: loudness against the plan --')
+  {
+    const yt = { targetLufs: -14, plannedLufs: -14 }
+    const c = M.loudnessChecks({ I: -14.04, TP: -1.4, codec: 'aac' }, yt)
+    ok(c.length === 3 && c.every((x) => x.status === 'pass') && c[0].label === 'Loudness (target −14 LUFS)', `on target: ${c.map((x) => `${x.label} ${x.detail}`).join(' | ')}`)
+    ok(c[2].label === 'Loudness plan' && c[2].detail === 'planned -14.0, measured -14.0 LUFS, -1.4 dBTP (AAC)', 'planned vs measured, in words')
+    ok(M.loudnessChecks({ I: -14, TP: -0.9, codec: 'aac' }, yt)[1].status === 'fail' && M.loudnessChecks({ I: -14, TP: -1.0 }, yt)[1].status === 'pass', 'the delivered true peak fails above -1.0 dBTP')
+    ok(M.loudnessChecks({ I: -16, TP: -2 }, { targetLufs: -16, plannedLufs: -16 })[0].status === 'pass' && M.loudnessChecks({ I: -16, TP: -2 })[0].status === 'warn', 'a podcast export is judged as one; the same file from elsewhere is 2 LU under YouTube')
+    const quiet = M.loudnessChecks({ I: -20.1, TP: -7 }, { targetLufs: -14, plannedLufs: -20.02 })
+    ok(quiet[0].status === 'warn' && /Master volume puts it 6\.0 dB under/.test(quiet[0].detail) && quiet[2].status === 'pass', `a Master volume of 50 percent is a choice, not a failure (${quiet[0].detail})`)
+    ok(M.loudnessChecks({ I: -25, TP: -9 })[0].status === 'fail' && M.loudnessChecks({ I: -14.9, TP: -3 }, { targetLufs: -14, plannedLufs: -14 })[2].status === 'warn', 'far off the target fails; a plan missed by 0.9 LU is a warning')
+    const s = M.soundCheck({ targetLufs: -14, plannedLufs: -14, roles: { voice: 3, music: 1, sfx: 2 }, baked: 3, notes: [] })
+    ok(s.status === 'pass' && s.detail === '3 voice clips (Fix voice on 3), 1 music clip, 2 sound effects', `"${s.detail}"`)
+    ok(M.soundCheck({ targetLufs: -14, plannedLufs: -14, roles: { voice: 1 }, baked: 0, notes: ['Fix voice could not run on a.mp4 (x), so it plays as recorded'] }).status === 'warn' && M.soundCheck(null) === null, 'anything that did not go to plan is a warning; a file from elsewhere has no line')
+  }
+
   // ---- real renders ----
   // "speech": pink bursts 2 s on / 3 s off at about -24 dBFS over a -70 dBFS room; a steady two-tone bed; a mono tone
   ff(['-f', 'lavfi', '-i', 'anoisesrc=c=pink:a=0.25:r=48000:d=20:seed=7', '-f', 'lavfi', '-i', 'anoisesrc=c=white:a=0.0004:r=48000:d=20:seed=9',
@@ -218,6 +234,11 @@ try {
     const I = loud(out)
     const TP = truePeak(out)
     ok(near(I, -14, 0.15) && TP <= -1.2, `the encoded file: ${I.toFixed(2)} LUFS, ${TP} dBTP after AAC`)
+    // what Watch & Verify reads off the same file
+    const qc = M.parseEbur128(spawnSync(FF, ['-hide_banner', '-i', out, '-vn', '-af', 'ebur128=peak=true:framelog=quiet', '-f', 'null', '-'], { encoding: 'utf8' }).stderr)
+    ok(near(qc.I, I, 0.06) && qc.TP === TP && qc.LRA >= 0, `the quality check reads it as ${qc.I} LUFS, ${qc.TP} dBTP, LRA ${qc.LRA} LU`)
+    const lines = M.loudnessChecks({ I: qc.I, TP: qc.TP, codec: 'aac' }, { targetLufs: ex.master.targetLufs, plannedLufs: ex.master.plannedLufs })
+    ok(lines.length === 3 && lines.every((l) => l.status === 'pass'), `and passes it: ${lines.map((l) => `${l.label}: ${l.detail}`).join(' | ')}`)
     const packets = packetsOf(out)
     const jumps = packets.slice(1).filter(([p], i) => p !== packets[i][0] + packets[i][1])
     ok(packets.length >= Math.ceil(20 * 48000 / 1024) && !jumps.length, `the sound is continuous to the end (${packets.length} AAC packets back to back)`)

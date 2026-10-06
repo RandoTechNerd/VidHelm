@@ -1057,9 +1057,11 @@ export function roleGuess(an: Analysis | null, ctx: { provenance?: Provenance; i
   return { role: 'music', why: pauses ? 'not speech-like' : 'continuous, no pauses' }
 }
 
+/** Where an export lands unless another platform is picked (YouTube, and what Watch & Verify judges a file from elsewhere by). */
+export const LOUDNESS_TARGET = -14
 export interface PlatformTarget { id: string; label: string; lufs: number; maxTruePeak: number; ceilingDbtp: number }
 const TARGETS: PlatformTarget[] = [
-  { id: 'youtube', label: 'YouTube and social (-14 LUFS)', lufs: -14, maxTruePeak: -1, ceilingDbtp: MASTER_CEILING_DBFS },
+  { id: 'youtube', label: 'YouTube and social (-14 LUFS)', lufs: LOUDNESS_TARGET, maxTruePeak: -1, ceilingDbtp: MASTER_CEILING_DBFS },
   { id: 'podcast', label: 'Podcast (-16 LUFS)', lufs: -16, maxTruePeak: -1, ceilingDbtp: MASTER_CEILING_DBFS },
   { id: 'broadcast', label: 'Broadcast R128 (-23 LUFS)', lufs: -23, maxTruePeak: -1, ceilingDbtp: MASTER_CEILING_DBFS },
   { id: 'audiobook', label: 'Audiobook (-20 LUFS)', lufs: -20, maxTruePeak: -1, ceilingDbtp: MASTER_CEILING_DBFS },

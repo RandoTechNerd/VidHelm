@@ -14,7 +14,7 @@
  * The numbers are the quiet-audio shoot-out's (see electron/audiochain.ts).
  */
 import {
-  DUCK, SFX_DUCK, LOWPASS_20K, MASTER_CEILING_DBFS, MAX_STATIC_DB, SR, bedDb, sfxDb, duckTraps, limiterFilter,
+  DUCK, SFX_DUCK, LOUDNESS_TARGET, LOWPASS_20K, MASTER_CEILING_DBFS, MAX_STATIC_DB, SR, bedDb, sfxDb, duckTraps, limiterFilter,
   mapSegmentsToTimeline, musicBusGraph, platformTarget, roleGuess, sfxBusGraph, unionSegments,
   type Preset, type Provenance, type Role, type Trapezoid,
 } from './audiochain'
@@ -271,4 +271,66 @@ export function planMaster(o: { I: number; TP: number | null; optimize: boolean;
 export function withMasterGain(m: MasterPlan, gainDb: number): MasterPlan {
   if (m.targetLufs == null) return m
   return { ...m, gainDb, filter: masterFilter(gainDb, m.ceilingDbtp) }
+}
+
+// ------------------------------------------------------------------ Watch & Verify
+
+/**
+ * ffmpeg ebur128's closing summary (integrated loudness, loudness range, true peak), the same meter
+ * the master was measured with. loudnorm's JSON, read before, is a different code path whose true
+ * peak runs on its own resampler; one meter for the plan and the check keeps "planned" and
+ * "measured" comparable.
+ */
+export function parseEbur128(log: string): { I: number; LRA: number; TP: number } {
+  const sum = String(log || '').split('Summary:').pop() || ''
+  const num = (re: RegExp) => { const m = re.exec(sum); return m ? (m[1] === '-inf' ? -Infinity : parseFloat(m[1])) : NaN }
+  return { I: num(/\bI:\s*(-?[\d.]+|-inf)\s*LUFS/), LRA: num(/\bLRA:\s*(-?[\d.]+)\s*LU\b/), TP: num(/True peak:\s+Peak:\s*(-?[\d.]+|-inf)\s*dBFS/) }
+}
+
+export interface QcCheck { label: string; status: 'pass' | 'warn' | 'fail'; detail: string }
+/** What the export was planned to be (main.ts remembers it per output file). */
+export interface PlannedSound { targetLufs: number | null; plannedLufs: number | null; roles?: Record<string, number>; baked?: number; notes?: string[] }
+
+const minus = (x: number) => (x < 0 ? `\u2212${Math.abs(x)}` : String(x))
+const oneDp = (x: number) => x.toFixed(1)
+
+/**
+ * The loudness lines of Watch & Verify. Judged against the target the export was made for (a podcast
+ * at -16 is not a failed YouTube export), the default for a file from elsewhere. The true peak is the
+ * DELIVERED one, after AAC: above -1 dBTP is a fail, because platforms re-encode and an overshoot
+ * there clips. When the export's plan is known, "planned vs measured" says whether it landed.
+ */
+export function loudnessChecks(m: { I: number; TP: number; codec?: string }, plan?: PlannedSound | null): QcCheck[] {
+  const out: QcCheck[] = []
+  const T = plan?.targetLufs ?? LOUDNESS_TARGET
+  if (Number.isFinite(m.I)) {
+    const d = m.I - T
+    // the Master volume moved it off the target on purpose: worth a word, not a failure
+    const offset = plan?.plannedLufs != null && Math.abs(plan.plannedLufs - T) > 1.5 && Math.abs(m.I - plan.plannedLufs) <= 1 ? plan.plannedLufs - T : null
+    const status = Math.abs(d) <= 1.5 ? 'pass' : offset != null || (d >= -4 && d <= 3) ? 'warn' : 'fail'
+    const why = offset != null ? ` (the Master volume puts it ${oneDp(Math.abs(offset))} dB ${offset < 0 ? 'under' : 'over'} the target)` : ''
+    out.push({ label: `Loudness (target ${minus(T)} LUFS)`, status, detail: `${oneDp(m.I)} LUFS${why}` })
+  }
+  const codec = m.codec ? ` (${m.codec.toUpperCase()})` : ''
+  if (Number.isFinite(m.TP)) out.push({ label: `True peak (\u2264 \u22121 dBTP)`, status: m.TP <= -1.0 ? 'pass' : 'fail', detail: `${oneDp(m.TP)} dBTP${codec}` })
+  if (plan?.plannedLufs != null && Number.isFinite(m.I)) {
+    const miss = Math.abs(m.I - plan.plannedLufs)
+    out.push({
+      label: 'Loudness plan', status: miss <= 0.5 ? 'pass' : miss <= 1.5 ? 'warn' : 'fail',
+      detail: `planned ${oneDp(plan.plannedLufs)}, measured ${oneDp(m.I)} LUFS${Number.isFinite(m.TP) ? `, ${oneDp(m.TP)} dBTP${codec}` : ''}`,
+    })
+  }
+  return out
+}
+
+const ROLE_WORDS: Record<string, [string, string]> = { voice: ['voice clip', 'voice clips'], music: ['music clip', 'music clips'], sfx: ['sound effect', 'sound effects'], asis: ['clip as recorded', 'clips as recorded'] }
+/** One line on what the mix did with each kind of clip, plus anything that did not go to plan. */
+export function soundCheck(plan?: PlannedSound | null): QcCheck | null {
+  if (!plan?.roles) return null
+  const parts = ['voice', 'music', 'sfx', 'asis'].filter((r) => plan.roles![r]).map((r) => {
+    const n = plan.roles![r], w = ROLE_WORDS[r][n === 1 ? 0 : 1]
+    return r === 'voice' && plan.baked ? `${n} ${w} (Fix voice on ${plan.baked})` : `${n} ${w}`
+  })
+  const notes = plan.notes || []
+  return { label: 'Sound', status: notes.length ? 'warn' : 'pass', detail: [parts.join(', ') || 'no sound', ...notes].join('; ') }
 }

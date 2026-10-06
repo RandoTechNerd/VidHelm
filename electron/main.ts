@@ -22,6 +22,7 @@ import { bridgeRefusal, commandForEditor, replyAlias, replyKey, type PendingRepl
 import { decide, decideChannel, decisionsJson, summaryLine, speechSegments, analysisSummary, roleGuess, bedDb, sfxDb, type Preset, type Provenance } from './audiochain'
 import { analyzeMedia, bakeVoice, cachedBake, readFfmpegVersion, sweepVoiceTemp, voiceCacheKey, type BakeResult } from './voicebake'
 import { prepareExportAudio, scanTimelineLoudness, type ExportAudio, type MixEnv } from './mixrender'
+import { loudnessChecks, parseEbur128, soundCheck, type ExportAudioClip } from './audiomix'
 import path from 'node:path'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -999,10 +1000,10 @@ ipcMain.handle('quality-check', async (_event, filePath: string) => {
   const fpsParts = (v?.r_frame_rate || '0/1').split('/')
   const fps = fpsParts[1] && fpsParts[1] !== '0' ? Math.round(parseInt(fpsParts[0]) / parseInt(fpsParts[1])) : 0
 
-  // Loudness measurement (loudnorm analysis pass prints JSON)
-  const lnOut = await runFF(['-hide_banner', '-i', filePath, '-af', 'loudnorm=I=-14:TP=-1:LRA=11:print_format=json', '-f', 'null', '-'])
-  let loudness: any = {}
-  try { const m = lnOut.match(/\{[\s\S]*?\}/); if (m) { const j = JSON.parse(m[0]); loudness = { integrated: parseFloat(j.input_i), truePeak: parseFloat(j.input_tp), lra: parseFloat(j.input_lra) } } } catch {}
+  // Loudness and true peak of the delivered sound (the AAC as it decodes), with the meter the export's
+  // master was planned with (see parseEbur128)
+  const lu = parseEbur128(await runFF(['-hide_banner', '-i', filePath, '-vn', '-af', 'ebur128=peak=true:framelog=quiet', '-f', 'null', '-']))
+  const loudness = { integrated: lu.I, truePeak: lu.TP, lra: lu.LRA }
 
   // Peak / clipping
   const vdOut = await runFF(['-hide_banner', '-i', filePath, '-af', 'volumedetect', '-f', 'null', '-'])
@@ -1041,16 +1042,11 @@ ipcMain.handle('quality-check', async (_event, filePath: string) => {
   let faststart = false
   try { const head = fs.readFileSync(filePath).slice(0, 200000); faststart = head.indexOf('moov') >= 0 && head.indexOf('moov') < head.indexOf('mdat') } catch {}
   checks.push({ label: 'Web fast-start', status: faststart ? 'pass' : 'warn', detail: faststart ? 'moov at front' : 'not optimized' })
-  // loudness
-  if (!isNaN(loudness.integrated)) {
-    const I = loudness.integrated
-    const st = I >= -15.5 && I <= -12.5 ? 'pass' : (I >= -18 && I <= -11 ? 'warn' : 'fail')
-    checks.push({ label: 'Loudness (target −14 LUFS)', status: st, detail: `${I.toFixed(1)} LUFS` })
-  }
-  if (!isNaN(loudness.truePeak)) {
-    const tp = loudness.truePeak
-    checks.push({ label: 'True peak (≤ −1 dBTP)', status: tp <= -1 ? 'pass' : (tp <= 0 ? 'warn' : 'fail'), detail: `${tp.toFixed(1)} dBTP` })
-  }
+  // loudness: against the target this export was made for, and what it was planned to land at
+  const plan = exportPlans.get(path.resolve(filePath).toLowerCase()) || null
+  checks.push(...loudnessChecks({ I: lu.I, TP: lu.TP, codec: a?.codec_name }, plan))
+  const mixLine = soundCheck(plan)
+  if (mixLine) checks.push(mixLine)
   if (!isNaN(maxV)) {
     checks.push({ label: 'Clipping', status: maxV >= 0 ? 'fail' : (maxV >= -0.3 ? 'warn' : 'pass'), detail: `max ${maxV.toFixed(1)} dB` })
   }
@@ -1062,6 +1058,7 @@ ipcMain.handle('quality-check', async (_event, filePath: string) => {
   return {
     probe: { width: v?.width, height: v?.height, fps, vcodec: v?.codec_name, pixfmt: v?.pix_fmt, acodec: a?.codec_name, sampleRate: a?.sample_rate, channels: a?.channels, duration: dur },
     loudness, volume: { max: maxV, mean: meanV }, black, frames, checks, verdict,
+    plan: plan ? { targetLufs: plan.targetLufs, plannedLufs: plan.plannedLufs, gainDb: plan.gainDb } : undefined,
   }
 })
 
@@ -2588,7 +2585,7 @@ const mixEnv = async (o: { bakeMissing: boolean }): Promise<MixEnv> => ({
   onStage: (line) => console.log('[export sound]', line),
 })
 /** The timeline's end, as the export computes it (clips and text). */
-const timelineEnd = (clips: any[], texts: any[] = []) => {
+const timelineEnd = (clips: { start?: unknown; duration?: unknown }[], texts: { start?: unknown; duration?: unknown }[] = []) => {
   const ends = [...clips.map(c => Number(c.start) + Number(c.duration)), ...texts.map(t => Number(t.start) + Number(t.duration))].filter(Number.isFinite)
   return ends.length ? Math.max(...ends) : 1
 }
@@ -2596,7 +2593,7 @@ const timelineEnd = (clips: any[], texts: any[] = []) => {
 // Where the export will land, without exporting: the export's own audio graph rendered to nothing and
 // measured. Voices without a bake play as recorded here and are counted (`unbaked`); pass bake:true to
 // make them first, as the export does. The same timeline answers from memory.
-ipcMain.handle('scan-timeline-loudness', async (_event, { clips, texts, audio, settings, bake }: { clips: any[]; texts?: any[]; audio?: any; settings?: any; bake?: boolean }) => {
+ipcMain.handle('scan-timeline-loudness', async (_event, { clips, texts, audio, settings, bake }: { clips: ExportAudioClip[]; texts?: { start: number; duration: number }[]; audio?: { optimize?: boolean; target?: string; duck?: boolean }; settings?: { masterVolume?: number }; bake?: boolean }) => {
   try {
     const a = audio || {}
     return await scanTimelineLoudness(clips || [], {

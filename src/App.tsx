@@ -18,6 +18,7 @@ import { spanForPhrase, sentenceSpans, type Word as SpeechWord, type Span } from
 import { planBroll, snapToWords, describePlan, type BrollAsset, type Placement } from '../electron/broll'
 import { looksLikeThumbPhoto } from '../electron/thumbpick'
 import { resolveProfile, describeProfile, type PerfProfile, type Tier, type TierPreference } from '../electron/capability'
+import { PLATFORM_TARGETS, platformTarget } from '../electron/audiochain'
 
 interface MediaFile {
   id: string
@@ -93,6 +94,22 @@ const DEFAULT_SETTINGS: AppSettings = {
   performance: { preference: 'auto' },
   workspace: { root: null, autoLoad: true },
   recipe: { text: DEFAULT_RECIPE, introAudioPath: null },
+}
+
+/** A loudness figure the way the labels write it: a real minus sign, one decimal. */
+const lufsText = (x: number) => `${x < 0 ? '\u2212' : ''}${Math.abs(x).toFixed(1)}`
+/**
+ * Where the export lands, said under the Master volume slider. With Optimize on the export is a
+ * measured linear gain to the target, so the slider is an exact offset from it (electron/audiomix.ts
+ * planMaster) and this line is what Watch & Verify will measure.
+ */
+const masterVolumeHint = (audio: AppSettings['audio'], masterVolume: number) => {
+  const mvDb = masterVolume > 0 ? 20 * Math.log10(masterVolume) : -Infinity
+  const off = Math.abs(mvDb) >= 0.05 ? `${mvDb > 0 ? '+' : '\u2212'}${Math.abs(mvDb).toFixed(1)} dB` : ''
+  if (!(masterVolume > 0)) return 'The export will be silent.'
+  if (!audio.optimize) return `No loudness target: the mix as it is${off ? `, ${off}` : ''}, under a \u22121 dBTP ceiling.`
+  const t = platformTarget(audio.target)
+  return `Export lands at ${lufsText(t.lufs + mvDb)} LUFS${off ? ` (${off} from the ${lufsText(t.lufs)} target)` : ''}.`
 }
 
 // Every agent command carries an id. StrictMode's double mount, and, in dev, hot reloads
@@ -3572,8 +3589,18 @@ function Editor() {
                 </div>
                 <div className="field"><label><IconVolume /> Master Volume - {Math.round(masterVolume * 100)}%</label>
                   <input type="range" min="0" max="1.5" step="0.05" value={masterVolume} onChange={e => setMasterVolume(parseFloat(e.target.value))} style={{ width: '100%', accentColor: 'var(--accent-primary)' }} />
+                  <p className="hint">{masterVolumeHint(settings.audio, masterVolume)}</p>
                 </div>
-                <div className="field chk" onClick={() => setSettings(s => ({ ...s, audio: { ...s.audio, optimize: !s.audio.optimize } }))}><input type="checkbox" checked={settings.audio.optimize} readOnly id="norm" /><label htmlFor="norm" style={{ cursor: 'pointer', marginBottom: 0 }}>Optimize loudness (−14 LUFS)</label></div>
+                {/* the label toggles the box through htmlFor; a click handler on the row as well toggled it twice */}
+                <div className="field chk"><input type="checkbox" checked={settings.audio.optimize} id="norm" onChange={e => setSettings(s => ({ ...s, audio: { ...s.audio, optimize: e.target.checked } }))} /><label htmlFor="norm" style={{ cursor: 'pointer', marginBottom: 0 }}>Optimize loudness</label></div>
+                {settings.audio.optimize && (
+                  <div className="field"><label htmlFor="loud-target">Loudness target</label>
+                    <select id="loud-target" value={platformTarget(settings.audio.target).id} onChange={e => setSettings(s => ({ ...s, audio: { ...s.audio, target: e.target.value } }))}>
+                      {PLATFORM_TARGETS.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
+                    </select>
+                  </div>
+                )}
+                <div className="field chk"><input type="checkbox" checked={settings.audio.duck} id="duck" onChange={e => setSettings(s => ({ ...s, audio: { ...s.audio, duck: e.target.checked } }))} /><label htmlFor="duck" style={{ cursor: 'pointer', marginBottom: 0 }}>Duck music under speech</label></div>
                 <div className="field"><label>Save To</label><div className="path-box" onClick={pickExportPath}><IconFolder /><span>{customExportPath ? customExportPath.split(/[\\/]/).pop() : 'Choose on export…'}</span></div></div>
                 <div className={`progress-line ${exportProgress !== null ? 'show' : ''}`}><div className="fill" style={{ width: `${exportProgress || 0}%` }} /></div>
                 <button className="action-btn export" onClick={handleExport} disabled={(clips.length === 0 && texts.length === 0) || exportProgress !== null}><IconExport /> <span>{exportProgress !== null ? `Rendering ${Math.round(exportProgress)}%${eta && eta > 0 ? ` • ${fmtEta(eta)} left` : ''}` : 'Export Video'}</span></button>
@@ -3960,7 +3987,14 @@ function Editor() {
 
               <section>
                 <h3>Audio</h3>
-                <label className="switch"><input type="checkbox" checked={settings.audio.optimize} onChange={e => setSettings(s => ({ ...s, audio: { ...s.audio, optimize: e.target.checked } }))} /> Auto optimize loudness (−14 LUFS, YouTube target)</label>
+                <label className="switch"><input type="checkbox" checked={settings.audio.optimize} onChange={e => setSettings(s => ({ ...s, audio: { ...s.audio, optimize: e.target.checked } }))} /> Optimize loudness</label>
+                <label>Loudness target
+                  <select value={platformTarget(settings.audio.target).id} disabled={!settings.audio.optimize} onChange={e => setSettings(s => ({ ...s, audio: { ...s.audio, target: e.target.value } }))}>
+                    {PLATFORM_TARGETS.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
+                  </select>
+                </label>
+                <label className="switch"><input type="checkbox" checked={settings.audio.duck} onChange={e => setSettings(s => ({ ...s, audio: { ...s.audio, duck: e.target.checked } }))} /> Duck music and sound effects under speech</label>
+                <p className="hint">Every voice is measured and cleaned on its own (Fix voice: level, room noise, knocks), music sits 5 LU under the voice and dips 10 dB while someone speaks, and the export lands on the target with one measured gain. Nothing compresses the whole mix, so nothing pumps. Master volume in the Export tab moves the result up or down from the target.</p>
               </section>
 
               <section>
@@ -4118,7 +4152,7 @@ function Editor() {
                       </div>
                     ))}
                   </div>
-                  <p className="hint">Frames are sampled across the video so you can eyeball the picture. Loudness/peak are measured against YouTube's −14 LUFS / −1 dBTP target.</p>
+                  <p className="hint">Frames are sampled across the video so you can eyeball the picture. Loudness is judged against the target the export was made for (YouTube's −14 LUFS for a file from elsewhere), and the true peak of the delivered sound must stay at or under −1 dBTP.</p>
                 </>
               )}
             </div>

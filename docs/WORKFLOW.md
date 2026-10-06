@@ -101,9 +101,12 @@ Placement recipe: seek to a tag (click its flag), then hit **+** on the effect.
 
 Mixing tools, per clip: flat volume slider, **drawable volume-automation graph** (click to add points, drag to shape, double-click to delete), fade in/out. Master volume on the right.
 
-**Export mastering** (Settings → Audio or the checkbox in Export):
-- *Optimize loudness* compresses gently and lands the mix at YouTube's loudness target (≈ −14 LUFS, −1 dBTP), leave it on unless you know why you're turning it off.
-- *Noise reduction* adds an 80 Hz high-pass + FFT denoise: for hissy rooms.
+**Export mastering** (the Export tab, or Settings → Audio):
+- Every clip plays as what it is. Voices (camera speech, voiceovers, booth takes, narration) are measured and fixed one recording at a time: lifted to a working level, room noise cleaned only as far as the room needs, knocks tamed. Music sits 5 LU under the voice; sound effects peak at the voice's level. Roles are guessed from where a file came from and how it sounds; a clip with continuous sound under the picture is left as recorded.
+- *Duck music under speech* (on by default) dips music 10 dB and sound effects 6 dB while someone talks, already fully down before the first word and back within half a second of a pause.
+- *Optimize loudness* lands the export on the *Loudness target* (YouTube and social −14 LUFS, Podcast −16, Broadcast R128 −23, Audiobook −20) with one measured gain and a −1.5 dBTP ceiling. Nothing compresses the whole mix, so the bed does not pump. Off: the mix as it is, under a −1 dBTP ceiling.
+- *Master volume* moves the export from the target (50% is 6 dB under it); the line under the slider says where it will land, and Watch & Verify reports planned against measured.
+- The first export of a recording takes a little longer while its voice is fixed; the result is cached and every later export reuses it.
 
 ## 7 · Captions
 

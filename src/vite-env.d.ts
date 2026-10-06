@@ -95,7 +95,7 @@ interface Window {
     bakeVoice: (data: { filePath: string; preset?: FixVoicePreset; picture?: string | null }) => Promise<VoiceBakeResult>
     /** rejects with an Error whose message is "Export failed: <reason>" plus the end of ffmpeg's log on following lines */
     exportVideo: (data: { clips: any[], texts: any[], brand: any, audio: any, outputPath: string, settings: any }) => Promise<{ success: boolean }>
-    scanTimelineLoudness: (data: { clips: any[]; texts?: any[]; audio?: any; settings?: any; bake?: boolean }) => Promise<TimelineLoudnessScan>
+    scanTimelineLoudness: (data: { clips: unknown[]; texts?: unknown[]; audio?: { optimize?: boolean; target?: string; duck?: boolean }; settings?: { masterVolume?: number }; bake?: boolean }) => Promise<TimelineLoudnessScan>
     sfxLibrary: () => Promise<{ dir: string; items: { name: string; path: string; duration: number; builtin: boolean }[] }>
     pickAudio: () => Promise<string | null>
     openExternal: (url: string) => Promise<void>
