@@ -24,6 +24,9 @@ const expect = {
   'my 4k video is choppy': 'slow',
   'keyboard shortcuts?': 'shortcuts',
   'put my logo in the corner': 'brand',
+  'my voice is too quiet and there is background noise': 'fixvoice',
+  'what loudness target should a podcast use': 'loudness',
+  'how loud will the export be in lufs': 'loudness',
 }
 for (const [q, id] of Object.entries(expect)) ok(H.localAnswer(q)?.id === id, `"${q}" -> ${id} (got ${H.localAnswer(q)?.id})`)
 ok(H.localAnswer('what is the capital of France') === null, 'off-topic question gets no answer rather than a wrong one')

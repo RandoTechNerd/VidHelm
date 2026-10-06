@@ -38,7 +38,7 @@ Your footage never leaves your machine: FFmpeg does the rendering, Whisper runs 
 - **✨ AI sound effects**: describe any sound ("cartoon spring boing, short") and generate it locally with a text-to-audio model (one-time command setup; [audio.cpp](https://github.com/0xShug0/audio.cpp) + stable_audio recommended, see [docs/VOICE_CLONE.md](docs/VOICE_CLONE.md))
 - **Karaoke booth**: paste your script (or **✨ draft it from your timeline audio** with on-device Whisper, perfect for cleanly re-recording a rough take), hit record: the video plays, lines light up in time (evenly, or pinned to your tag points), you read along in **one take**, and the take lands on the voice track. Your AI can write the script into the booth too
 - **Cloned-voice narration**: a built-in **🧬 setup wizard** records a ~20s sample of your voice and sets up a free local engine for you: **XTTS-v2** (guided Python install) or **[audio.cpp](https://github.com/0xShug0/audio.cpp)** (prebuilt exe, no Python, Apache-licensed models, safe for monetized videos). Any TTS/voice-clone CLI works too, see [docs/VOICE_CLONE.md](docs/VOICE_CLONE.md); generated lines are placed at your tag points automatically
-- Loudness done right: one checkbox masters the mix to YouTube's target with a compressor + `loudnorm`; optional noise reduction
+- Loudness done right: every voice is measured and fixed on its own (lifted, cleaned, knocks tamed), music sits under it and ducks while you talk, and the export lands on the platform's target (YouTube −14 LUFS, Podcast, Broadcast, Audiobook) with one measured gain: no pumping. The preview plays that same mix, and the Export tab says where the export will land before you render
 
 **AI copilot built in, bring your AI of choice**
 - VidHelm ships an **MCP server**: your AI assistant drives the running app **while you watch**: read the timeline, drop SFX on your tag points, write titles, seek your window, take screenshots of what you see, and export with a quality report
@@ -109,6 +109,7 @@ Full walkthrough with details: [docs/WORKFLOW.md](docs/WORKFLOW.md)
 | Doc | What's inside |
 |---|---|
 | [docs/WORKFLOW.md](docs/WORKFLOW.md) | The full editing pipeline, keyboard shortcuts, audio lanes explained |
+| [docs/AUDIO.md](docs/AUDIO.md) | Fix voice, sound roles, ducking and the loudness master: what happens to the sound and the numbers behind it |
 | [docs/CONNECT.md](docs/CONNECT.md) | Hook up **your AI of choice**: zero-config + copy-paste setups, HTTP fallback, troubleshooting |
 | [docs/AGENT.md](docs/AGENT.md) | The agent bridge itself, endpoints, tool list, protocol details |
 | [docs/PROJECT_FORMAT.md](docs/PROJECT_FORMAT.md) | The JSON project/state format for scripts and tooling |

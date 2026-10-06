@@ -27,6 +27,8 @@ export const ACTION_TIMEOUTS = {
   analyze_speech: LONG_MS, find_phrase: LONG_MS, cut_at_phrase: LONG_MS, find_word: LONG_MS,
   make_captions: LONG_MS, find_repeats: LONG_MS, apply_takes: LONG_MS,
   capture_site: LONG_MS, make_score: LONG_MS, make_sfx: LONG_MS, search_sfx: LONG_MS, download_sfx: LONG_MS,
+  // a first measurement decodes every file it is asked about (about a second per minute of sound)
+  analyze_audio: LONG_MS,
   // usually quick, but the first call can do real work (the SFX library renders itself once, probes, model loads)
   add_media: MEDIUM_MS, list_sfx: MEDIUM_MS, place_sfx: MEDIUM_MS, ui: MEDIUM_MS,
 }

@@ -481,7 +481,9 @@ export function KaraokeBooth({ open, onClose, markers, totalDuration, currentTim
   const start = async () => {
     if (totalDuration <= 0) { setStatus('Put something on the timeline first.'); return }
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: true, autoGainControl: false } })
+      // the raw mic: Fix voice measures the take and cleans its room noise itself, which the
+      // browser's noise suppression (a gate on quiet words) would have got to first
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1, sampleRate: 48000 } })
       // live level meter
       const ac = new AudioContext()
       const an = ac.createAnalyser(); an.fftSize = 512
