@@ -11,6 +11,7 @@ import { StageEmpty, MediaEmpty, DropOverlay } from './welcome'
 import { rangeFill, dragHasFiles, dropIntent, isTextEntry, MEDIA_DRAG, firstVideoOf, recentProjects, formatLine } from './uikit'
 import type { HelpAction } from '../electron/helpdesk'
 import { SfxPanel, MarkerPanel, KaraokeBooth, NarrationModal, RecipeSection, ThumbnailModal, ConnectModal, DEFAULT_RECIPE, type SfxItem } from './extras'
+import { parseFreeRecord, FREE_RECORD_HINT, type BoothMode } from './boothmode'
 import { newMarker, type Marker } from './markers'
 import { saveTake } from './recording'
 import { recipeActive, type RecipeSettings } from './recipe'
@@ -147,6 +148,8 @@ interface AppSettings {
   /** how hard to work this machine. 'auto' follows what was detected at startup. */
   performance: { preference: TierPreference }
   recipe: RecipeSettings
+  /** the karaoke booth: freeRecord = record without the video playing, take lands at the playhead (src/boothmode.ts) */
+  booth: BoothMode
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -161,6 +164,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   performance: { preference: 'auto' },
   workspace: { root: null, autoLoad: true },
   recipe: { text: DEFAULT_RECIPE, introAudioPath: null },
+  booth: { freeRecord: false },
 }
 
 /** A loudness figure the way the labels write it: a real minus sign, one decimal. */
@@ -1306,7 +1310,7 @@ function Editor() {
   // Load persistent settings (brand kit, intro defaults, audio) once
   useEffect(() => {
     window.ipcRenderer.getSettings().then((s: AppSettings) => {
-      if (s) setSettings({ ...DEFAULT_SETTINGS, ...s, brand: { ...DEFAULT_SETTINGS.brand, ...s.brand }, intro: { ...DEFAULT_SETTINGS.intro, ...s.intro }, audio: { ...DEFAULT_SETTINGS.audio, ...s.audio }, workspace: { ...DEFAULT_SETTINGS.workspace, ...s.workspace }, recipe: { ...DEFAULT_SETTINGS.recipe, ...s.recipe } })
+      if (s) setSettings({ ...DEFAULT_SETTINGS, ...s, brand: { ...DEFAULT_SETTINGS.brand, ...s.brand }, intro: { ...DEFAULT_SETTINGS.intro, ...s.intro }, audio: { ...DEFAULT_SETTINGS.audio, ...s.audio }, workspace: { ...DEFAULT_SETTINGS.workspace, ...s.workspace }, recipe: { ...DEFAULT_SETTINGS.recipe, ...s.recipe }, booth: { ...DEFAULT_SETTINGS.booth, ...s.booth } })
       settingsLoaded.current = true
     }).catch(() => { settingsLoaded.current = true })
   }, [])
@@ -1714,6 +1718,13 @@ function Editor() {
           theme: (() => { const cs = settings.caption; if (cs.theme === 'classic') return { id: 'classic', note: 'Plain manual captions. set_theme to switch to a theme.' }; const c = chooseTheme(themeRequest(cs)); return { request: themeRequest(cs), id: c.theme.id, name: c.theme.name, feel: { transitions: c.theme.transition, music: c.theme.music, sfx: c.theme.sfx } } })(),
           tags: [...markers].sort((a, b) => a.t - b.t).map(m => ({ id: m.id, t: +m.t.toFixed(3), label: m.label })),
           startRecipe: { instructions: settings.recipe.text, active: Object.entries(recipeActive(settings.recipe.text)).filter(([, v]) => v).map(([k]) => k), introAudioPath: settings.recipe.introAudioPath, note: "The user's standing workflow (like start G-code). # lines are OFF. Lines like 'titles 5' are for YOU to do in chat." },
+          // the karaoke booth: open or not, how many script lines it holds, and which way it records
+          booth: {
+            open: showBooth, scriptLines: boothScript.split('\n').filter(l => l.trim()).length, freeRecord: settings.booth.freeRecord,
+            note: settings.booth.freeRecord
+              ? 'Free record: the video stays put while a take records and the take lands at the playhead (seek first to choose where). set_booth_mode {freeRecord:false} returns to the synced one-take read-along.'
+              : 'Synced: Record plays the video from 0:00 and the take lands at 0:00. set_booth_mode {freeRecord:true} to record any line with the video parked, the take landing at the playhead.',
+          },
           // so you can see what the heavy jobs will default to before you ask for them
           machine: {
             tier: perf.tier,
@@ -2448,7 +2459,18 @@ function Editor() {
         if (typeof cmd.script !== 'string' || !cmd.script.trim()) return { error: 'script (string) required, one line per beat' }
         setBoothScript(cmd.script.trim())
         if (cmd.open !== false) setShowBooth(true)
-        return { ok: true, lines: cmd.script.trim().split('\n').filter((l: string) => l.trim()).length }
+        const fr = parseFreeRecord(cmd.freeRecord)
+        if (fr !== undefined) setSettings(s => ({ ...s, booth: { ...s.booth, freeRecord: fr } }))
+        return { ok: true, lines: cmd.script.trim().split('\n').filter((l: string) => l.trim()).length, freeRecord: fr ?? settings.booth.freeRecord }
+      }
+      case 'booth_mode': {
+        // which way the booth records; remembered in settings like the toggle in the booth itself
+        const fr = parseFreeRecord(cmd.freeRecord)
+        if (fr === undefined) return { ok: true, freeRecord: settings.booth.freeRecord, hint: FREE_RECORD_HINT, usage: 'pass freeRecord: true|false' }
+        setSettings(s => ({ ...s, booth: { ...s.booth, freeRecord: fr } }))
+        if (cmd.open) setShowBooth(true)
+        return { ok: true, freeRecord: fr, landsAt: fr ? +currentTime.toFixed(3) : 0,
+          note: fr ? `Free record: the video will not play while a take records; the take lands at the playhead (${currentTime.toFixed(1)}s now, transport {seek} to move it).` : 'Synced: Record plays the video from 0:00 and the take lands at 0:00.' }
       }
       case 'seek': setCurrentTime(clamp(cmd.t ?? 0, 0, Math.max(totalDuration, cmd.t ?? 0))); return { ok: true }
       case 'play': setIsPlaying(cmd.playing !== false); return { ok: true }
@@ -4775,7 +4797,8 @@ function Editor() {
       <KaraokeBooth open={showBooth} onClose={() => setShowBooth(false)} markers={markers}
         totalDuration={totalDuration} currentTime={currentTime} isPlaying={isPlaying}
         onSeek={t => setCurrentTime(t)} onPlay={p => setIsPlaying(p)} onRecorded={boothRecorded}
-        script={boothScript} onScript={setBoothScript} onDraft={draftBoothScript} projectDir={currentProject?.dir} />
+        script={boothScript} onScript={setBoothScript} onDraft={draftBoothScript} projectDir={currentProject?.dir}
+        freeRecord={settings.booth.freeRecord} onFreeRecord={v => setSettings(s => ({ ...s, booth: { ...s.booth, freeRecord: v } }))} />
       <NarrationModal open={showNarration} onClose={() => setShowNarration(false)}
         command={settings.narration.command}
         onCommand={c => setSettings(s => ({ ...s, narration: { command: c } }))}

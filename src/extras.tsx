@@ -6,6 +6,7 @@ import { SecretField } from './controls'
 import { IcStop, IcRecord, IcFolder, IcSearch, IcSparkle, IcRefresh, IcPlaySm, IcClose, IcStar, IcKey, IcDownload, IcDice, IcExternal, IcPlus, IcGrip, IcMic, IcPause, IcCheck, IcCopy, IcTerminal, IcGlobe, IcFilm, IcChevron, IcGear, IcImage } from './icons'
 import { newMarker, type Marker } from './markers'
 import { saveTake } from './recording'
+import { planTake, recordBlocker, shouldAutoStop, stepHolds, FREE_RECORD_LABEL, FREE_RECORD_HINT } from './boothmode'
 import { RECIPE_TOGGLES, recipeActive, toggleRecipeLine, type RecipeSettings } from './recipe'
 
 export interface SfxItem { name: string; path: string; duration: number; builtin: boolean; about?: string }
@@ -384,7 +385,7 @@ export function MarkerPanel({ markers, currentTime, onChange, onSeek }: {
 // ---------------- Karaoke booth ----------------
 // One-take read-along recording over the timeline. Cue lines come from the script box;
 // each line is timed either evenly across the video or pinned to your tag points.
-export function KaraokeBooth({ open, onClose, markers, totalDuration, currentTime, onSeek, onPlay, onRecorded, script, onScript, onDraft, projectDir }: {
+export function KaraokeBooth({ open, onClose, markers, totalDuration, currentTime, onSeek, onPlay, onRecorded, script, onScript, onDraft, projectDir, freeRecord, onFreeRecord }: {
   open: boolean; onClose: () => void
   markers: Marker[]; totalDuration: number; currentTime: number; isPlaying: boolean
   onSeek: (t: number) => void; onPlay: (p: boolean) => void
@@ -394,6 +395,9 @@ export function KaraokeBooth({ open, onClose, markers, totalDuration, currentTim
   onDraft: (onDownload?: (pct: number | null) => void) => Promise<string | null>
   /** the open project folder: takes are saved into its voice sub-folder */
   projectDir?: string | null
+  /** Free record: the video stays parked while a take records and the take lands at the playhead
+   *  (src/boothmode.ts). Remembered in settings, and switchable over the agent bridge. */
+  freeRecord: boolean; onFreeRecord: (v: boolean) => void
 }) {
   const setScript = (v: string | ((s: string) => string)) => onScript(typeof v === 'function' ? v(script) : v)
   const [drafting, setDrafting] = useState(false)
@@ -470,16 +474,28 @@ export function KaraokeBooth({ open, onClose, markers, totalDuration, currentTim
   }
   const curIdx = lines.length ? Math.max(0, lines.findLastIndex((_, i) => currentTime >= cueT(i))) : -1
   const shownIdx = hold !== null ? Math.min(hold, lines.length - 1) : curIdx
+  // step the prompter by hand: while recording it holds on the chosen line (video and take keep
+  // rolling, "Resume prompter" hands it back to the video); otherwise it moves the playhead there.
+  // In Free record the video never moves for the prompter, so stepping always just holds the line.
+  const stepLine = (d: number) => {
+    if (!lines.length) return
+    const i = Math.min(lines.length - 1, Math.max(0, Math.max(0, shownIdx) + d))
+    if (stepHolds(freeRecord, recording)) setHold(i)
+    else { setHold(null); onSeek(cueT(i)) }
+  }
 
   useEffect(() => () => { cancelAnimationFrame(meterRaf.current); recRef.current?.stream.getTracks().forEach(t => t.stop()) }, [])
 
-  // auto-stop at the end of the timeline
+  // auto-stop at the end of the timeline (synced takes only; a free take ends when you press Stop)
   useEffect(() => {
-    if (recording && currentTime >= totalDuration - 0.05) stop()
-  }, [currentTime, recording, totalDuration])
+    if (recording && shouldAutoStop(freeRecord, currentTime, totalDuration)) stop()
+  }, [currentTime, recording, totalDuration, freeRecord])
 
   const start = async () => {
-    if (totalDuration <= 0) { setStatus('Put something on the timeline first.'); return }
+    const blocker = recordBlocker(freeRecord, totalDuration)
+    if (blocker) { setStatus(blocker); return }
+    // decided once, before the countdown: the mode and the playhead at the moment Record was pressed
+    const plan = planTake(freeRecord, currentTime)
     try {
       // the raw mic: Fix voice measures the take and cleans its room noise itself, which the
       // browser's noise suppression (a gate on quiet words) would have got to first
@@ -503,20 +519,22 @@ export function KaraokeBooth({ open, onClose, markers, totalDuration, currentTim
         let saved: { path: string; keptElsewhere: boolean }
         try { saved = await saveTake(blob, projectDir) }
         catch (err) { setStatus(`The take could not be saved: ${String((err as Error)?.message || err).replace(/^Error invoking remote method '[^']+':\s*(Error:\s*)?/, '')}`); return }
-        setStatus(saved.keptElsewhere ? 'Take saved in VidHelm’s own folder (the project folder could not be written) and placed on the voice track. Save the project to move it in.'
-          : projectDir ? 'Take saved in the project and placed on the voice track.' : 'Take saved and placed on the voice track.')
-        onRecorded(saved.path, 0)
+        const where = plan.startAt > 0 ? ` at ${plan.startAt.toFixed(1)}s` : ''
+        setStatus(saved.keptElsewhere ? `Take saved in VidHelm’s own folder (the project folder could not be written) and placed on the voice track${where}. Save the project to move it in.`
+          : projectDir ? `Take saved in the project and placed on the voice track${where}.` : `Take saved and placed on the voice track${where}.`)
+        onRecorded(saved.path, plan.startAt)
       }
       recRef.current = { rec, stream }
-      onSeek(0); onPlay(true)
+      if (plan.seek !== null) onSeek(plan.seek)
+      if (plan.play) onPlay(true)
       rec.start()
       setRecording(true); setHold(null)
-      setStatus('Recording, read along')
+      setStatus(plan.status)
     } catch (e) { console.error(e); setStatus('Microphone blocked, allow access and retry.') }
   }
 
   const stop = () => {
-    onPlay(false)
+    if (!freeRecord) onPlay(false)   // a free take never started the video, so it leaves the transport alone
     setRecording(false); setHold(null)
     if (recRef.current && recRef.current.rec.state !== 'inactive') recRef.current.rec.stop()
   }
@@ -556,12 +574,29 @@ export function KaraokeBooth({ open, onClose, markers, totalDuration, currentTim
         <button className={`booth-rec ${recording ? 'on' : ''}`} onClick={() => recording ? stop() : start()}>
           {recording ? <><IcStop /> Stop</> : <><IcRecord /> Record take</>}
         </button>
+        {lines.length > 0 && <>
+          <button className="booth-hold" aria-label="Previous line" disabled={shownIdx <= 0}
+            title={recording ? 'Back one line (the prompter holds there; the take keeps recording)' : 'Back one line'}
+            onClick={() => stepLine(-1)}><span style={{ display: 'inline-flex', transform: 'scaleX(-1)' }}><IcChevron /></span> Back</button>
+          <span className="hint" style={{ margin: 0, minWidth: 44, textAlign: 'center' }}>{Math.max(0, shownIdx) + 1} / {lines.length}</span>
+          <button className="booth-hold" aria-label="Next line" disabled={shownIdx >= lines.length - 1}
+            title={recording ? 'Next line (the prompter holds there; the take keeps recording)' : 'Next line'}
+            onClick={() => stepLine(1)}>Next <IcChevron /></button>
+        </>}
         {lines.length > 0 && <button className={`booth-hold ${hold !== null ? 'on' : ''}`} title="Freeze the prompter on this line (the video and the recording keep going); press again to catch up"
           onClick={() => setHold(h => h === null ? shownIdx : null)}>{hold !== null ? <><IcPlaySm /> Resume prompter</> : <><IcPause size={11} /> Hold prompter</>}</button>}
         <label className="toggle-row" title="Pin each line to your tag points (needs at least as many tags as lines); otherwise lines are spread evenly">
           <input type="checkbox" className="toggle" checked={useMarkers} onChange={e => setUseMarkers(e.target.checked)} /><span>Time lines with tag points</span>
         </label>
         <span className="hint" style={{ margin: 0 }}>{lines.length} line{lines.length === 1 ? '' : 's'} · {sortedMarkers.length} tag{sortedMarkers.length === 1 ? '' : 's'}</span>
+      </div>
+      <div className="booth-controls booth-mode">
+        <label className="toggle-row" title={FREE_RECORD_HINT}>
+          <input type="checkbox" className="toggle" checked={freeRecord} disabled={recording} onChange={e => onFreeRecord(e.target.checked)} /><span>{FREE_RECORD_LABEL}</span>
+        </label>
+        <span className="hint" style={{ margin: 0 }}>
+          {freeRecord ? `Video stays put; the take lands at the playhead (${currentTime.toFixed(1)}s now). Drag it anywhere.` : 'Record plays the video from the top; the take lands at 0:00. Turn on to record with the video parked.'}
+        </span>
       </div>
       {countdown !== null && <div className="booth-count">{countdown}</div>}
     </div>

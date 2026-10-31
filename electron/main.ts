@@ -242,6 +242,11 @@ function createWindow() {
 // silently have no AI connection, so hand focus back to the window that is already open.
 // Packaged builds only: during development you often want a dev build running next to the
 // installed app (on its own VH_AGENT_PORT), and the lock would silently quit it.
+// Dev helper: VH_DEVTOOLS_PORT=<port> opens Chromium's remote-debugging port on a from-source run,
+// so a script can press the editor's own buttons (record a booth take, say) where the agent bridge
+// has no command for it. Ignored in the installed app.
+if (!app.isPackaged && process.env.VH_DEVTOOLS_PORT) app.commandLine.appendSwitch('remote-debugging-port', process.env.VH_DEVTOOLS_PORT)
+
 const isPrimaryInstance = !app.isPackaged || app.requestSingleInstanceLock()
 if (!isPrimaryInstance) {
   app.quit()

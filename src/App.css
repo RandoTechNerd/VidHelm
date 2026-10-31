@@ -1134,7 +1134,9 @@ textarea.duration-input { height: auto; padding: 7px 9px; resize: vertical; line
 .booth-next { font-size: 13px; color: var(--text-secondary, #9aa3af); margin-top: 4px; min-height: 18px; }
 .booth-script { width: 100%; background: rgb(var(--ink) / 0.05); border: 1px solid rgb(var(--ink) / 0.1); color: inherit; border-radius: 10px; padding: 10px; font: inherit; font-size: 13.5px; resize: vertical; }
 .booth-edit { display: inline-flex; align-items: center; gap: 5px; background: none; border: none; color: var(--accent-text); cursor: pointer; font-size: 12px; padding: 2px 0; }
-.booth-controls { display: flex; align-items: center; gap: 14px; margin-top: 8px; }
+.booth-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; margin-top: 8px; }
+.booth-mode { margin-top: 6px; padding-top: 8px; border-top: 1px solid rgb(var(--ink) / 0.08); }
+.booth-mode .hint { flex: 1 1 220px; line-height: 1.35; }
 /* Record is a plain button with a red dot, the way recorders draw it; while it records, the
    whole button goes red and reads Stop. */
 .booth-rec {

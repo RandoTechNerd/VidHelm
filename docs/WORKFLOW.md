@@ -75,6 +75,7 @@ VidHelm treats narration as a first-class citizen. All three routes end with aud
 2. If you have at least as many tags as lines, each line is **pinned to its tag** ("time lines with tag points"); otherwise lines are spread evenly.
 3. Hit **Record take** → 3-2-1 countdown → the video plays from the top and each line lights up when it's time to say it. Read along; there are no buttons to press between lines.
 4. It auto-stops at the end and drops the take at 0:00 on the voice track. Don't like it? Delete the clip and go again.
+5. **Free record** (the switch under the controls) detaches recording from the video: nothing plays or scrubs while you record, Back / Next step the prompter by hand, and the take lands at the playhead as a plain audio clip you can drag anywhere. Use it to pick up one line, or to record a part before its picture exists. It is remembered between sessions, and an AI can flip it with `set_booth_mode`.
 
 ### 🗣 Cloned-voice narration
 Write the script in the **Narrate** dialog, and VidHelm runs your local TTS/voice-clone tool on it, one WAV per line, placed at your tag points automatically. Any CLI works via a command template; a complete free local setup (XTTS-v2) is documented in [VOICE_CLONE.md](VOICE_CLONE.md).
