@@ -170,6 +170,8 @@ interface Window {
       loopback: { ok: boolean; detail: string }
       mcpFile: { ok: boolean; path: string }
       node: { ok: boolean; version?: string }; cli: { onPath: boolean; path?: string }
+      launch: { command: string; args: string[]; env: Record<string, string>; builtIn: boolean }
     }>
+    addToClaudeDesktop: () => Promise<{ results: { file: string; ok: boolean; change?: string; backup?: string; error?: string }[] }>
   }
 }

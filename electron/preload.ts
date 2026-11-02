@@ -80,6 +80,7 @@ contextBridge.exposeInMainWorld('ipcRenderer', {
   saveSfxRecording: (data: { base64: string; name: string }) => ipcRenderer.invoke('save-sfx-recording', data),
   voiceClone: (data: { command: string; scriptText: string; pronounce?: boolean }) => ipcRenderer.invoke('voice-clone', data),
   agentStatus: () => ipcRenderer.invoke('agent-status'),
+  addToClaudeDesktop: () => ipcRenderer.invoke('add-to-claude-desktop'),
   pickModel: () => ipcRenderer.invoke('pick-model'),
   extractModel: (filePath: string) => ipcRenderer.invoke('extract-model', filePath),
   save3DRender: (data: { base64: string; name: string; alpha?: boolean }) => ipcRenderer.invoke('save-3d-render', data),

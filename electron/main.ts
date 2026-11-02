@@ -40,6 +40,7 @@ import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import https from 'node:https'
 import ffmpeg from 'fluent-ffmpeg'
+import { mcpLaunch, claudeDesktopConfigPaths, addToClaudeDesktop } from './mcpclient'
 
 if (!process.env.VH_GPU) app.disableHardwareAcceleration()   // VH_GPU=1 keeps the GPU on (needed for video-layer screenshots)
 
@@ -2318,9 +2319,21 @@ const MCP_SERVER_PATH = app.isPackaged
   ? path.join(process.resourcesPath, 'agent', 'mcp-server.mjs')
   : path.join(__dirname, '..', 'agent', 'mcp-server.mjs')
 
+// How AI clients start the server: an installed VidHelm offers its own exe (run as Node), so
+// nobody has to install Node.js; a from-source run uses node. See electron/mcpclient.ts.
+const currentMcpLaunch = () => mcpLaunch({ packaged: app.isPackaged, execPath: process.execPath, serverPath: MCP_SERVER_PATH, port: AGENT_PORT, portOverridden: !!process.env.VH_AGENT_PORT })
+
+// One click in the Connect panel: write VidHelm into Claude Desktop's config (every copy it may
+// read), keeping the user's other servers and a backup of the old file.
+ipcMain.handle('add-to-claude-desktop', async () => {
+  const launch = currentMcpLaunch()
+  const files = claudeDesktopConfigPaths(app.getPath('appData'), process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'))
+  return { results: files.map(f => addToClaudeDesktop(f, launch)) }
+})
+
 // Diagnostics for the in-app "Connect your AI" panel: is the bridge up, does a real
-// loopback HTTP call work, is the MCP server file on disk, and is Node on PATH
-// (MCP clients launch the server themselves, so they need their own node).
+// loopback HTTP call work, is the MCP server file on disk, and how clients will start it
+// (an installed app brings its own runtime; only a from-source run needs node on PATH).
 ipcMain.handle('agent-status', async () => {
   const loopback = await new Promise<{ ok: boolean; detail: string }>(resolve => {
     const req = http.get(`http://127.0.0.1:${AGENT_PORT}/ping`, res => {
@@ -2383,6 +2396,7 @@ ipcMain.handle('agent-status', async () => {
     loopback,
     mcpFile: { ok: fs.existsSync(MCP_SERVER_PATH), path: MCP_SERVER_PATH },
     node,
+    launch: currentMcpLaunch(),
     cli,
   }
 })

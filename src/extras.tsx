@@ -795,8 +795,8 @@ type AgentStatus = Awaited<ReturnType<Window['ipcRenderer']['agentStatus']>>
 
 
 const CLIENT_DOCS: { id: string; name: string; where: string; kind: 'json' | 'toml' | 'http' | 'auto' }[] = [
+  { id: 'claude-desktop', name: 'Claude Desktop', where: 'Press Add to Claude Desktop, then fully quit Claude Desktop (right-click its tray icon > Quit) and open it again. Prefer doing it by hand? Settings > Developer > Edit Config and merge this in.', kind: 'json' },
   { id: 'claude-code', name: 'Claude Code', where: 'Zero config, open this repo folder and approve the "vidhelm" server when prompted (.mcp.json is auto-discovered). Installed-app users: run the command below once instead.', kind: 'auto' },
-  { id: 'claude-desktop', name: 'Claude Desktop', where: 'Settings > Developer > Edit Config, or edit  %APPDATA%\\Claude\\claude_desktop_config.json, merge this in, then fully restart Claude Desktop.', kind: 'json' },
   { id: 'cursor', name: 'Cursor', where: 'Zero config in the repo (.cursor/mcp.json ships with it). Otherwise: Settings > MCP > Add server, or merge into  %USERPROFILE%\\.cursor\\mcp.json.', kind: 'json' },
   { id: 'vscode', name: 'VS Code (Copilot)', where: 'Zero config in the repo (.vscode/mcp.json ships with it). Otherwise: Command Palette > "MCP: Add Server", or merge into your user mcp.json.', kind: 'json' },
   { id: 'windsurf', name: 'Windsurf', where: 'Merge into  %USERPROFILE%\\.codeium\\windsurf\\mcp_config.json  then reload Windsurf.', kind: 'json' },
@@ -813,8 +813,9 @@ const CLIENT_DOCS: { id: string; name: string; where: string; kind: 'json' | 'to
 export function ConnectModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [st, setSt] = useState<AgentStatus | null>(null)
   const [busy, setBusy] = useState(false)
-  const [client, setClient] = useState('claude-code')
+  const [client, setClient] = useState('claude-desktop')
   const [copied, setCopied] = useState('')
+  const [added, setAdded] = useState<{ ok: boolean; text: string } | null>(null)
 
   const refresh = async () => {
     setBusy(true)
@@ -827,8 +828,16 @@ export function ConnectModal({ open, onClose }: { open: boolean; onClose: () => 
 
   const port = st?.port ?? 5959
   const mcpPath = st?.mcpFile.path ?? '<path to VidHelm>\\agent\\mcp-server.mjs'
-  const jsonPath = mcpPath.replace(/\\/g, '\\\\')
-  const stdJson = `{\n  "mcpServers": {\n    "vidhelm": {\n      "command": "node",\n      "args": ["${jsonPath}"]\n    }\n  }\n}`
+  // An installed VidHelm starts the server with its own exe (Electron run as Node), so nobody needs
+  // Node.js; a from-source run says node. Every snippet below is built from this one answer.
+  const launch = st?.launch ?? { command: 'node', args: [mcpPath], env: {} as Record<string, string>, builtIn: false }
+  const q = (v: string) => JSON.stringify(v)
+  const envEntries = Object.entries(launch.env)
+  const jsonEntry = (extra = '') => `{\n${extra}      "command": ${q(launch.command)},\n      "args": [${q(mcpPath)}]${envEntries.length ? `,\n      "env": { ${envEntries.map(([k, v]) => `${q(k)}: ${q(v)}`).join(', ')} }` : ''}\n    }`
+  const stdJson = `{\n  "mcpServers": {\n    "vidhelm": ${jsonEntry()}\n  }\n}`
+  // the server program as a shell argument: bare node, or the exe's quoted path
+  const progArg = launch.command === 'node' ? 'node' : q(launch.command)
+  const psEnv = envEntries.map(([k, v]) => `$env:${k}=${q(v)}; `).join('')
 
   // PowerShell needs & to run a quoted path; plain `claude` when it is on PATH
   const cliPath = st?.cli?.path
@@ -836,17 +845,17 @@ export function ConnectModal({ open, onClose }: { open: boolean; onClose: () => 
   const SNIPPETS: Record<string, string> = {
     // `claude` on PATH is the happy path; when the installer put the exe somewhere else, a bare
     // `claude ...` just says "not recognized", so call it by full path instead.
-    'claude-code': `${cliCall} mcp add -s user vidhelm -- node "${mcpPath}"`,
+    'claude-code': `${cliCall} mcp add -s user${envEntries.map(([k, v]) => ` -e ${k}=${v}`).join('')} vidhelm -- ${progArg} ${q(mcpPath)}`,
     'claude-desktop': stdJson,
     'cursor': stdJson,
-    'vscode': `{\n  "servers": {\n    "vidhelm": {\n      "type": "stdio",\n      "command": "node",\n      "args": ["${jsonPath}"]\n    }\n  }\n}`,
+    'vscode': `{\n  "servers": {\n    "vidhelm": ${jsonEntry('      "type": "stdio",\n')}\n  }\n}`,
     'windsurf': stdJson,
     'cline': stdJson,
-    'codex': `[mcp_servers.vidhelm]\ncommand = "node"\nargs = ["${jsonPath}"]`,
+    'codex': `[mcp_servers.vidhelm]\ncommand = ${q(launch.command)}\nargs = [${q(mcpPath)}]${envEntries.length ? `\nenv = { ${envEntries.map(([k, v]) => `${k} = ${q(v)}`).join(', ')} }` : ''}`,
     'gemini': stdJson,
     'lmstudio': stdJson,
     'jan': stdJson,
-    'openwebui': `uvx mcpo --port 8001 -- node "${mcpPath}"`,
+    'openwebui': `${psEnv}uvx mcpo --port 8001 -- ${progArg} ${q(mcpPath)}`,
     'localmodels': `# 1) In the front-end, set your local model server:\n#      Ollama    http://localhost:11434/v1\n#      Lemonade  http://localhost:8000/api/v1\n# 2) Add VidHelm as an MCP server there (standard shape):\n${stdJson}`,
     'http': `# read the timeline          # drive the editor\ncurl http://127.0.0.1:${port}/state\ncurl -X POST http://127.0.0.1:${port}/command -H "Content-Type: application/json" -d "{\\"action\\":\\"place_sfx\\",\\"name\\":\\"pop\\",\\"t\\":3.2}"`,
   }
@@ -884,9 +893,11 @@ export function ConnectModal({ open, onClose }: { open: boolean; onClose: () => 
               fix="The port is open but not answering, restart VidHelm. If a firewall prompt appeared, allow it (the bridge only ever listens on 127.0.0.1, nothing leaves your machine)." />
             <Check ok={st?.mcpFile.ok} label="MCP server file" detail={st?.mcpFile.ok ? mcpPath : `missing: ${mcpPath}`}
               fix="Reinstall VidHelm, or clone the repo, the file is agent/mcp-server.mjs." />
-            <Check ok={st?.node.ok} label={`Node.js for your AI client ${st?.node.version ? `(${st.node.version})` : ''}`}
-              detail={st?.node.ok ? 'found on PATH' : 'not found on PATH'}
-              fix="MCP clients start the server themselves with `node`. Install Node 18+ from nodejs.org, then restart your AI client. (VidHelm itself runs fine without it.)" />
+            {launch.builtIn
+              ? <Check ok label="Runs on VidHelm's own engine" detail="no Node.js install needed" />
+              : <Check ok={st?.node.ok} label={`Node.js for your AI client ${st?.node.version ? `(${st.node.version})` : ''}`}
+                  detail={st?.node.ok ? 'found on PATH' : 'not found on PATH'}
+                  fix="Running from source, so MCP clients start the server with `node`. Install Node 18+ from nodejs.org, then restart your AI client. (The installed VidHelm needs none of this.)" />}
             <p className="hint">All green? Then any failure below is on the client side, pick yours and re-check its config.</p>
           </section>
           <section>
@@ -899,12 +910,24 @@ export function ConnectModal({ open, onClose }: { open: boolean; onClose: () => 
             <p className="hint">{cdoc.where}</p>
             <pre className="conn-snippet">{SNIPPETS[client]}</pre>
             <div className="conn-actions">
-              <button className="primary" onClick={() => copy('snippet', SNIPPETS[client])}>{copied === 'snippet' ? <><IcCheck /> Copied</> : <><IcCopy /> Copy config</>}</button>
+              {client === 'claude-desktop' && <button className="primary" onClick={async () => {
+                try {
+                  const { results } = await window.ipcRenderer.addToClaudeDesktop()
+                  const bad = results.find(r => !r.ok)
+                  setAdded(bad
+                    ? { ok: false, text: `Could not update ${bad.file}: ${bad.error}` }
+                    : { ok: true, text: results.every(r => r.change === 'unchanged')
+                      ? 'VidHelm is already in Claude Desktop. Not seeing it? Fully quit Claude Desktop from its tray icon and open it again.'
+                      : `Added. Now fully quit Claude Desktop (right-click its tray icon > Quit) and open it again, then ask Claude "what's on my VidHelm timeline?"${results.some(r => r.backup) ? ' Your old config was backed up next to it.' : ''}` })
+                } catch (e) { setAdded({ ok: false, text: String(e) }) }
+              }}><IcCheck /> Add to Claude Desktop</button>}
+              <button className={client === 'claude-desktop' ? '' : 'primary'} onClick={() => copy('snippet', SNIPPETS[client])}>{copied === 'snippet' ? <><IcCheck /> Copied</> : <><IcCopy /> Copy config</>}</button>
               <button onClick={() => copy('path', mcpPath)}>{copied === 'path' ? <><IcCheck /> Copied</> : 'Copy server path'}</button>
               <button onClick={() => { copy('cmdline', SNIPPETS[client]); window.ipcRenderer.openTerminal() }}><IcTerminal /> Copy and open a terminal</button>
               <button onClick={() => window.ipcRenderer.openExternal('https://github.com/RandoTechNerd/VidHelm/blob/main/docs/CONNECT.md')}>Full guide <IcExternal /></button>
             </div>
             {copied === 'fail' && <p className="hint">Clipboard is blocked here. Select the command above and copy it by hand.</p>}
+            {client === 'claude-desktop' && added && <p className={`hint ${added.ok ? '' : 'conn-fix'}`}>{added.text}</p>}
           </section>
           <section>
             <div className="sec-title"><h3>Optional power-ups</h3></div>
@@ -936,7 +959,7 @@ export function ConnectModal({ open, onClose }: { open: boolean; onClose: () => 
             <details><summary>I added the config but no tools show up</summary>
               <p className="hint">Fully restart the AI client (most only read MCP configs at startup), make sure the JSON merged cleanly (no trailing commas), and confirm the file path in <code>args</code> exists. In Claude Code, run <code>/mcp</code> to see server status.</p></details>
             <details><summary>Tools exist but every call errors</summary>
-              <p className="hint">Run the health check above. If the bridge is green, the client is probably launching the server without Node on PATH, or pointing at an old path after an update, re-copy the config.</p></details>
+              <p className="hint">Run the health check above. If the bridge is green, the client is probably pointing at an old path after VidHelm moved or updated: re-copy the config (or press Add to Claude Desktop again).</p></details>
             <details><summary>Port conflict (bridge check is red)</summary>
               <p className="hint">Set <code>VH_AGENT_PORT</code> to a free port before launching VidHelm, and add <code>"env": {'{'}"VH_AGENT_PORT": "5960"{'}'}</code> to the server entry in your client config so both sides agree.</p></details>
             <details><summary>My local model connects but never uses the tools</summary>

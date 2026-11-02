@@ -97,7 +97,9 @@ export function installIpcMock() {
       bridge: { listening: false, error: 'The agent bridge needs the desktop app (npm run dev)' },
       loopback: { ok: false, detail: 'desktop app only' },
       mcpFile: { ok: false, path: '<repo>/agent/mcp-server.mjs' },
-      node: { ok: false },
+      node: { ok: false }, cli: { onPath: false },
+      launch: { command: 'node', args: ['<repo>/agent/mcp-server.mjs'], env: {}, builtIn: false },
     }),
+    addToClaudeDesktop: async () => ({ results: [{ file: 'claude_desktop_config.json', ok: false, error: 'needs the desktop app' }] }),
   } as unknown as Window['ipcRenderer']
 }

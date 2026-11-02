@@ -61,11 +61,10 @@ Your footage never leaves your machine: FFmpeg does the rendering, Whisper runs 
 
 **3. Export.** Hit **Export Video**, pick a location, and let **Watch & Verify** confirm it's upload-ready (resolution, loudness, true peak, black frames).
 
-**4. Add your AI (optional, and the fun part).** Click **Connect AI** in the header. It health-checks everything and gives you the exact setup line for your assistant, for Claude Code that's one command:
+**4. Add your AI (optional, and the fun part).** Click **Connect AI** in the header. It health-checks everything and sets up your assistant. **No Node.js or other installs needed**: VidHelm runs its own AI connection.
 
-```bash
-claude mcp add vidhelm -- node "C:\Program Files\VidHelm\resources\agent\mcp-server.mjs"
-```
+- **Claude Desktop:** press **Add to Claude Desktop**, then fully quit Claude Desktop (tray icon → Quit) and open it again.
+- **Claude Code, Cursor, LM Studio and the rest:** pick yours and copy the setup line or config it shows, with your real paths already filled in.
 
 Restart your assistant, keep VidHelm open, and ask it something like *"look at my timeline and put a whoosh on every tag point"* or *"run my workflow"*. It sees the same timeline you do. If anything is red in that panel, it tells you how to fix it, full guide in [docs/CONNECT.md](docs/CONNECT.md).
 

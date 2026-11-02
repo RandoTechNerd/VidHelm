@@ -98,7 +98,7 @@ export const FAQ: FaqSection[] = [
   ] },
   { title: 'Connect an AI agent', items: [
     { q: 'What does connecting an AI do?', a: 'An assistant such as Claude edits the same timeline you see: it reads your tag points, drops sound effects on every beat, writes titles, cuts on exact words and runs your Start Recipe from one sentence. It works through a local bridge, so nothing about your project leaves your computer through VidHelm.', action: 'connect' },
-    { q: 'How do I connect Claude Desktop?', a: '1. Install Node.js 18 or newer (nodejs.org). 2. Click Connect AI and choose Claude Desktop. 3. Copy the config it shows into Claude Desktop: Settings, Developer, Edit Config. 4. Fully quit and reopen Claude Desktop, and keep VidHelm open.', action: 'connect' },
+    { q: 'How do I connect Claude Desktop?', a: '1. Click Connect AI and choose Claude Desktop. 2. Press Add to Claude Desktop. 3. Fully quit Claude Desktop (right-click its tray icon, Quit) and open it again, and keep VidHelm open. Nothing else to install: VidHelm runs the connection itself, no Node.js needed.', action: 'connect' },
     { q: 'How do I connect Claude Code?', a: 'Click Connect AI, choose Claude Code and press Copy & open a terminal. Paste, press Enter, then restart Claude Code. The command already has your real install path in it.', action: 'connect' },
     { q: 'Can I use Cursor, VS Code, Codex, Gemini CLI or a local model?', a: 'Yes. Any assistant that speaks MCP works, and Connect AI writes the setup for each one. Local models (LM Studio, Ollama with a front-end, Jan) work fully offline, as long as the model supports tool calling.', action: 'connect' },
     { q: 'Does it cost anything?', a: 'VidHelm and its bridge are free. If you already use an assistant such as Claude, connecting it costs nothing extra.' },
@@ -106,7 +106,7 @@ export const FAQ: FaqSection[] = [
   { title: 'Troubleshooting', items: [
     { q: 'My AI says "VidHelm is not running"', a: 'The bridge only exists while VidHelm is open. Open VidHelm, then ask again. If it still fails, open Connect AI and press Test connection.', action: 'connect' },
     { q: 'The AI connected but no VidHelm tools show up', a: 'Fully restart the AI app: most only read their setup when they start. Check the config pasted cleanly (no stray commas). In Claude Code, type /mcp to see the server.', action: 'connect' },
-    { q: 'Tools show up but every call fails', a: 'Open Connect AI and press Test connection. If the bridge is green, the assistant cannot start the server: usually Node.js is missing or the path in the config is old. Copy a fresh config from Connect AI.', action: 'connect' },
+    { q: 'Tools show up but every call fails', a: 'Open Connect AI and press Test connection. If the bridge is green, the assistant cannot start the server: usually the path in its config is old because VidHelm moved or updated. Copy a fresh config from Connect AI, or press Add to Claude Desktop again.', action: 'connect' },
     { q: 'Playback is slow or choppy', a: 'Heavy files (4K, HDR, some phone formats) get a lighter preview copy built in the background, and the Media panel shows its progress. High quality exports read your original files; Standard exports use the copy only when it already matches the export size and frame rate.' },
     { q: 'Something is broken or I want a feature', a: 'Tell us on Discord or open a GitHub issue with what you clicked, what happened and your VidHelm version (shown at the bottom of the Help menu, the ? at the top right).' },
   ] },
